@@ -47,7 +47,7 @@ const SELECT_SOLICITUD = `
            s.SeguimientoHechoFecha, s.SeguimientoHechoPor, s.SeguimientoResultado,
            e.Nombre AS EquipoNombre, e.Estado AS EquipoEstado, a.Nombre AS AreaNombre,
            DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaTomada) AS MinutosRespuesta,
-           DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaFin) AS MinutosResolucion,
+           DATEDIFF(MINUTE, s.FechaTomada, s.FechaFin) AS MinutosResolucion,   -- de tomada a finalizada (antes desde el pedido)
            (SELECT COUNT(*) FROM dbo.ST_Adjuntos ad WHERE ad.Entidad = 'SOLICITUD' AND ad.EntidadId = s.SolId) AS Adjuntos
     FROM dbo.ST_Solicitudes s
     LEFT JOIN dbo.ConfigEquipos e ON e.EquipoID = s.EquipoId

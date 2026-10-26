@@ -6,6 +6,10 @@ const externalController = require('../controllers/externalController');
 // GET /api/external/ordenes?page=1&pageSize=100&fechaDesde=&fechaHasta=&codigoOrden=&estado=&idCliente=&material=
 router.get('/ordenes', externalController.getOrdenes);
 
+// Órdenes de producción (Ordenes) con sus archivos: metros y copias de cada uno, máquina y si tuvo fallas
+// GET /api/external/ordenes-produccion?page=1&pageSize=100&fechaDesde=&fechaHasta=&codigoOrden=
+router.get('/ordenes-produccion', externalController.getOrdenesProduccion);
+
 // Endpoint para extraer la lista de Vendedores (Trabajadores)
 // GET /api/external/vendedores
 router.get('/vendedores', externalController.getVendedores);

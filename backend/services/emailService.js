@@ -24,13 +24,16 @@ exports.sendMail = async (to, subject, html, attachments = []) => {
         });
         if (error) {
             logger.error(`[Email] ❌ RESEND ERROR enviando a ${dest}: ${JSON.stringify(error)}`);
+            require('./saludIntegraciones').falla('mail', error.message || JSON.stringify(error));   // monitor
             return false;
         }
         logger.info(`[Email] ✅ Enviado a ${dest}: ${subject}`);
+        require('./saludIntegraciones').ok('mail');
         return true;
 
     } catch (err) {
         logger.error('[Email] Exception:', err.message);
+        require('./saludIntegraciones').falla('mail', err);
         return false;
     }
 };

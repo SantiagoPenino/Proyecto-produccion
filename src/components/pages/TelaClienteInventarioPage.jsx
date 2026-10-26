@@ -4,12 +4,30 @@ import { inventoryService } from "../../services/modules/inventoryService";
 import { areasService } from "../../services/modules/areasService";
 import api from "../../services/api";
 import { MultiAreaSelector } from "../ui/MultiAreaSelector";
+import Selector from "../ui/Selector";
 import EstadoTelaModal from "../modals/inventory/EstadoTelaModal";
 import ManageBobinaModal from "../modals/inventory/ManageBobinaModal";
 import SolicitarDevolucionTelaModal from "../modals/inventory/SolicitarDevolucionTelaModal";
 import BandejaDevolucionesTelaPanel from "./BandejaDevolucionesTelaPanel";
-import { CheckCircle, AlertTriangle, FileText, Settings2, Search, RefreshCw, Ruler, X, User, Loader2, Undo2, Inbox } from "lucide-react";
+import {
+    CheckCircle, AlertTriangle, FileText, Settings2, Search, RefreshCw, Ruler, X, Loader2, Undo2, Inbox,
+    Scroll, Check, CalendarDays, Mail, Phone, MapPin,
+} from "lucide-react";
 import { toast } from "sonner";
+
+// Estética nueva (22/10/2026, como Reportes y Logística): fondo claro, tarjetas blancas con borde, íconos de Lucide en
+// brand-cyan, pestañas con la elegida en negro; el color queda para el estado de la bobina (pendiente / disponible /
+// agotada). En el celular el filtro de estado es un selector.
+const CARD = "bg-white rounded-2xl border border-zinc-200";
+const BTN_PRINCIPAL = "inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl bg-brand-cyan text-white text-xs font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed";
+const BTN_SECUNDARIO = "inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-xl border border-zinc-200 bg-white text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50";
+const BTN_ICONO = "p-1.5 rounded-xl border border-zinc-200 bg-white text-zinc-400 hover:text-zinc-700 hover:border-zinc-300 transition-colors";
+const CAJA_BUSQUEDA = "flex items-center gap-2 rounded-xl border bg-white px-3 py-2.5 transition-colors focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/15";
+const chip = (activo) => `shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${
+    activo ? "bg-zinc-900 text-white border-zinc-900" : "bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400"}`;
+const segmento = (activo) => `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+    activo ? "bg-zinc-900 text-white" : "text-zinc-500 hover:text-zinc-800"}`;
+const fmtFecha = (f) => new Date(f).toLocaleDateString('es-UY', { day:'2-digit', month:'2-digit', year:'2-digit' });
 
 // ─── BobinaCard — definida FUERA del componente padre para evitar remount en cada render ───
 const BobinaCard = ({
@@ -34,207 +52,222 @@ const BobinaCard = ({
     const esConfirmando = confirmandoId === bob.BobinaID;
 
     return (
-        <div className={`bg-white rounded-xl shadow border-2 p-4 transition-all ${
-            esConfirmando ? "border-amber-400 ring-2 ring-amber-100" :
-            esPendiente   ? "border-amber-300" :
-            esAgotada     ? "border-slate-200 opacity-75" :
-            "border-slate-200 hover:border-indigo-300"
+        <div className={`${CARD} overflow-hidden flex items-stretch transition-colors ${
+            esConfirmando ? "ring-2 ring-amber-200 border-amber-300" :
+            esAgotada     ? "opacity-75" :
+            "hover:border-zinc-300"
         }`}>
-            <div className="flex justify-between items-start mb-3">
-                <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${
-                            esPendiente ? "bg-amber-100 text-amber-700"
-                            : esAgotada ? "bg-slate-200 text-slate-500"
-                            : "bg-green-100 text-green-700"
-                        }`}>{esPendiente ? "Pendiente" : esAgotada ? "Agotado" : "Disponible"}</span>
-                        <span className="text-xs text-slate-400 font-mono">{bob.AreaID}</span>
-                    </div>
-                    {bob.Referencia && (
-                        <div className="mt-1.5">
-                            <span className="inline-block bg-indigo-600 text-white font-black font-mono text-xl px-3 py-1 rounded-lg tracking-wider shadow-sm">
-                                {bob.Referencia}
-                            </span>
+            {/* Barra lateral de estado */}
+            <div className={`w-1.5 shrink-0 ${esPendiente ? "bg-amber-400" : esAgotada ? "bg-zinc-300" : "bg-emerald-500"}`} />
+
+            <div className="flex-1 min-w-0 p-4">
+                <div className="flex justify-between items-start mb-3">
+                    <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
+                                esPendiente ? "bg-amber-50 text-amber-700 border-amber-200"
+                                : esAgotada ? "bg-zinc-100 text-zinc-500 border-zinc-200"
+                                : "bg-emerald-50 text-emerald-700 border-emerald-200"
+                            }`}>{esPendiente ? "Pendiente" : esAgotada ? "Agotado" : "Disponible"}</span>
+                            <span className="text-xs text-zinc-400 font-mono">{bob.AreaID}</span>
                         </div>
+                        {bob.Referencia && (
+                            <div className="mt-2">
+                                <span className="inline-block bg-zinc-100 border border-zinc-200 text-zinc-800 font-black font-mono text-xl px-2.5 py-0.5 rounded-lg tracking-wider">
+                                    {bob.Referencia}
+                                </span>
+                            </div>
+                        )}
+                        <h3 className="font-bold text-zinc-800 mt-1.5 text-sm leading-tight truncate">
+                            {bob.DescripcionTela || bob.TipoTela}
+                        </h3>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                            <p className="text-xs text-zinc-600 font-medium">{bob.NombreCliente || bob.ClienteID}</p>
+                            {bob.IdCliente && (
+                                <span className="text-[10px] font-black font-mono bg-zinc-100 text-zinc-500 px-1.5 py-0.5 rounded border border-zinc-200">
+                                    ID: {bob.IdCliente}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                    <div className="text-right ml-3">
+                        <span className={`text-2xl font-black tabular-nums ${bob.MetrosRestantes < 5 ? "text-rose-600" : "text-zinc-800"}`}>
+                            {(parseFloat(bob.MetrosRestantes) || 0).toFixed(1)}
+                        </span>
+                        <span className="text-xs text-zinc-400 block">m restantes</span>
+                    </div>
+                </div>
+
+                <div className="flex items-center justify-between mb-2">
+                    <p className="text-[10px] font-mono text-zinc-700 font-bold truncate">{bob.CodigoEtiqueta}</p>
+                    {bob.FechaIngreso && (
+                        <span className="inline-flex items-center gap-1 text-[10px] text-zinc-400 font-medium whitespace-nowrap ml-2 tabular-nums">
+                            <CalendarDays className="w-3 h-3 text-brand-cyan" /> {fmtFecha(bob.FechaIngreso)}
+                        </span>
                     )}
-                    <h3 className="font-bold text-slate-800 mt-1 text-sm leading-tight truncate">
-                        {bob.DescripcionTela || bob.TipoTela}
-                    </h3>
-                    <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                        <p className="text-xs text-slate-600 font-medium">{bob.NombreCliente || bob.ClienteID}</p>
-                        {bob.IdCliente && (
-                            <span className="text-[10px] font-black font-mono bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded border border-slate-200">
-                                ID: {bob.IdCliente}
-                            </span>
-                        )}
-                    </div>
                 </div>
-                <div className="text-right ml-3">
-                    <span className={`text-2xl font-black ${bob.MetrosRestantes < 5 ? "text-red-500" : "text-slate-800"}`}>
-                        {(parseFloat(bob.MetrosRestantes) || 0).toFixed(1)}
-                    </span>
-                    <span className="text-xs text-slate-400 block">m restantes</span>
-                </div>
-            </div>
 
-            <div className="flex items-center justify-between mb-2">
-                <p className="text-[10px] font-mono text-slate-800 font-bold truncate">{bob.CodigoEtiqueta}</p>
-                {bob.FechaIngreso && (
-                    <span className="text-[10px] text-slate-400 font-medium whitespace-nowrap ml-2">
-                        📅 {new Date(bob.FechaIngreso).toLocaleDateString('es-UY', { day:'2-digit', month:'2-digit', year:'2-digit' })}
-                    </span>
-                )}
-            </div>
-
-            {/* Medidas declaradas vs confirmadas */}
-            <div className="mb-3 text-xs rounded-lg overflow-hidden border border-slate-100">
-                <table className="w-full">
-                    <thead>
-                        <tr className="bg-slate-50">
-                            <th className="text-left px-2 py-1 text-slate-400 font-semibold text-[10px] uppercase"></th>
-                            <th className="text-right px-2 py-1 text-slate-400 font-semibold text-[10px] uppercase">Declarado</th>
-                            <th className="text-right px-2 py-1 text-slate-400 font-semibold text-[10px] uppercase">Confirmado</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                        <tr>
-                            <td className="px-2 py-1 text-slate-500 font-medium">Largo</td>
-                            <td className="px-2 py-1 text-right font-bold text-slate-700">{parseFloat(bob.MetrosIniciales).toFixed(2)} m</td>
-                            <td className="px-2 py-1 text-right">
-                                {!esPendiente ? (
-                                    <span className={`font-bold ${
-                                        Math.abs(bob.MetrosRestantes - bob.MetrosIniciales) / bob.MetrosIniciales > 0.1
-                                            ? "text-amber-600" : "text-green-600"
-                                    }`}>✓ {(parseFloat(bob.MetrosRestantes) || 0).toFixed(2)} m</span>
-                                ) : <span className="text-slate-300">—</span>}
-                            </td>
-                        </tr>
-                        {(bob.Ancho || bob.AnchoReal) && (
+                {/* Medidas declaradas vs confirmadas */}
+                <div className="mb-3 text-xs rounded-xl overflow-hidden border border-zinc-200">
+                    <table className="w-full">
+                        <thead>
+                            <tr className="bg-zinc-50 border-b border-zinc-200">
+                                <th className="text-left px-2.5 py-1.5 text-zinc-400 font-black text-[10px] uppercase tracking-wide"></th>
+                                <th className="text-right px-2.5 py-1.5 text-zinc-400 font-black text-[10px] uppercase tracking-wide">Declarado</th>
+                                <th className="text-right px-2.5 py-1.5 text-zinc-400 font-black text-[10px] uppercase tracking-wide">Confirmado</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100">
                             <tr>
-                                <td className="px-2 py-1 text-slate-500 font-medium">Ancho</td>
-                                <td className="px-2 py-1 text-right font-bold text-slate-700">
-                                    {bob.Ancho ? `${parseFloat(bob.Ancho).toFixed(2)} m` : <span className="text-slate-300">—</span>}
-                                </td>
-                                <td className="px-2 py-1 text-right">
-                                    {bob.AnchoReal
-                                        ? <span className="font-bold text-green-600">✓ {parseFloat(bob.AnchoReal).toFixed(2)} m</span>
-                                        : <span className="text-slate-300">—</span>}
+                                <td className="px-2.5 py-1.5 text-zinc-500 font-medium">Largo</td>
+                                <td className="px-2.5 py-1.5 text-right font-bold text-zinc-700 tabular-nums">{parseFloat(bob.MetrosIniciales).toFixed(2)} m</td>
+                                <td className="px-2.5 py-1.5 text-right">
+                                    {!esPendiente ? (
+                                        <span className={`inline-flex items-center gap-1 font-bold tabular-nums ${
+                                            Math.abs(bob.MetrosRestantes - bob.MetrosIniciales) / bob.MetrosIniciales > 0.1
+                                                ? "text-amber-600" : "text-emerald-600"
+                                        }`}><Check className="w-3 h-3" /> {(parseFloat(bob.MetrosRestantes) || 0).toFixed(2)} m</span>
+                                    ) : <span className="text-zinc-300">—</span>}
                                 </td>
                             </tr>
-                        )}
-                        {(bob.Peso || bob.PesoReal) && (
-                            <tr>
-                                <td className="px-2 py-1 text-slate-500 font-medium">Peso</td>
-                                <td className="px-2 py-1 text-right font-bold text-slate-700">
-                                    {bob.Peso ? `${parseFloat(bob.Peso).toFixed(2)} kg` : <span className="text-slate-300">—</span>}
-                                </td>
-                                <td className="px-2 py-1 text-right">
-                                    {bob.PesoReal
-                                        ? <span className="font-bold text-green-600">✓ {parseFloat(bob.PesoReal).toFixed(2)} kg</span>
-                                        : <span className="text-slate-300">—</span>}
-                                </td>
-                            </tr>
-                        )}
-                    </tbody>
-                </table>
-            </div>
+                            {(bob.Ancho || bob.AnchoReal) && (
+                                <tr>
+                                    <td className="px-2.5 py-1.5 text-zinc-500 font-medium">Ancho</td>
+                                    <td className="px-2.5 py-1.5 text-right font-bold text-zinc-700 tabular-nums">
+                                        {bob.Ancho ? `${parseFloat(bob.Ancho).toFixed(2)} m` : <span className="text-zinc-300">—</span>}
+                                    </td>
+                                    <td className="px-2.5 py-1.5 text-right">
+                                        {bob.AnchoReal
+                                            ? <span className="inline-flex items-center gap-1 font-bold text-emerald-600 tabular-nums"><Check className="w-3 h-3" /> {parseFloat(bob.AnchoReal).toFixed(2)} m</span>
+                                            : <span className="text-zinc-300">—</span>}
+                                    </td>
+                                </tr>
+                            )}
+                            {(bob.Peso || bob.PesoReal) && (
+                                <tr>
+                                    <td className="px-2.5 py-1.5 text-zinc-500 font-medium">Peso</td>
+                                    <td className="px-2.5 py-1.5 text-right font-bold text-zinc-700 tabular-nums">
+                                        {bob.Peso ? `${parseFloat(bob.Peso).toFixed(2)} kg` : <span className="text-zinc-300">—</span>}
+                                    </td>
+                                    <td className="px-2.5 py-1.5 text-right">
+                                        {bob.PesoReal
+                                            ? <span className="inline-flex items-center gap-1 font-bold text-emerald-600 tabular-nums"><Check className="w-3 h-3" /> {parseFloat(bob.PesoReal).toFixed(2)} kg</span>
+                                            : <span className="text-zinc-300">—</span>}
+                                    </td>
+                                </tr>
+                            )}
+                        </tbody>
+                    </table>
+                </div>
 
-            <div className="w-full bg-slate-100 rounded-full h-1.5 mb-4">
-                <div className={`h-1.5 rounded-full ${
-                    pctUsado > 80 ? "bg-red-500" : pctUsado > 50 ? "bg-amber-400" : "bg-green-500"
-                }`} style={{ width: `${Math.min(pctUsado, 100)}%` }} />
-            </div>
+                <div className="w-full bg-zinc-100 rounded-full h-1.5 mb-4">
+                    <div className={`h-1.5 rounded-full ${
+                        pctUsado > 80 ? "bg-rose-500" : pctUsado > 50 ? "bg-amber-400" : "bg-emerald-500"
+                    }`} style={{ width: `${Math.min(pctUsado, 100)}%` }} />
+                </div>
 
-            <div className="flex gap-2 justify-end">
-                {esPendiente ? (
+                <div className="flex gap-2 justify-end flex-wrap">
+                    {esPendiente ? (
+                        <button
+                            type="button"
+                            onClick={() => esConfirmando ? onCancelarConfirmar() : onConfirmar(bob)}
+                            className={esConfirmando ? BTN_SECUNDARIO : BTN_PRINCIPAL}
+                        >
+                            {esConfirmando ? <X className="w-3.5 h-3.5" /> : <CheckCircle className="w-3.5 h-3.5" />}
+                            {esConfirmando ? "Cancelar" : "Confirmar medida"}
+                        </button>
+                    ) : (
+                        <button
+                            type="button"
+                            onClick={() => onEstadoCuenta(bob.BobinaID)}
+                            className={BTN_SECUNDARIO}
+                        >
+                            <FileText className="w-3.5 h-3.5 text-brand-cyan" /> Estado de cuenta
+                        </button>
+                    )}
+                    {!esAgotada && !esPendiente && (
+                        <button
+                            type="button"
+                            onClick={() => onSolicitarDevolucion(bob)}
+                            className={BTN_ICONO}
+                            title="Solicitar devolución/descarte de excedente"
+                            aria-label="Solicitar devolución o descarte de excedente"
+                        >
+                            <Undo2 className="w-4 h-4" />
+                        </button>
+                    )}
                     <button
-                        onClick={() => esConfirmando ? onCancelarConfirmar() : onConfirmar(bob)}
-                        className={`flex items-center gap-1 px-3 py-1.5 rounded-lg text-white text-xs font-bold transition-colors ${
-                            esConfirmando ? "bg-slate-500 hover:bg-slate-600" : "bg-amber-500 hover:bg-amber-600"
-                        }`}
+                        type="button"
+                        onClick={() => onAdministrar(bob)}
+                        className={BTN_ICONO}
+                        title="Administrar"
+                        aria-label="Administrar"
                     >
-                        <CheckCircle className="w-3.5 h-3.5" />
-                        {esConfirmando ? "Cancelar" : "Confirmar medida"}
-                    </button>
-                ) : (
-                    <button
-                        onClick={() => onEstadoCuenta(bob.BobinaID)}
-                        className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-xs font-bold border border-indigo-200 transition-colors"
-                    >
-                        <FileText className="w-3.5 h-3.5" /> Estado de Cuenta
-                    </button>
-                )}
-                {!esAgotada && !esPendiente && (
-                    <button
-                        onClick={() => onSolicitarDevolucion(bob)}
-                        className="p-1.5 text-amber-600 hover:text-white bg-amber-50 hover:bg-amber-500 rounded-lg border border-amber-200 hover:border-amber-500 transition-colors"
-                        title="Solicitar devolución/descarte de excedente"
-                    >
-                        <Undo2 className="w-4 h-4" />
-                    </button>
-                )}
-                <button
-                    onClick={() => onAdministrar(bob)}
-                    className="p-1.5 text-indigo-500 hover:text-white bg-indigo-50 hover:bg-indigo-500 rounded-lg border border-indigo-200 hover:border-indigo-500 transition-colors"
-                    title="Administrar"
-                >
-                    <Settings2 className="w-4 h-4" />
-                </button>
-            </div>
-
-            {esConfirmando && (
-                <div className="mt-3 pt-3 border-t border-amber-200">
-                    <p className="text-xs font-bold text-amber-700 mb-3 flex items-center gap-1">
-                        <Ruler className="w-3.5 h-3.5" /> Medidas reales de la bobina
-                    </p>
-                    <div className="grid grid-cols-3 gap-2 mb-3">
-                        {[
-                            { label: "Largo (m) *", val: metrosRealesInput, set: setMetrosRealesInput, ph: String(bob.MetrosRestantes), warn: true },
-                            { label: "Ancho (m)",   val: anchoInput,        set: setAnchoInput,        ph: bob.Ancho ? String(bob.Ancho) : "0.00" },
-                            { label: "Peso (kg)",   val: pesoInput,         set: setPesoInput,         ph: bob.Peso  ? String(bob.Peso)  : "0.00" },
-                        ].map(({ label, val, set, ph, warn }) => {
-                            const decl = parseFloat(bob.MetrosIniciales) || 0;
-                            const real = parseFloat(val.replace(",", ".")) || 0;
-                            const pct  = warn && decl > 0 ? Math.abs((real - decl) / decl) * 100 : 0;
-                            return (
-                                <div key={label}>
-                                    <label className="block text-[10px] font-bold text-slate-400 uppercase mb-1">{label}</label>
-                                    <input
-                                        type="text" inputMode="decimal"
-                                        value={val}
-                                        onChange={e => {
-                                            const raw = e.target.value.replace(",", ".");
-                                            if (raw === "" || /^\d*\.?\d*$/.test(raw)) set(raw);
-                                        }}
-                                        className={`w-full border rounded-lg px-2 py-1.5 text-sm font-bold focus:outline-none text-center transition-colors ${
-                                            val && parseFloat(val) > 0
-                                                ? "border-amber-400 bg-amber-50 focus:border-amber-500"
-                                                : "border-slate-300 focus:border-amber-500"
-                                        }`}
-                                        placeholder={ph}
-                                        autoComplete="off"
-                                    />
-                                    {warn && pct > 10 && val !== "" && (
-                                        <div className="flex items-center gap-0.5 mt-1 text-[10px] text-amber-600">
-                                            <AlertTriangle className="w-3 h-3" /> {pct.toFixed(1)}% dif. al declarado
-                                        </div>
-                                    )}
-                                </div>
-                            );
-                        })}
-                    </div>
-                    <button
-                        disabled={confirmLoading || !metrosRealesInput || parseFloat(metrosRealesInput) <= 0}
-                        onClick={onEjecutarConfirm}
-                        className="w-full py-2 rounded-lg bg-amber-500 hover:bg-amber-600 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-bold transition-colors"
-                    >
-                        {confirmLoading ? "Confirmando..." : "Confirmar medidas"}
+                        <Settings2 className="w-4 h-4" />
                     </button>
                 </div>
-            )}
+
+                {esConfirmando && (
+                    <div className="mt-3 pt-3 border-t border-zinc-100">
+                        <p className="text-xs font-bold text-zinc-700 mb-3 flex items-center gap-1.5">
+                            <Ruler className="w-3.5 h-3.5 text-brand-cyan" /> Medidas reales de la bobina
+                        </p>
+                        <div className="grid grid-cols-3 gap-2 mb-3">
+                            {[
+                                { label: "Largo (m) *", val: metrosRealesInput, set: setMetrosRealesInput, ph: String(bob.MetrosRestantes), warn: true },
+                                { label: "Ancho (m)",   val: anchoInput,        set: setAnchoInput,        ph: bob.Ancho ? String(bob.Ancho) : "0.00" },
+                                { label: "Peso (kg)",   val: pesoInput,         set: setPesoInput,         ph: bob.Peso  ? String(bob.Peso)  : "0.00" },
+                            ].map(({ label, val, set, ph, warn }) => {
+                                const decl = parseFloat(bob.MetrosIniciales) || 0;
+                                const real = parseFloat(val.replace(",", ".")) || 0;
+                                const pct  = warn && decl > 0 ? Math.abs((real - decl) / decl) * 100 : 0;
+                                return (
+                                    <div key={label}>
+                                        <label className="block text-[10px] font-black text-zinc-400 uppercase tracking-wide mb-1">{label}</label>
+                                        <input
+                                            type="text" inputMode="decimal"
+                                            value={val}
+                                            onChange={e => {
+                                                const raw = e.target.value.replace(",", ".");
+                                                if (raw === "" || /^\d*\.?\d*$/.test(raw)) set(raw);
+                                            }}
+                                            className="w-full border border-zinc-200 rounded-xl px-2 py-1.5 text-sm font-bold text-zinc-800 text-center tabular-nums focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 transition-colors"
+                                            placeholder={ph}
+                                            autoComplete="off"
+                                        />
+                                        {warn && pct > 10 && val !== "" && (
+                                            <div className="flex items-center gap-0.5 mt-1 text-[10px] text-amber-600">
+                                                <AlertTriangle className="w-3 h-3" /> {pct.toFixed(1)}% dif. al declarado
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                        <button
+                            type="button"
+                            disabled={confirmLoading || !metrosRealesInput || parseFloat(metrosRealesInput) <= 0}
+                            onClick={onEjecutarConfirm}
+                            className={`${BTN_PRINCIPAL} w-full py-2`}
+                        >
+                            {confirmLoading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Check className="w-3.5 h-3.5" />}
+                            {confirmLoading ? "Confirmando..." : "Confirmar medidas"}
+                        </button>
+                    </div>
+                )}
+            </div>
         </div>
     );
 };
+
+// Encabezado de cada grupo de bobinas (pendientes / disponibles / agotadas)
+const TituloGrupo = ({ titulo, cantidad, punto }) => (
+    <h2 className="flex items-center gap-2 text-sm font-black text-zinc-800 mb-3">
+        <span className={`w-2.5 h-2.5 rounded-full shrink-0 ${punto}`} />
+        {titulo}
+        <span className="text-xs font-normal text-zinc-400">{cantidad} {cantidad === 1 ? "bobina" : "bobinas"}</span>
+    </h2>
+);
 
 const TelaClienteInventarioPage = () => {
     const { user } = useAuth();
@@ -388,277 +421,242 @@ const TelaClienteInventarioPage = () => {
         }
     };
 
+    // Las tres listas usan la misma tarjeta con las mismas acciones
+    const tarjeta = (bob) => (
+        <BobinaCard
+            key={bob.BobinaID}
+            bob={bob}
+            confirmandoId={confirmando?.bobina?.BobinaID ?? null}
+            metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
+            anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
+            pesoInput={pesoInput}                 setPesoInput={setPesoInput}
+            confirmLoading={confirmLoading}
+            onConfirmar={abrirConfirmacion}
+            onCancelarConfirmar={() => setConfirmando(null)}
+            onEstadoCuenta={setEstadoTelaBobina}
+            onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
+            onSolicitarDevolucion={setSolicitandoBobina}
+            onEjecutarConfirm={ejecutarConfirmacion}
+        />
+    );
+    const GRILLA = "grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3";
+
     return (
-        <div className="p-6 bg-slate-50 min-h-screen">
-            <div className="max-w-7xl mx-auto space-y-6">
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-5">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                        <div>
-                            <h1 className="text-2xl font-bold text-slate-800">Inventario Tela de Cliente</h1>
-                            <p className="text-slate-500 text-sm mt-0.5">Control de bobinas por cliente y confirmacion de medidas</p>
+        <div className="p-3 md:p-6 bg-slate-50 min-h-full font-sans text-zinc-800">
+            <div className="space-y-4">
+                {/* ── Encabezado ─────────────────────────────────────────── */}
+                <div className="flex items-center justify-between flex-wrap gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <Scroll size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                        <div className="min-w-0">
+                            <h1 className="text-2xl font-black text-zinc-800 uppercase tracking-tight">Inventario tela de cliente</h1>
+                            <p className="text-sm text-zinc-400">Control de bobinas por cliente y confirmación de medidas</p>
                         </div>
-                        <div className="flex items-center gap-2">
-                            <div className="flex items-center gap-1 bg-slate-100 rounded-lg p-1">
-                                <button
-                                    onClick={() => setVista("inventario")}
-                                    className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${vista === "inventario" ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}
-                                >
-                                    Inventario
-                                </button>
-                                <button
-                                    onClick={() => setVista("bandeja")}
-                                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${vista === "bandeja" ? "bg-white shadow text-indigo-700" : "text-slate-500"}`}
-                                >
-                                    <Inbox className="w-3.5 h-3.5" /> Bandeja de devoluciones
-                                </button>
-                            </div>
-                            {vista === "inventario" && (
-                                <button
-                                    onClick={loadInventory}
-                                    disabled={loading || selectedAreas.length === 0}
-                                    className="flex items-center gap-2 px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white text-sm font-semibold transition-colors"
-                                >
-                                    <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-                                    Actualizar
-                                </button>
-                            )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                        <div className="inline-flex items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white">
+                            <button type="button" onClick={() => setVista("inventario")} className={segmento(vista === "inventario")}>
+                                Inventario
+                            </button>
+                            <button type="button" onClick={() => setVista("bandeja")} className={segmento(vista === "bandeja")}>
+                                <Inbox className="w-3.5 h-3.5" /> Bandeja de devoluciones
+                            </button>
                         </div>
+                        {vista === "inventario" && (
+                            <button
+                                type="button"
+                                onClick={loadInventory}
+                                disabled={loading || selectedAreas.length === 0}
+                                className={`${BTN_SECUNDARIO} py-2 text-sm`}
+                                title="Actualizar"
+                                aria-label="Actualizar"
+                            >
+                                <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+                            </button>
+                        )}
                     </div>
                 </div>
 
                 {vista === "bandeja" && <BandejaDevolucionesTelaPanel />}
 
               {vista === "inventario" && (<>
-                {/* Buscador de cliente tipo Caja */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex flex-col sm:flex-row gap-3 items-start">
-                    <div className="flex-1">
+                {/* ── Filtros: áreas, cliente, texto y estado ─────────────── */}
+                <div className={`${CARD} p-3 md:p-4 space-y-3`}>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
                         <MultiAreaSelector areas={areasList} selected={selectedAreas} onChange={setSelectedAreas} placeholder="Seleccionar areas..." />
+
+                        {/* Buscador de cliente tipo Caja */}
+                        <div className="relative" ref={searchRef}>
+                            <div className={`${CAJA_BUSQUEDA} ${clienteSeleccionado ? "border-brand-cyan" : "border-zinc-200"}`}>
+                                {buscandoCliente
+                                    ? <Loader2 className="w-4 h-4 text-brand-cyan animate-spin shrink-0" />
+                                    : <Search className="w-4 h-4 text-zinc-400 shrink-0" />}
+                                <input
+                                    type="text"
+                                    placeholder="Buscar cliente por nombre, código o referencia..."
+                                    aria-label="Buscar cliente"
+                                    className="flex-1 bg-transparent text-sm text-zinc-800 placeholder:text-zinc-400 outline-none min-w-0"
+                                    value={clienteQuery}
+                                    onChange={e => {
+                                        setClienteQuery(e.target.value);
+                                        setClienteSeleccionado(null);
+                                        buscarClientes(e.target.value);
+                                    }}
+                                    autoComplete="off"
+                                />
+                                {(clienteQuery || clienteSeleccionado) && (
+                                    <button type="button" onClick={limpiarCliente} className="p-0.5 rounded-full text-zinc-400 hover:text-zinc-700 transition-colors" aria-label="Limpiar cliente">
+                                        <X className="w-3.5 h-3.5" />
+                                    </button>
+                                )}
+                            </div>
+
+                            {/* Dropdown de sugerencias */}
+                            {clienteSugerencias.length > 0 && !clienteSeleccionado && (
+                                <div className="absolute z-50 top-full mt-1.5 left-0 right-0 bg-white border border-zinc-200 rounded-xl shadow-xl shadow-zinc-900/10 overflow-hidden">
+                                    <div className="px-3 py-2 bg-zinc-50 text-[10px] font-black text-zinc-400 uppercase tracking-wide border-b border-zinc-100 flex justify-between">
+                                        <span>Clientes encontrados</span>
+                                        <span>{clienteSugerencias.length} resultados</span>
+                                    </div>
+                                    {clienteSugerencias.map(c => (
+                                        <button key={c.CliIdCliente}
+                                            type="button"
+                                            onClick={() => seleccionarCliente(c)}
+                                            className="w-full text-left px-3 py-2.5 hover:bg-zinc-50 border-b border-zinc-100 last:border-0 flex items-center gap-3 transition-colors"
+                                        >
+                                            <div className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-700 font-black text-sm shrink-0">
+                                                {(c.Nombre || c.NombreFantasia || 'C')[0].toUpperCase()}
+                                            </div>
+                                            <div className="flex-1 min-w-0">
+                                                <p className="font-bold text-sm text-zinc-800 truncate">{c.Nombre || c.NombreFantasia}</p>
+                                                <div className="flex gap-2 mt-0.5">
+                                                    <span className="text-[10px] font-mono bg-zinc-100 text-zinc-500 px-1.5 rounded">{c.CliIdCliente}</span>
+                                                    {c.CodCliente && <span className="text-[10px] text-zinc-400">{c.CodCliente}</span>}
+                                                </div>
+                                            </div>
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
                     </div>
-                    <div className="relative min-w-[300px]" ref={searchRef}>
-                        <div className="flex items-center gap-2 border-2 rounded-xl px-3 py-2 transition-all bg-slate-50 focus-within:bg-white"
-                            style={{ borderColor: clienteSeleccionado ? '#6366f1' : undefined }}
-                        >
-                            {buscandoCliente
-                                ? <Loader2 className="w-4 h-4 text-indigo-400 animate-spin shrink-0" />
-                                : <Search className="w-4 h-4 text-slate-400 shrink-0" />}
+
+                    {/* Texto (PRE / tela / bobina) + estado */}
+                    <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+                        <div className={`${CAJA_BUSQUEDA} border-zinc-200 flex-1`}>
+                            <Search className="w-4 h-4 text-zinc-400 shrink-0" />
                             <input
                                 type="text"
-                                placeholder="Buscar cliente por nombre, código o referencia..."
-                                className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none min-w-0"
-                                value={clienteQuery}
-                                onChange={e => {
-                                    setClienteQuery(e.target.value);
-                                    setClienteSeleccionado(null);
-                                    buscarClientes(e.target.value);
-                                }}
+                                placeholder="Filtrar por PRE, tela o bobina..."
+                                aria-label="Filtrar por PRE, tela o bobina"
+                                className="flex-1 bg-transparent text-sm text-zinc-800 placeholder:text-zinc-400 outline-none min-w-0"
+                                value={filtroTexto}
+                                onChange={e => setFiltroTexto(e.target.value)}
                                 autoComplete="off"
                             />
-                            {(clienteQuery || clienteSeleccionado) && (
-                                <button onClick={limpiarCliente} className="p-0.5 rounded-full hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors">
+                            {filtroTexto && (
+                                <button type="button" onClick={() => setFiltroTexto("")} className="p-0.5 rounded-full text-zinc-400 hover:text-zinc-700 transition-colors" aria-label="Limpiar filtro">
                                     <X className="w-3.5 h-3.5" />
                                 </button>
                             )}
                         </div>
-
-                        {/* Dropdown de sugerencias */}
-                        {clienteSugerencias.length > 0 && !clienteSeleccionado && (
-                            <div className="absolute z-50 top-full mt-2 left-0 right-0 bg-white border border-slate-200 rounded-xl shadow-xl overflow-hidden">
-                                <div className="px-3 py-2 bg-slate-50 text-[10px] font-bold text-slate-400 uppercase border-b border-slate-100 flex justify-between">
-                                    <span>Clientes encontrados</span>
-                                    <span>{clienteSugerencias.length} resultados</span>
-                                </div>
-                                {clienteSugerencias.map(c => (
-                                    <button key={c.CliIdCliente}
-                                        onClick={() => seleccionarCliente(c)}
-                                        className="w-full text-left px-3 py-2.5 hover:bg-indigo-50 border-b border-slate-50 last:border-0 flex items-center gap-3 transition-colors group"
-                                    >
-                                        <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-600 font-black text-sm shrink-0 group-hover:bg-indigo-600 group-hover:text-white transition-colors">
-                                            {(c.Nombre || c.NombreFantasia || 'C')[0].toUpperCase()}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <p className="font-bold text-sm text-slate-800 truncate">{c.Nombre || c.NombreFantasia}</p>
-                                            <div className="flex gap-2 mt-0.5">
-                                                <span className="text-[10px] font-mono bg-slate-100 text-slate-500 px-1.5 rounded">{c.CliIdCliente}</span>
-                                                {c.CodCliente && <span className="text-[10px] text-slate-400">{c.CodCliente}</span>}
-                                            </div>
-                                        </div>
-                                    </button>
-                                ))}
-                            </div>
-                        )}
+                        {/* Celular: selector; escritorio: pestañas */}
+                        <div className="sm:hidden">
+                            <Selector filtro className="w-full" aria-label="Estado" value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}>
+                                <option value="Todas">Todos los estados</option>
+                                <option value="Pendiente">Pendiente</option>
+                                <option value="Disponible">Disponible</option>
+                                <option value="Agotado">Agotado</option>
+                            </Selector>
+                        </div>
+                        <div className="hidden sm:flex items-center gap-1.5 flex-wrap">
+                            {["Todas", "Pendiente", "Disponible", "Agotado"].map(op => (
+                                <button key={op} type="button" onClick={() => setFiltroEstado(op)} className={chip(filtroEstado === op)}>
+                                    {op}
+                                </button>
+                            ))}
+                        </div>
                     </div>
                 </div>
 
-                {/* Filtros: texto (PRE / tela / bobina) + estado */}
-                <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-3 flex flex-col sm:flex-row gap-3 sm:items-center">
-                    <div className="flex items-center gap-2 border-2 border-slate-200 rounded-xl px-3 py-2 bg-slate-50 focus-within:bg-white focus-within:border-indigo-300 flex-1 transition-all">
-                        <Search className="w-4 h-4 text-slate-400 shrink-0" />
-                        <input
-                            type="text"
-                            placeholder="Filtrar por PRE, tela o bobina..."
-                            className="flex-1 bg-transparent text-sm text-slate-800 placeholder-slate-400 outline-none min-w-0"
-                            value={filtroTexto}
-                            onChange={e => setFiltroTexto(e.target.value)}
-                            autoComplete="off"
-                        />
-                        {filtroTexto && (
-                            <button onClick={() => setFiltroTexto("")} className="p-0.5 rounded-full hover:bg-slate-200 text-slate-400 hover:text-slate-600 transition-colors">
-                                <X className="w-3.5 h-3.5" />
-                            </button>
-                        )}
-                    </div>
-                    <div className="flex items-center gap-1 flex-wrap">
-                        {["Todas", "Pendiente", "Disponible", "Agotado"].map(op => (
-                            <button
-                                key={op}
-                                onClick={() => setFiltroEstado(op)}
-                                className={`px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors ${
-                                    filtroEstado === op
-                                        ? "bg-indigo-600 text-white border-indigo-600"
-                                        : "bg-white text-slate-600 border-slate-200 hover:border-indigo-300"
-                                }`}
-                            >
-                                {op}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Tarjeta del cliente seleccionado */}
+                {/* ── Tarjeta del cliente seleccionado ─────────────────── */}
                 {clienteSeleccionado && (
-                    <div className="bg-white rounded-xl border-2 border-indigo-200 p-4 flex items-center gap-4">
-                        <div className="w-12 h-12 rounded-full bg-indigo-600 flex items-center justify-center text-white font-black text-xl shrink-0">
+                    <div className={`${CARD} p-4 flex items-center gap-4`}>
+                        <div className="w-12 h-12 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-700 font-black text-xl shrink-0">
                             {(clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia || 'C')[0].toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
-                            <p className="font-black text-slate-800 text-base leading-tight">{clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia}</p>
-                            <div className="flex flex-wrap gap-3 mt-1">
-                                <span className="text-[11px] font-mono bg-indigo-50 text-indigo-600 px-2 py-0.5 rounded-full border border-indigo-200 font-bold">ID CLIENTE: {clienteSeleccionado.CliIdCliente}</span>
-                                {clienteSeleccionado.Email    && <span className="text-xs text-slate-500">✉ {clienteSeleccionado.Email}</span>}
-                                {clienteSeleccionado.Telefono && <span className="text-xs text-slate-500">📞 {clienteSeleccionado.Telefono}</span>}
-                                {clienteSeleccionado.Direccion && <span className="text-xs text-slate-500">📍 {clienteSeleccionado.Direccion}</span>}
+                            <p className="font-black text-zinc-800 text-base leading-tight">{clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia}</p>
+                            <div className="flex flex-wrap items-center gap-3 mt-1">
+                                <span className="text-[11px] font-mono bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full border border-zinc-200 font-bold">ID CLIENTE: {clienteSeleccionado.CliIdCliente}</span>
+                                {clienteSeleccionado.Email    && <span className="inline-flex items-center gap-1 text-xs text-zinc-500"><Mail className="w-3.5 h-3.5 text-brand-cyan" /> {clienteSeleccionado.Email}</span>}
+                                {clienteSeleccionado.Telefono && <span className="inline-flex items-center gap-1 text-xs text-zinc-500"><Phone className="w-3.5 h-3.5 text-brand-cyan" /> {clienteSeleccionado.Telefono}</span>}
+                                {clienteSeleccionado.Direccion && <span className="inline-flex items-center gap-1 text-xs text-zinc-500"><MapPin className="w-3.5 h-3.5 text-brand-cyan" /> {clienteSeleccionado.Direccion}</span>}
                             </div>
                         </div>
                         <div className="text-right shrink-0">
-                            <p className="text-2xl font-black text-indigo-600">{bobinasTela.length}</p>
-                            <p className="text-xs text-slate-400">bobinas</p>
+                            <p className="text-2xl font-black text-zinc-800 tabular-nums">{bobinasTela.length}</p>
+                            <p className="text-xs text-zinc-400">bobinas</p>
                         </div>
                     </div>
                 )}
 
+                {/* ── Totales ─────────────────────────────────────────── */}
                 {bobinasTela.length > 0 && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                         {[
-                            { n: bobinasTela.length, label: "Total bobinas", cls: "bg-white border-slate-200 text-slate-800" },
-                            { n: pendientes.length,  label: "Pendientes",    cls: "bg-amber-50 border-amber-200 text-amber-600" },
-                            { n: disponibles.length, label: "Disponibles",   cls: "bg-green-50 border-green-200 text-green-600" },
-                            { n: agotadas.length,    label: "Agotadas",      cls: "bg-slate-100 border-slate-200 text-slate-500" },
+                            { n: bobinasTela.length, label: "Total bobinas", cls: "text-zinc-800" },
+                            { n: pendientes.length,  label: "Pendientes",    cls: "text-amber-600" },
+                            { n: disponibles.length, label: "Disponibles",   cls: "text-emerald-600" },
+                            { n: agotadas.length,    label: "Agotadas",      cls: "text-zinc-400" },
                         ].map(({ n, label, cls }) => (
-                            <div key={label} className={`rounded-xl border p-4 text-center ${cls}`}>
-                                <div className="text-2xl font-black">{n}</div>
-                                <div className="text-xs font-medium mt-0.5 opacity-80">{label}</div>
+                            <div key={label} className={`${CARD} px-4 py-3 min-w-0`}>
+                                <div className="text-[11px] font-black text-zinc-400 uppercase tracking-wide truncate">{label}</div>
+                                <div className={`mt-1 text-xl md:text-2xl font-black tabular-nums leading-tight ${cls}`}>{n}</div>
                             </div>
                         ))}
                     </div>
                 )}
 
                 {loading && (
-                    <div className="text-center py-16 text-slate-400">
-                        <RefreshCw className="w-8 h-8 mx-auto mb-2 animate-spin opacity-50" />
-                        <p>Cargando inventario...</p>
+                    <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-3`}>
+                        <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                        <p className="text-sm text-zinc-400">Cargando inventario...</p>
                     </div>
                 )}
 
                 {!loading && selectedAreas.length === 0 && (
-                    <div className="text-center py-20 text-slate-400">
-                        <p>Selecciona al menos un area para ver las telas.</p>
+                    <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-2 px-4 text-center`}>
+                        <Scroll size={40} className="text-zinc-200" />
+                        <p className="text-sm text-zinc-400">Seleccioná al menos un área para ver las telas.</p>
                     </div>
                 )}
 
                 {!loading && selectedAreas.length > 0 && bobinasTela.length === 0 && (
-                    <div className="text-center py-20 text-slate-400">
-                        <p>No hay telas de cliente en las areas seleccionadas.</p>
+                    <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-2 px-4 text-center`}>
+                        <Scroll size={40} className="text-zinc-200" />
+                        <p className="text-sm text-zinc-400">No hay telas de cliente en las áreas seleccionadas.</p>
                     </div>
                 )}
 
                 {!loading && pendientes.length > 0 && (
                     <div>
-                        <h2 className="text-sm font-bold text-amber-700 uppercase tracking-wide mb-3">
-                            Pendientes de confirmacion ({pendientes.length})
-                        </h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                        {pendientes.map(bob => (
-                            <BobinaCard
-                                key={bob.BobinaID}
-                                bob={bob}
-                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
-                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
-                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
-                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
-                                confirmLoading={confirmLoading}
-                                onConfirmar={abrirConfirmacion}
-                                onCancelarConfirmar={() => setConfirmando(null)}
-                                onEstadoCuenta={setEstadoTelaBobina}
-                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
-                                onSolicitarDevolucion={setSolicitandoBobina}
-                                onEjecutarConfirm={ejecutarConfirmacion}
-                            />
-                        ))}
-                        </div>
+                        <TituloGrupo titulo="Pendientes de confirmación" cantidad={pendientes.length} punto="bg-amber-400" />
+                        <div className={GRILLA}>{pendientes.map(tarjeta)}</div>
                     </div>
                 )}
 
                 {!loading && disponibles.length > 0 && (
                     <div>
-                        <h2 className="text-sm font-bold text-green-700 uppercase tracking-wide mb-3">
-                            Disponibles ({disponibles.length})
-                        </h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                        {disponibles.map(bob => (
-                            <BobinaCard
-                                key={bob.BobinaID}
-                                bob={bob}
-                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
-                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
-                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
-                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
-                                confirmLoading={confirmLoading}
-                                onConfirmar={abrirConfirmacion}
-                                onCancelarConfirmar={() => setConfirmando(null)}
-                                onEstadoCuenta={setEstadoTelaBobina}
-                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
-                                onSolicitarDevolucion={setSolicitandoBobina}
-                                onEjecutarConfirm={ejecutarConfirmacion}
-                            />
-                        ))}
-                        </div>
+                        <TituloGrupo titulo="Disponibles" cantidad={disponibles.length} punto="bg-emerald-500" />
+                        <div className={GRILLA}>{disponibles.map(tarjeta)}</div>
                     </div>
                 )}
 
                 {!loading && agotadas.length > 0 && (
                     <div>
-                        <h2 className="text-sm font-bold text-slate-500 uppercase tracking-wide mb-3">
-                            Agotadas ({agotadas.length})
-                        </h2>
-                        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-                        {agotadas.map(bob => (
-                            <BobinaCard
-                                key={bob.BobinaID}
-                                bob={bob}
-                                confirmandoId={confirmando?.bobina?.BobinaID ?? null}
-                                metrosRealesInput={metrosRealesInput} setMetrosRealesInput={setMetrosRealesInput}
-                                anchoInput={anchoInput}               setAnchoInput={setAnchoInput}
-                                pesoInput={pesoInput}                 setPesoInput={setPesoInput}
-                                confirmLoading={confirmLoading}
-                                onConfirmar={abrirConfirmacion}
-                                onCancelarConfirmar={() => setConfirmando(null)}
-                                onEstadoCuenta={setEstadoTelaBobina}
-                                onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
-                                onSolicitarDevolucion={setSolicitandoBobina}
-                                onEjecutarConfirm={ejecutarConfirmacion}
-                            />
-                        ))}
-                        </div>
+                        <TituloGrupo titulo="Agotadas" cantidad={agotadas.length} punto="bg-zinc-300" />
+                        <div className={GRILLA}>{agotadas.map(tarjeta)}</div>
                     </div>
                 )}
               </>)}

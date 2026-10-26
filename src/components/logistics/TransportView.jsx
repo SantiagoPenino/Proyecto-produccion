@@ -7,12 +7,27 @@ import { toast } from 'sonner';
 import {
     Truck, RefreshCw, Search, Tag, Clock, Printer,
     ListChecks, Navigation, History, FileDown, FileImage,
-    File, Camera, X, PackageCheck, Loader2, Plus, Trash2
+    File, Camera, X, PackageCheck, Loader2, Plus, Trash2, ArrowRight, ArrowUpRight, ArrowDownLeft
 } from 'lucide-react';
+
+// Estética nueva (22/10/2026, como Reportes y Cotización): fondo claro, tarjetas blancas con borde, íconos de
+// Lucide en brand-cyan sin fondo, segmentados con la opción elegida en negro; el color queda para el estado del
+// remito y de los bultos. La hoja de despacho que se imprime (handlePrint) no se tocó.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const SEGMENTADO = 'inline-flex items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white';
+const segmento = (activo) => `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+    activo ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`;
+const CHIP = 'text-[11px] font-bold px-2.5 py-1 rounded-full border';
 
 // originArea: la pestaña "En Viaje" de Entrega de pedidos pasa 'LOGISTICA_ENCOMIENDAS' y arranca
 // filtrando encomiendas; desde Logística llega sin ese prop y arranca en Todos.
-const TransportView = ({ originArea } = {}) => {
+// areaFilter (23/10): el área elegida en el tablero de Logística. Con un área, solo lo que salió de
+// ella o va hacia ella, con una etiqueta en cada tarjeta; con 'TODOS' (o sin área), todo como antes.
+const TransportView = ({ originArea, areaFilter } = {}) => {
+    const area = areaFilter && areaFilter !== 'TODOS' ? areaFilter : null;
     const [transports, setTransports] = useState([]);
     const [loading, setLoading] = useState(false);
     const [searchTerm, setSearchTerm] = useState('');
@@ -36,6 +51,7 @@ const TransportView = ({ originArea } = {}) => {
                 tipo: filterTipo !== 'TODOS' ? filterTipo : undefined,
                 estado: filterStatus === 'ACTIVE' ? 'ACTIVOS' : undefined,
                 q: busqueda || undefined,
+                area: area || undefined,
             });
             if (pedido === pedidoRef.current) setTransports(data);
         } catch (error) {
@@ -44,7 +60,7 @@ const TransportView = ({ originArea } = {}) => {
         } finally {
             if (pedido === pedidoRef.current) setLoading(false);
         }
-    }, [filterTipo, filterStatus, busqueda]);
+    }, [filterTipo, filterStatus, busqueda, area]);
 
     useEffect(() => {
         loadData();
@@ -111,7 +127,7 @@ const TransportView = ({ originArea } = {}) => {
                 await logisticsService.confirmDeliveryWithProof(modalData.transport.CodigoRemito, formData);
             }
 
-            toast.success('Entregas procesadas con éxito ✅');
+            toast.success('Entregas procesadas con éxito');
             setIsModalOpen(false);
             loadData();
         } catch (error) {
@@ -265,112 +281,132 @@ const TransportView = ({ originArea } = {}) => {
     };
 
     return (
-        <div className="p-4 md:p-6 h-full overflow-y-auto bg-slate-50/50">
+        <div className="p-3 md:p-6 h-full overflow-y-auto bg-slate-50 text-zinc-800">
             {/* Header */}
-            <div className="flex flex-col gap-3 mb-6 sm:flex-row sm:items-center sm:justify-between">
-                <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-xl bg-brand-cyan/10 flex items-center justify-center">
-                        <Truck size={20} className="text-brand-cyan" />
-                    </div>
-                    <div>
-                        <h2 className="text-xl font-black text-slate-800">Transporte en Curso</h2>
-                        <p className="text-slate-500 text-sm">Mercadería en poder de transportistas</p>
+            <div className="flex flex-col gap-3 mb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-3 min-w-0">
+                    <Truck size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <h2 className="text-lg font-black text-zinc-800">Transporte en Curso</h2>
+                        <p className="text-sm text-zinc-400">Mercadería en poder de transportistas</p>
                     </div>
                 </div>
                 <div className="flex items-center gap-2 flex-wrap">
-                    <div className="bg-slate-100 p-1 rounded-lg flex text-sm font-bold">
-                        <button onClick={() => setFilterStatus('ACTIVE')} className={`px-3 py-1.5 rounded transition-all ${filterStatus === 'ACTIVE' ? 'bg-white shadow text-brand-cyan' : 'text-slate-500'}`}>En Viaje</button>
-                        <button onClick={() => setFilterStatus('ALL')} className={`px-3 py-1.5 rounded transition-all ${filterStatus === 'ALL' ? 'bg-white shadow text-brand-cyan' : 'text-slate-500'}`}>Todos</button>
+                    <div className={SEGMENTADO}>
+                        <button onClick={() => setFilterStatus('ACTIVE')} className={segmento(filterStatus === 'ACTIVE')}>En Viaje</button>
+                        <button onClick={() => setFilterStatus('ALL')} className={segmento(filterStatus === 'ALL')}>Todos</button>
                     </div>
-                    <div className="bg-slate-100 p-1 rounded-lg flex text-sm font-bold">
-                        <button onClick={() => setFilterTipo('TODOS')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'TODOS' ? 'bg-white shadow text-slate-700' : 'text-slate-500'}`}>Todos</button>
-                        <button onClick={() => setFilterTipo('PRODUCCION')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'PRODUCCION' ? 'bg-white shadow text-indigo-600' : 'text-slate-500'}`}>Producción</button>
-                        <button onClick={() => setFilterTipo('ENCOMIENDA')} className={`px-3 py-1.5 rounded transition-all ${filterTipo === 'ENCOMIENDA' ? 'bg-white shadow text-emerald-600' : 'text-slate-500'}`}>Encomiendas</button>
+                    <div className={SEGMENTADO}>
+                        <button onClick={() => setFilterTipo('TODOS')} className={segmento(filterTipo === 'TODOS')}>Todos</button>
+                        <button onClick={() => setFilterTipo('PRODUCCION')} className={segmento(filterTipo === 'PRODUCCION')}>Producción</button>
+                        <button onClick={() => setFilterTipo('ENCOMIENDA')} className={segmento(filterTipo === 'ENCOMIENDA')}>Encomiendas</button>
                     </div>
-                    <button onClick={loadData} className="p-2 text-brand-cyan hover:bg-brand-cyan/10 rounded-lg">
-                        <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
+                    <button onClick={loadData} className={BTN_SECUNDARIO} title="Actualizar" aria-label="Actualizar">
+                        <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
                     </button>
                 </div>
             </div>
 
             {/* Search */}
-            <div className="mb-6 relative">
-                <Search size={16} className="absolute left-3 top-3 text-slate-400" />
+            <div className="mb-4 relative">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                 <input
                     type="text"
-                    placeholder="Buscar por remito o N° de retiro (ej. 219352 o 27161)..."
-                    className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-200 focus:ring-2 focus:ring-brand-cyan/20 outline-none text-sm"
+                    placeholder="Remito o N° de retiro (ej. 219352)…"
+                    aria-label="Buscar por remito o número de retiro"
+                    className={CAMPO}
                     value={searchTerm}
                     onChange={e => setSearchTerm(e.target.value)}
                 />
             </div>
 
             {/* Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {loading ? (
-                    <div className="col-span-full py-20 flex flex-col items-center gap-2 text-slate-400">
-                        <Loader2 className="animate-spin" />
-                        <span>Cargando datos...</span>
+                    <div className={`${CARD} col-span-full py-16 flex flex-col items-center justify-center gap-3`}>
+                        <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                        <span className="text-sm text-zinc-400">Cargando datos...</span>
                     </div>
                 ) : transports.length === 0 ? (
-                    <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                        <Navigation size={40} className="text-slate-300 mb-3 mx-auto" />
-                        <p className="text-slate-500 font-medium">No hay vehículos registrados con este filtro.</p>
+                    <div className={`${CARD} col-span-full py-16 px-4 flex flex-col items-center justify-center gap-2 text-center`}>
+                        <Navigation size={40} className="text-zinc-200" />
+                        <p className="text-zinc-400 font-medium">
+                            {area ? `Nada en viaje que salga de ${area} o vaya hacia ${area} con este filtro.` : 'No hay vehículos registrados con este filtro.'}
+                        </p>
                     </div>
                 ) : (
                     transports.map(t => (
                         <div
                             key={t.EnvioID}
-                            className={`bg-white rounded-xl shadow-sm border p-4 hover:shadow-md transition-shadow
-                                ${t.Estado.includes('RECIBIDO') ? 'border-slate-200 opacity-75' : 'border-brand-cyan/20'}`}
+                            className={`${CARD} p-4 flex flex-col gap-3 hover:border-zinc-300 transition-colors
+                                ${t.Estado.includes('RECIBIDO') ? 'opacity-75' : ''}`}
                         >
-                            {/* Top row: código + badge */}
-                            <div className="flex items-start gap-3 mb-3">
-                                <Truck size={20} className="text-brand-cyan/30 mt-0.5 shrink-0" />
-                                <div className="flex-1 min-w-0">
-                                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                                        <span className="font-black text-base text-brand-cyan bg-brand-cyan/5 px-2 py-0.5 rounded border border-brand-cyan/20">
-                                            {t.CodigoRemito}
-                                        </span>
-                                        <span className={`text-xs font-bold px-2 py-0.5 rounded border uppercase
-                                            ${t.Estado === 'ESPERANDO_RETIRO' ? 'bg-amber-50 text-amber-600 border-amber-200' :
-                                                t.Estado.includes('RECIBIDO') ? 'bg-slate-100 text-slate-500 border-slate-200' :
-                                                    'bg-emerald-50 text-emerald-600 border-emerald-100'}`}>
-                                            {t.Estado.replace(/_/g, ' ')}
-                                        </span>
-                                    </div>
-                                    <div className="text-sm text-slate-700 font-medium truncate flex items-center gap-1.5">
-                                        <Tag size={13} className="text-slate-400 shrink-0" />
-                                        {t.Observaciones}
-                                    </div>
-                                    <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1">
+                            {/* Código y estado */}
+                            <div className="flex items-start justify-between gap-2">
+                                <div className="flex items-center gap-2 min-w-0">
+                                    <Truck size={18} className="text-brand-cyan shrink-0" />
+                                    <span className="font-black text-zinc-800 tracking-tight font-mono truncate">{t.CodigoRemito}</span>
+                                </div>
+                                <span className={`${CHIP} uppercase shrink-0
+                                    ${t.Estado === 'ESPERANDO_RETIRO' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                                        t.Estado.includes('RECIBIDO') ? 'bg-zinc-100 text-zinc-500 border-zinc-200' :
+                                            'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                    {t.Estado.replace(/_/g, ' ')}
+                                </span>
+                            </div>
+
+                            {area && (
+                                <span className={`${CHIP} self-start inline-flex items-center gap-1 bg-zinc-50 text-zinc-600 border-zinc-200`}>
+                                    {String(t.AreaOrigenID || '').trim().toUpperCase() === area.toUpperCase()
+                                        ? <><ArrowUpRight size={12} className="text-brand-cyan" /> Enviado por tu sector</>
+                                        : <><ArrowDownLeft size={12} className="text-brand-cyan" /> Viene a tu sector</>}
+                                </span>
+                            )}
+
+                            {t.Observaciones && (
+                                <p className="text-sm font-bold text-zinc-800 leading-snug line-clamp-2" title={t.Observaciones}>{t.Observaciones}</p>
+                            )}
+
+                            {/* Datos con rótulo */}
+                            <dl className="grid grid-cols-[1fr_auto_1fr_auto] items-end gap-x-2 gap-y-1 rounded-xl bg-zinc-50 border border-zinc-100 px-3 py-2.5 text-xs">
+                                <div className="min-w-0">
+                                    <dt className="text-[10px] font-black uppercase tracking-wide text-zinc-400">Origen</dt>
+                                    <dd className="font-bold text-zinc-700 truncate" title={t.AreaOrigenID || ''}>{(t.AreaOrigenID || '—').replace(/_/g, ' ')}</dd>
+                                </div>
+                                <ArrowRight size={13} className="text-brand-cyan shrink-0 mb-0.5" />
+                                <div className="min-w-0">
+                                    <dt className="text-[10px] font-black uppercase tracking-wide text-zinc-400">Destino</dt>
+                                    <dd className="font-bold text-zinc-700 truncate" title={t.AreaDestinoID || ''}>{(t.AreaDestinoID || '—').replace(/_/g, ' ')}</dd>
+                                </div>
+                                <div className="text-right pl-2 border-l border-zinc-200">
+                                    <dt className="text-[10px] font-black uppercase tracking-wide text-zinc-400">Bultos</dt>
+                                    <dd className="font-black text-zinc-800 tabular-nums">{t.TotalBultos}</dd>
+                                </div>
+                            </dl>
+
+                            {/* Pie: cuándo y qué tipo, y las acciones */}
+                            <div className="flex items-center justify-between gap-2 flex-wrap mt-auto">
+                                <div className="flex items-center gap-2 min-w-0 text-[11px] text-zinc-400">
+                                    <span className="inline-flex items-center gap-1 tabular-nums">
                                         <Clock size={11} className="shrink-0" />
                                         {new Date(t.Fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
-                                        &nbsp;·&nbsp;{t.TotalBultos} bulto{t.TotalBultos !== 1 ? 's' : ''}
-                                    </div>
-                                    <div className="mt-1.5 flex items-center gap-2">
-                                        {(t.AreaOrigenID || t.AreaDestinoID) && (
-                                            <div className="text-xs font-bold flex items-center gap-1 text-slate-600">
-                                                <span className="uppercase bg-slate-100 px-1.5 py-0.5 rounded">{t.AreaOrigenID || '?'}</span>
-                                                <i className="fa-solid fa-arrow-right text-slate-400 text-[10px]"></i>
-                                                <span className="uppercase bg-slate-100 px-1.5 py-0.5 rounded">{t.AreaDestinoID || '?'}</span>
-                                            </div>
-                                        )}
-                                        {t.TipoEnvio && (
-                                            <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded uppercase ${t.TipoEnvio === 'ENCOMIENDA' ? 'bg-emerald-100 text-emerald-700' : 'bg-indigo-100 text-indigo-700'}`}>
-                                                {t.TipoEnvio}
-                                            </span>
-                                        )}
-                                    </div>
+                                    </span>
+                                    {t.TipoEnvio && (
+                                        <span className={`${CHIP} uppercase ${t.TipoEnvio === 'ENCOMIENDA' ? 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20' : 'bg-zinc-100 text-zinc-600 border-zinc-200'}`}>
+                                            {t.TipoEnvio}
+                                        </span>
+                                    )}
                                 </div>
-                            </div>
-                            <div className="flex gap-2 border-t pt-4">
-                                <button onClick={() => handlePrint(t)} className="flex-1 text-xs font-bold py-2 bg-slate-50 text-slate-600 rounded-xl hover:bg-slate-100 flex items-center justify-center gap-2">
-                                    <Printer size={14} /> Reporte
-                                </button>
-                                <button onClick={() => openUploadModal(t)} className="flex-1 text-xs font-bold py-2 bg-brand-cyan/10 text-brand-cyan rounded-xl hover:bg-brand-cyan/20 flex items-center justify-center gap-2">
-                                    <ListChecks size={14} /> Entregas
-                                </button>
+                                <div className="flex items-center gap-2">
+                                    <button type="button" onClick={() => handlePrint(t)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition-colors">
+                                        <Printer size={13} className="text-brand-cyan" /> Reporte
+                                    </button>
+                                    <button type="button" onClick={() => openUploadModal(t)}
+                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-cyan text-white text-xs font-bold hover:bg-brand-cyan/90 transition-colors">
+                                        <ListChecks size={13} /> Entregas
+                                    </button>
+                                </div>
                             </div>
                         </div>
                     ))
@@ -384,27 +420,27 @@ const TransportView = ({ originArea } = {}) => {
                     <div
                         className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200"
                     >
-                        <div className="absolute inset-0 bg-slate-900/80" onClick={() => setIsModalOpen(false)} />
+                        <div className="absolute inset-0 bg-black/40" onClick={() => setIsModalOpen(false)} />
                         <div
-                            className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[90vh] animate-in fade-in slide-in-from-bottom-8 duration-250"
+                            className="relative bg-white rounded-t-2xl sm:rounded-2xl shadow-2xl w-full max-w-3xl overflow-hidden flex flex-col max-h-[92vh] sm:max-h-[90vh] animate-in fade-in slide-in-from-bottom-8 duration-250 text-zinc-800"
                         >
 
                         {/* Header */}
-                        <div className="bg-gradient-to-r from-brand-cyan to-[#005080] px-5 py-4 flex justify-between items-center shrink-0">
-                            <div className="flex items-center gap-3">
-                                <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center">
-                                    <PackageCheck size={18} className="text-white" />
-                                </div>
-                                <div>
-                                    <p className="font-black text-white text-base leading-tight">Gestionar Entregas</p>
-                                    <p className="text-white/70 text-xs font-medium">{modalData.transport.CodigoRemito}</p>
+                        <div className="px-5 py-4 border-b border-zinc-200 flex justify-between items-center gap-3 shrink-0">
+                            <div className="flex items-center gap-3 min-w-0">
+                                <PackageCheck size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                                <div className="min-w-0">
+                                    <p className="text-lg font-black text-zinc-800 leading-tight">Gestionar Entregas</p>
+                                    <p className="text-sm text-zinc-400 font-mono truncate">{modalData.transport.CodigoRemito}</p>
                                 </div>
                             </div>
                             <button
                                 onClick={() => setIsModalOpen(false)}
-                                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/10 hover:bg-white/25 text-white transition-colors"
+                                className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors"
+                                title="Cerrar"
+                                aria-label="Cerrar"
                             >
-                                <X size={16} />
+                                <X size={18} />
                             </button>
                         </div>
 
@@ -417,23 +453,23 @@ const TransportView = ({ originArea } = {}) => {
                                         const prevPaths = Array.from(new Set(modalData.items.filter(i => i.ComprobantePath).map(i => i.ComprobantePath)));
                                         if (prevPaths.length === 0) return null;
                                         return (
-                                            <div className="mb-5 bg-brand-cyan/5 p-4 rounded-xl border border-brand-cyan/20">
-                                                <h4 className="font-bold text-brand-cyan text-xs uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                                                    <History size={13} /> Comprobantes ya subidos en este remito
+                                            <div className="mb-5 bg-zinc-50 p-4 rounded-xl border border-zinc-200">
+                                                <h4 className="text-[11px] font-black text-zinc-400 uppercase tracking-wide mb-3 flex items-center gap-1.5">
+                                                    <History size={14} className="text-brand-cyan shrink-0" /> Comprobantes ya subidos en este remito
                                                 </h4>
                                                 <div className="flex flex-wrap gap-2">
                                                     {prevPaths.map(path => {
                                                         const fileName = path.split('/').pop();
                                                         const bultosAsociados = modalData.items.filter(i => i.ComprobantePath === path);
                                                         return (
-                                                            <div key={path} className="bg-white p-2.5 flex-1 min-w-[220px] rounded-lg border border-brand-cyan/20 shadow-sm">
+                                                            <div key={path} className="bg-white p-2.5 flex-1 min-w-[220px] rounded-xl border border-zinc-200">
                                                                 <a href={import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH ? `${import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH}/${path.split('/').pop()}` : `${import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : ''}${path}`} target="_blank" rel="noreferrer"
-                                                                    className="text-xs font-bold text-brand-cyan hover:opacity-80 truncate flex items-center gap-1 bg-brand-cyan/5 p-1.5 rounded mb-2" title={fileName}>
-                                                                    <FileDown size={12} /> {fileName}
+                                                                    className="text-xs font-bold text-brand-cyan hover:underline truncate flex items-center gap-1.5 bg-zinc-50 border border-zinc-100 p-1.5 rounded-lg mb-2" title={fileName}>
+                                                                    <FileDown size={13} className="shrink-0" /> {fileName}
                                                                 </a>
                                                                 <div className="flex flex-wrap gap-1">
                                                                     {bultosAsociados.map(b => (
-                                                                        <span key={b.BultoID} className="bg-brand-cyan/10 border border-brand-cyan/20 text-brand-cyan text-[10px] px-1.5 py-0.5 rounded font-bold">{b.RetiroAsociado || b.CodigoEtiqueta}</span>
+                                                                        <span key={b.BultoID} className={`${CHIP} bg-zinc-100 text-zinc-600 border-zinc-200`}>{b.RetiroAsociado || b.CodigoEtiqueta}</span>
                                                                     ))}
                                                                 </div>
                                                             </div>
@@ -446,8 +482,8 @@ const TransportView = ({ originArea } = {}) => {
 
                                     {/* Instrucción */}
                                     <div className="mb-4">
-                                        <h4 className="font-black text-slate-800 text-base">Bultos de esta tanda</h4>
-                                        <p className="text-sm text-slate-500 mt-0.5">Seleccioná los bultos entregados. Doble click para adjuntar foto de comprobante.</p>
+                                        <h4 className="font-black text-zinc-800 text-base">Bultos de esta tanda</h4>
+                                        <p className="text-sm text-zinc-400 mt-0.5">Seleccioná los bultos entregados. Doble click para adjuntar foto de comprobante.</p>
                                     </div>
 
                                     {/* HIDDEN CAMERA INPUT */}
@@ -468,14 +504,14 @@ const TransportView = ({ originArea } = {}) => {
                                             if (isDelivered) {
                                                 const fname = item.ComprobantePath ? item.ComprobantePath.split('/').pop() : 'Sin archivo';
                                                 return (
-                                                    <div key={item.BultoID} className="flex flex-col justify-between p-4 rounded-xl border border-slate-200 bg-slate-50 opacity-60">
+                                                    <div key={item.BultoID} className="flex flex-col justify-between p-4 rounded-xl border border-zinc-200 bg-zinc-50 opacity-60">
                                                         <div>
-                                                            <p className="font-bold text-slate-500 text-sm">{item.RetiroAsociado || item.CodigoEtiqueta}</p>
-                                                            <p className="text-xs text-slate-400">{item.Descripcion || 'Sin desc'}</p>
+                                                            <p className="font-bold text-zinc-500 text-sm">{item.RetiroAsociado || item.CodigoEtiqueta}</p>
+                                                            <p className="text-xs text-zinc-400">{item.Descripcion || 'Sin desc'}</p>
                                                         </div>
-                                                        <div className="flex flex-col items-start mt-2 gap-1">
-                                                            <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-2 py-0.5 rounded-full uppercase">Ya Entregado</span>
-                                                            <span className="text-[11px] text-slate-400 font-bold break-all flex items-center gap-1" title={fname}><File size={11} /> {fname}</span>
+                                                        <div className="flex flex-col items-start mt-2 gap-1.5">
+                                                            <span className={`${CHIP} bg-emerald-50 text-emerald-700 border-emerald-200 uppercase`}>Ya Entregado</span>
+                                                            <span className="text-[11px] text-zinc-400 font-bold break-all flex items-center gap-1" title={fname}><File size={12} className="shrink-0 text-brand-cyan" /> {fname}</span>
                                                         </div>
                                                     </div>
                                                 );
@@ -492,8 +528,8 @@ const TransportView = ({ originArea } = {}) => {
                                                     }}
                                                     className={`flex flex-col justify-between p-4 rounded-xl border transition-all cursor-pointer
                                                         ${map.checked
-                                                            ? 'border-brand-cyan bg-brand-cyan/5 shadow-md ring-1 ring-brand-cyan/30'
-                                                            : 'bg-white border-slate-200 hover:border-brand-cyan/30 shadow-sm'}`}
+                                                            ? 'border-brand-cyan bg-brand-cyan/5 ring-1 ring-brand-cyan/30'
+                                                            : 'bg-white border-zinc-200 hover:border-zinc-300'}`}
                                                 >
                                                     <label className="flex items-center gap-3 cursor-pointer">
                                                         <input
@@ -506,22 +542,22 @@ const TransportView = ({ originArea } = {}) => {
                                                                     [item.BultoID]: { ...map, checked: isChecked }
                                                                 }));
                                                             }}
-                                                            className="w-5 h-5 rounded accent-brand-cyan border-slate-300"
+                                                            className="w-5 h-5 shrink-0 rounded accent-brand-cyan border-zinc-300"
                                                         />
-                                                        <div>
-                                                            <p className={`font-black text-base leading-tight ${map.checked ? 'text-brand-cyan' : 'text-slate-700'}`}>{item.RetiroAsociado || item.CodigoEtiqueta}</p>
-                                                            <p className="text-xs text-slate-500">{item.Descripcion || 'Sin desc'}</p>
+                                                        <div className="min-w-0">
+                                                            <p className={`font-black text-base leading-tight ${map.checked ? 'text-brand-cyan' : 'text-zinc-800'}`}>{item.RetiroAsociado || item.CodigoEtiqueta}</p>
+                                                            <p className="text-xs text-zinc-400">{item.Descripcion || 'Sin desc'}</p>
                                                         </div>
                                                     </label>
 
-                                                    <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between gap-2">
+                                                    <div className="mt-3 pt-3 border-t border-zinc-100 flex items-center justify-between gap-2">
                                                         {map.file ? (
                                                             <div className="flex items-center gap-1.5 min-w-0">
                                                                 <FileImage size={14} className="text-brand-cyan shrink-0" />
                                                                 <span className="text-xs font-bold text-brand-cyan truncate">{map.file.name}</span>
                                                             </div>
                                                         ) : (
-                                                            <span className="text-xs text-slate-400">Sin foto adjunta</span>
+                                                            <span className="text-xs text-zinc-400">Sin foto adjunta</span>
                                                         )}
                                                         <button
                                                             onClick={(e) => {
@@ -529,12 +565,12 @@ const TransportView = ({ originArea } = {}) => {
                                                                 setActiveBultoId(item.BultoID);
                                                                 hiddenFileInputRef.current?.click();
                                                             }}
-                                                            className={`shrink-0 text-xs px-3 py-1.5 rounded-lg font-bold transition-colors flex items-center gap-1.5
+                                                            className={`shrink-0 text-xs px-3 py-1.5 rounded-lg border font-bold transition-colors flex items-center gap-1.5
                                                                 ${map.file
-                                                                    ? 'bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan'
-                                                                    : 'bg-slate-100 hover:bg-slate-200 text-slate-600'}}`}
+                                                                    ? 'bg-white border-brand-cyan/30 text-brand-cyan hover:bg-brand-cyan/5'
+                                                                    : 'bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50'}`}
                                                         >
-                                                            {map.file ? <RefreshCw size={12} /> : <Camera size={12} />}
+                                                            {map.file ? <RefreshCw size={13} /> : <Camera size={13} />}
                                                             {map.file ? 'Cambiar' : 'Foto'}
                                                         </button>
                                                     </div>
@@ -546,16 +582,16 @@ const TransportView = ({ originArea } = {}) => {
                         </div>
 
                         {/* Footer */}
-                        <div className="p-4 border-t bg-slate-50 flex gap-3 shrink-0">
-                            <button onClick={() => setIsModalOpen(false)} className="flex-1 sm:flex-none px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 text-sm transition-colors border border-slate-200">
+                        <div className="p-4 border-t border-zinc-200 bg-white flex gap-3 shrink-0">
+                            <button onClick={() => setIsModalOpen(false)} className={`${BTN_SECUNDARIO} flex-1 sm:flex-none sm:px-5`}>
                                 Cancelar
                             </button>
                             <button
                                 onClick={handleConfirmDelivery}
                                 disabled={Object.values(bultoMappings).filter(m => m.checked).length === 0 || loading}
-                                className="flex-1 px-6 py-2.5 rounded-xl font-black text-white bg-brand-cyan hover:bg-[#005080] disabled:opacity-50 flex items-center justify-center gap-2 text-sm transition-colors shadow-md"
+                                className={`${BTN_PRINCIPAL} flex-1`}
                             >
-                                {loading && <Loader2 size={14} className="animate-spin" />}
+                                {loading && <Loader2 size={15} className="animate-spin" />}
                                 Procesar {Object.values(bultoMappings).filter(m => m.checked).length > 0 ? `(${Object.values(bultoMappings).filter(m => m.checked).length})` : ''}
                             </button>
                         </div>

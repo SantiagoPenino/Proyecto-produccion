@@ -1,5 +1,21 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import {
+    Activity, RotateCw, ClipboardList, Inbox, Flame, TriangleAlert, RefreshCw, CircleCheck, Gauge, Ruler,
+    Loader2, SlidersHorizontal, FileDown, Info, ChartLine, Table2, X,
+} from 'lucide-react';
 import api from '../../services/apiClient';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
+
+// Estética nueva (22/10/2026, como Panel de Control, Servicio Técnico y Configurar Productos): fondo claro,
+// tarjetas blancas con borde, íconos de Lucide en brand-cyan sin fondo, sin emojis. El color queda para lo
+// que significa algo (estados, prioridades, turnos); las barras de un mismo listado van en brand-cyan.
+const CARD = 'bg-white rounded-2xl border border-zinc-200 p-4 md:p-5';
+const TITULO = 'text-base font-black text-zinc-800';
+const BTN_SECUNDARIO = 'inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors';
+const BTN_PRINCIPAL = 'inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+const CAMPO = 'border border-zinc-200 rounded-xl px-3 py-2 text-sm bg-white focus:outline-none focus:border-brand-cyan';
+const ROTULO = 'text-[11px] font-black text-zinc-400 uppercase tracking-wide shrink-0';
 
 // ─── Paleta de colores ────────────────────────────────────────────────────────
 const COLORS = {
@@ -7,6 +23,7 @@ const COLORS = {
     red:     '#ef4444', sky:     '#0ea5e9', violet: '#8b5cf6',
     pink:    '#ec4899', cyan:    '#06b6d4', lime:   '#84cc16',
     orange:  '#f97316',
+    brand:   '#006E97', brandClaro: '#67e8f9',   // turno 1 / turno 2 (como el Panel de Control)
 };
 const AREA_COLORS = ['#6366f1','#10b981','#f59e0b','#ef4444','#0ea5e9','#8b5cf6','#ec4899','#06b6d4','#84cc16','#f97316'];
 const ESTADO_COLORS = {
@@ -23,7 +40,7 @@ const PRIORIDAD_COLORS = {
     'Normal': '#3b82f6',
 };
 
-const colorFor = (label, map) => map[label] || COLORS.indigo;
+const colorFor = (label, map) => map[label] || COLORS.brand;
 const fmt = n => (n == null ? '—' : Number(n).toLocaleString('es-UY'));
 const fmtM = n => (n == null ? '—' : `${Number(n).toLocaleString('es-UY', { maximumFractionDigits: 1 })} m`);
 
@@ -47,7 +64,7 @@ function DonutChart({ data = [], size = 100, stroke = 18, label }) {
                 ? <circle cx={cx} cy={cy} r={r} fill="none" stroke="#e2e8f0" strokeWidth={stroke} />
                 : segs.map((seg, i) => (
                     <circle key={i} cx={cx} cy={cy} r={r} fill="none"
-                        stroke={seg.color || COLORS.indigo}
+                        stroke={seg.color || COLORS.brand}
                         strokeWidth={stroke}
                         strokeDasharray={`${seg.len} ${C - seg.len}`}
                         strokeDashoffset={-seg.offset}
@@ -75,7 +92,7 @@ function HBar({ value, max, color, height = 8 }) {
     return (
         <div className="w-full rounded-full overflow-hidden" style={{ height, background: '#f1f5f9' }}>
             <div className="h-full rounded-full transition-all duration-700"
-                 style={{ width: `${pct}%`, background: color || COLORS.indigo }} />
+                 style={{ width: `${pct}%`, background: color || COLORS.brand }} />
         </div>
     );
 }
@@ -83,7 +100,7 @@ function HBar({ value, max, color, height = 8 }) {
 // ─── SVG: Line Chart con área ─────────────────────────────────────────────────
 function LineChart({ data = [] }) {
     if (!data.length) return (
-        <div className="flex items-center justify-center h-28 text-slate-400 text-sm">Sin datos en el rango</div>
+        <div className="flex items-center justify-center h-28 text-zinc-400 text-sm">Sin datos en el rango</div>
     );
     const W = 520, H = 130;
     const pad = { t: 12, r: 12, b: 28, l: 36 };
@@ -109,15 +126,15 @@ function LineChart({ data = [] }) {
                     </text>
                 </g>
             ))}
-            <path d={fillStr('insertadas')} fill="rgba(99,102,241,0.07)" />
+            <path d={fillStr('insertadas')} fill="rgba(0,110,151,0.07)" />
             <path d={fillStr('completadas')} fill="rgba(16,185,129,0.07)" />
             {n > 1 && <>
-                <path d={pathStr('insertadas')} fill="none" stroke={COLORS.indigo} strokeWidth={2} strokeLinejoin="round" />
+                <path d={pathStr('insertadas')} fill="none" stroke={COLORS.brand} strokeWidth={2} strokeLinejoin="round" />
                 <path d={pathStr('completadas')} fill="none" stroke={COLORS.emerald} strokeWidth={2} strokeLinejoin="round" strokeDasharray="5 3" />
             </>}
             {data.map((d, i) => (
                 <g key={i}>
-                    <circle cx={X(i)} cy={Y(d.insertadas || 0)} r={2.5} fill={COLORS.indigo} />
+                    <circle cx={X(i)} cy={Y(d.insertadas || 0)} r={2.5} fill={COLORS.brand} />
                     <circle cx={X(i)} cy={Y(d.completadas || 0)} r={2.5} fill={COLORS.emerald} />
                     {i % skipLabel === 0 && (
                         <text x={X(i)} y={H - 4} textAnchor="middle" fontSize={8} fill="#94a3b8">
@@ -214,20 +231,20 @@ function HourLineChart({ data = [] }) {
                 {/* T1/T2 divider */}
                 <line x1={cx(14)} x2={cx(14)} y1={PT} y2={H-PB}
                       stroke="#f59e0b" strokeWidth="1" strokeDasharray="3,3" />
-                {mkArea(t1pts, '#6366f1')}
-                {mkArea(t2pts, '#10b981')}
+                {mkArea(t1pts, COLORS.brand)}
+                {mkArea(t2pts, '#22d3ee')}
                 {/* x-axis ticks */}
                 {ticks.map(h => (
                     <text key={h} x={cx(h)} y={H-2} textAnchor="middle"
                           fontSize="7" fill="#94a3b8">{String(h).padStart(2,'0')}</text>
                 ))}
             </svg>
-            <div className="flex gap-4 mt-1 text-[10px] text-slate-500">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 mt-2 text-[11px] text-zinc-500">
                 <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-0.5 inline-block rounded" style={{background:'#6366f1'}} /> Turno 1 (00-14h)
+                    <span className="w-3 h-1 inline-block rounded" style={{background: COLORS.brand}} /> Turno 1 (00 a 14 h)
                 </span>
                 <span className="flex items-center gap-1.5">
-                    <span className="w-3 h-0.5 inline-block rounded" style={{background:'#10b981'}} /> Turno 2 (14-24h)
+                    <span className="w-3 h-1 inline-block rounded" style={{background: '#22d3ee'}} /> Turno 2 (14 a 24 h)
                 </span>
             </div>
         </div>
@@ -235,23 +252,26 @@ function HourLineChart({ data = [] }) {
 }
 
 // ─── KPI Card ─────────────────────────────────────────────────────────────────
-function KpiCard({ label, value, metros, sub, icon, accent, trend }) {
+// tono: color del número secundario (metros) y del principal cuando significa algo (falla, urgente...).
+const TONO_KPI = {
+    neutro: { valor: 'text-zinc-800', metros: 'text-zinc-500' },
+    marca:  { valor: 'text-zinc-800', metros: 'text-brand-cyan' },
+    ambar:  { valor: 'text-amber-600', metros: 'text-amber-600' },
+    rojo:   { valor: 'text-rose-600', metros: 'text-rose-600' },
+    violeta:{ valor: 'text-violet-600', metros: 'text-violet-600' },
+    verde:  { valor: 'text-emerald-600', metros: 'text-emerald-600' },
+};
+function KpiCard({ label, value, metros, sub, Icono, tono = 'marca' }) {
+    const t = TONO_KPI[tono] || TONO_KPI.marca;
     return (
-        <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-4 flex flex-col gap-0.5 min-w-0">
-            <div className="flex items-center justify-between mb-1">
-                <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider truncate">{label}</span>
-                <span className="text-lg" style={{ color: accent }}>{icon}</span>
+        <div className="bg-white rounded-2xl border border-zinc-200 px-4 py-3 flex flex-col min-w-0">
+            <div className="flex items-center gap-1.5 text-[11px] font-black text-zinc-400 uppercase tracking-wide min-w-0">
+                {Icono && <Icono size={14} className="shrink-0 text-brand-cyan" aria-hidden="true" />}
+                <span className="truncate">{label}</span>
             </div>
-            <div className="text-3xl font-black text-slate-900 tabular-nums leading-none">{value}</div>
-            {metros != null && (
-                <div className="text-sm font-bold tabular-nums mt-0.5" style={{ color: accent }}>{metros}</div>
-            )}
-            {sub && <div className="text-xs font-semibold text-slate-800 mt-0.5">{sub}</div>}
-            {trend != null && (
-                <div className={`text-xs font-semibold mt-1 ${trend >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-                    {trend >= 0 ? '▲' : '▼'} {Math.abs(trend)}%
-                </div>
-            )}
+            <div className={`mt-1 text-2xl md:text-3xl font-black tabular-nums leading-tight ${t.valor}`}>{value}</div>
+            {metros != null && <div className={`text-sm font-bold tabular-nums ${t.metros}`}>{metros}</div>}
+            {sub && <div className="text-xs text-zinc-500 mt-0.5">{sub}</div>}
         </div>
     );
 }
@@ -267,28 +287,26 @@ function StateBadge({ estado }) {
     );
 }
 
-// ─── Medal icon ───────────────────────────────────────────────────────────────
-const MEDALS = ['🥇','🥈','🥉'];
 
 // ─── Spinner ──────────────────────────────────────────────────────────────────
 function Spinner() {
     return (
         <div className="flex items-center justify-center p-8">
-            <div className="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin" />
+            <Loader2 size={28} className="animate-spin text-brand-cyan" aria-label="Cargando" />
         </div>
     );
 }
 
 // ─── Section Header ───────────────────────────────────────────────────────────
-function SectionHeader({ title, sub, accent = '#6366f1', children }) {
+function SectionHeader({ title, sub, Icono, children }) {
     return (
-        <div className="flex items-center justify-between flex-wrap gap-2 mb-5">
-            <div>
-                <div className="flex items-center gap-2">
-                    <div className="w-1 h-6 rounded-full" style={{ background: accent }} />
-                    <h2 className="text-xl font-black text-slate-900 uppercase tracking-tight">{title}</h2>
+        <div className="flex items-center justify-between flex-wrap gap-3 mb-4">
+            <div className="flex items-center gap-2.5 min-w-0">
+                {Icono && <Icono size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />}
+                <div className="min-w-0">
+                    <h2 className="text-lg font-black text-zinc-800 uppercase tracking-tight">{title}</h2>
+                    {sub && <p className="text-xs text-zinc-400">{sub}</p>}
                 </div>
-                {sub && <p className="text-xs text-slate-500 mt-0.5 ml-3">{sub}</p>}
             </div>
             {children}
         </div>
@@ -296,21 +314,23 @@ function SectionHeader({ title, sub, accent = '#6366f1', children }) {
 }
 
 // ─── Filter Chip ──────────────────────────────────────────────────────────────
-function Chip({ label, active, onClick, color }) {
+// Pestañas como en Servicio Técnico: la elegida en negro. En el celular la fila scrollea de costado.
+function Chip({ label, active, onClick }) {
     return (
         <button
+            type="button"
             onClick={onClick}
-            className={`px-3 py-1.5 rounded-full text-xs font-semibold border transition-all duration-150 ${
+            className={`shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${
                 active
-                    ? 'text-white shadow-sm border-transparent'
-                    : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400'
+                    ? 'bg-zinc-900 text-white border-zinc-900'
+                    : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400'
             }`}
-            style={active ? { background: color || COLORS.indigo, borderColor: color || COLORS.indigo } : {}}
         >
             {label}
         </button>
     );
 }
+const FILA_CHIPS = 'flex items-center gap-2 overflow-x-auto pb-1 -mx-3 px-3 sm:mx-0 sm:px-0 sm:flex-wrap sm:overflow-visible';
 
 // =============================================================================
 // COMPONENTE PRINCIPAL
@@ -443,36 +463,27 @@ export default function ProductionDashboard() {
     const turnoMax = Math.max(...turnoData.map(t => t.totalOrdenes || 0), 1);
 
     return (
-        <div className="min-h-screen bg-slate-50 font-sans text-slate-800">
+        <div className="p-3 md:p-6 font-sans text-zinc-800">
+            <div className="max-w-screen-2xl mx-auto space-y-8">
 
-            {/* ── HEADER ─────────────────────────────────────────────────────── */}
-            <div className="bg-gradient-to-r from-slate-900 to-indigo-900 text-white px-6 py-5">
-                <div className="max-w-screen-2xl mx-auto flex items-center justify-between flex-wrap gap-3">
-                    <div>
-                        <h1 className="text-2xl font-black tracking-tight uppercase">
-                            Panel de Producción Avanzado
-                        </h1>
-                        <p className="text-slate-400 text-xs mt-0.5">
-                            Producción inteligente · Análisis por área, operador, material y turno
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-3">
-                        {lastRefresh && (
-                            <span className="text-xs text-slate-400">
-                                Actualizado: {lastRefresh.toLocaleTimeString('es-UY')}
-                            </span>
-                        )}
-                        <button
-                            onClick={() => { fetchOverview(); fetchAnalytics(); }}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 border border-white/20 rounded-lg text-xs font-medium transition-all"
-                        >
-                            <i className="fa-solid fa-rotate-right text-xs" /> Actualizar
-                        </button>
+            {/* ── ENCABEZADO ─────────────────────────────────────────────────── */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                    <Activity size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <h1 className="text-2xl font-black text-zinc-800 uppercase tracking-tight">Panel de Producción Avanzado</h1>
+                        <p className="text-sm text-zinc-400">Análisis por área, operador, material y turno</p>
                     </div>
                 </div>
+                <div className="flex items-center gap-3">
+                    {lastRefresh && (
+                        <span className="text-xs text-zinc-400">Actualizado {lastRefresh.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' })}</span>
+                    )}
+                    <button type="button" onClick={() => { fetchOverview(); fetchAnalytics(); }} className={BTN_SECUNDARIO}>
+                        <RotateCw size={15} className={ovLoading || anLoading ? 'animate-spin' : ''} /> Actualizar
+                    </button>
+                </div>
             </div>
-
-            <div className="max-w-screen-2xl mx-auto px-4 py-6 space-y-10">
 
                 {/* ══════════════════════════════════════════════════════════════
                     SECCIÓN 1: ESTADO ACTUAL (tiempo real)
@@ -480,56 +491,49 @@ export default function ProductionDashboard() {
                 <section>
 
                     {/* ── Selector de área ─────────────────────────────────────── */}
-                    <div className="flex flex-wrap items-center gap-2 mb-5">
-                        <span className="text-xs text-slate-500 font-semibold shrink-0">Filtrar área:</span>
-                        <Chip label="Todas" active={areaOv === ''} onClick={() => setAreaOv('')} color={COLORS.indigo} />
+                    <div className={`${FILA_CHIPS} mb-4`}>
+                        <span className={ROTULO}>Área</span>
+                        <Chip label="Todas" active={areaOv === ''} onClick={() => setAreaOv('')} />
                         {areas.map(a => (
                             <Chip key={a.area}
                                   label={a.nombre || a.area}
                                   active={areaOv === a.area}
-                                  onClick={() => setAreaOv(prev => prev === a.area ? '' : a.area)}
-                                  color={COLORS.indigo} />
+                                  onClick={() => setAreaOv(prev => prev === a.area ? '' : a.area)} />
                         ))}
                     </div>
 
                     {ovLoading && !ov ? <Spinner /> : ov && (<>
 
                         {/* ── KPIs strip — 6 tarjetas ───────────────────────────── */}
-                        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
-                            <KpiCard label="Activas"
+                        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-6 gap-3 mb-4">
+                            <KpiCard label="Activas" Icono={ClipboardList}
                                      value={fmt(ov.kpis.totalActivas)}
-                                     metros={fmtM(ov.kpis.metrosTotales)}
-                                     icon="📋" accent={COLORS.indigo} />
-                            <KpiCard label="Ingresadas hoy"
+                                     metros={fmtM(ov.kpis.metrosTotales)} />
+                            <KpiCard label="Ingresadas hoy" Icono={Inbox}
                                      value={fmt(ov.kpis.entraronHoy)}
                                      metros={fmtM(ov.kpis.metrosHoy)}
-                                     sub={`Días anteriores: ${fmt(ov.kpis.entraronAnteriores)}`}
-                                     icon="📥" accent={COLORS.sky} />
-                            <KpiCard label="Urgentes"
+                                     sub={`Días anteriores: ${fmt(ov.kpis.entraronAnteriores)}`} />
+                            <KpiCard label="Urgentes" Icono={Flame} tono="ambar"
                                      value={fmt(ov.kpis.urgentes)}
-                                     metros={fmtM(ov.kpis.metrosUrgentes)}
-                                     icon="🔥" accent={COLORS.amber} />
-                            <KpiCard label="Falla"
+                                     metros={fmtM(ov.kpis.metrosUrgentes)} />
+                            <KpiCard label="Falla" Icono={TriangleAlert} tono="rojo"
                                      value={fmt(ov.kpis.conFalla)}
-                                     metros={fmtM(ov.kpis.metrosFalla)}
-                                     icon="⚠️" accent={COLORS.red} />
-                            <KpiCard label="Reposiciones"
+                                     metros={fmtM(ov.kpis.metrosFalla)} />
+                            <KpiCard label="Reposiciones" Icono={RefreshCw} tono="violeta"
                                      value={fmt(ov.kpis.reposiciones)}
-                                     metros={fmtM(ov.kpis.metrosReposiciones)}
-                                     icon="🔄" accent={COLORS.violet} />
-                            <KpiCard label="Prontas hoy"
+                                     metros={fmtM(ov.kpis.metrosReposiciones)} />
+                            <KpiCard label="Prontas hoy" Icono={CircleCheck} tono="verde"
                                      value={fmt(ov.kpis.prontasHoy)}
-                                     metros={fmtM(ov.kpis.metrosProntas)}
-                                     icon="✅" accent={COLORS.emerald} />
+                                     metros={fmtM(ov.kpis.metrosProntas)} />
                         </div>
 
                         {/* ── Fila 1: Estado en Área (Pendiente) + Pendientes por Prioridad ──── */}
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
-                            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-4 uppercase tracking-wide">
+                            <div className={`lg:col-span-2 ${CARD}`}>
+                                <h3 className={`${TITULO} mb-4`}>
                                     Estado en Área — Pendiente
                                 </h3>
-                                <div className="flex gap-6 items-start">
+                                <div className="flex flex-col md:flex-row gap-5 md:gap-6 items-center md:items-start">
                                     {/* Donut */}
                                     <div className="flex flex-col items-center shrink-0">
                                         <DonutChart data={estadoAreaData} size={160} stroke={26} label="activas" />
@@ -542,8 +546,8 @@ export default function ProductionDashboard() {
                                         const right  = sorted.slice(half);
                                         const totalA = ov.kpis.totalActivas  || 1;
                                         const totalM = ov.kpis.metrosTotales || 1;
-                                        const ROW_CLS = 'grid grid-cols-[1fr_42px_62px_30px_34px] gap-x-1.5 items-center py-1.5 border-b border-slate-50 hover:bg-slate-50 transition-colors';
-                                        const HDR_CLS = 'grid grid-cols-[1fr_42px_62px_30px_34px] gap-x-1.5 text-[9px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-200 pb-1.5 mb-1';
+                                        const ROW_CLS = 'grid grid-cols-[1fr_42px_62px_30px_34px] gap-x-1.5 items-center py-1.5 border-b border-zinc-50 hover:bg-zinc-50 transition-colors';
+                                        const HDR_CLS = 'grid grid-cols-[1fr_42px_62px_30px_34px] gap-x-1.5 text-[9px] font-bold uppercase tracking-wide text-zinc-400 border-b border-zinc-200 pb-1.5 mb-1';
                                         const StateRow = ({ e }) => {
                                             const pctN = Math.round((e.value  / totalA) * 100);
                                             const pctM = Math.round((e.metros / totalM) * 100);
@@ -552,29 +556,29 @@ export default function ProductionDashboard() {
                                                     <div className="flex items-center gap-1.5 min-w-0">
                                                         <span className="w-2 h-2 rounded-full shrink-0" style={{ background: e.color }} />
                                                         <div className="min-w-0">
-                                                            <div className="text-xs font-semibold text-slate-800 truncate">{e.label}</div>
-                                                            <div className="w-full h-1 rounded-full mt-0.5 overflow-hidden bg-slate-100">
+                                                            <div className="text-xs font-semibold text-zinc-800 truncate">{e.label}</div>
+                                                            <div className="w-full h-1 rounded-full mt-0.5 overflow-hidden bg-zinc-100">
                                                                 <div className="h-full rounded-full" style={{ width: `${pctN}%`, background: e.color }} />
                                                             </div>
                                                         </div>
                                                     </div>
                                                     <div className="text-right">
-                                                        <span className="text-sm font-black text-slate-900 tabular-nums">{fmt(e.value)}</span>
+                                                        <span className="text-sm font-black text-zinc-900 tabular-nums">{fmt(e.value)}</span>
                                                     </div>
                                                     <div className="text-right">
-                                                        <span className="text-xs font-semibold text-slate-600 tabular-nums">{fmtM(e.metros)}</span>
+                                                        <span className="text-xs font-semibold text-zinc-600 tabular-nums">{fmtM(e.metros)}</span>
                                                     </div>
                                                     <div className="text-right">
                                                         <span className="text-xs font-bold tabular-nums" style={{ color: e.color }}>{pctN}%</span>
                                                     </div>
                                                     <div className="text-right">
-                                                        <span className="text-xs font-bold tabular-nums text-slate-500">{pctM}%</span>
+                                                        <span className="text-xs font-bold tabular-nums text-zinc-500">{pctM}%</span>
                                                     </div>
                                                 </div>
                                             );
                                         };
                                         return (
-                                            <div className="flex-1 min-w-0 flex gap-5">
+                                            <div className="flex-1 min-w-0 w-full flex flex-col xl:flex-row gap-3 xl:gap-5">
                                                 {/* Columna izquierda */}
                                                 <div className="flex-1 min-w-0">
                                                     <div className={HDR_CLS}>
@@ -586,9 +590,9 @@ export default function ProductionDashboard() {
                                                     </div>
                                                     {left.map(e => <StateRow key={e.label} e={e} />)}
                                                 </div>
-                                                {/* Columna derecha */}
+                                                {/* Columna derecha (en pantallas chicas va debajo, sin repetir el encabezado) */}
                                                 <div className="flex-1 min-w-0">
-                                                    <div className={HDR_CLS}>
+                                                    <div className={`${HDR_CLS} hidden xl:grid`}>
                                                         <span>Estado</span>
                                                         <span className="text-right">Órd.</span>
                                                         <span className="text-right">Metros</span>
@@ -604,8 +608,8 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Fila 1 — col 3: Pendientes por Prioridad */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Pendientes por Prioridad
                                 </h3>
                                 <div className="flex justify-center mb-3">
@@ -617,11 +621,11 @@ export default function ProductionDashboard() {
                                         return (
                                             <div key={p.label} className="flex items-center gap-2 text-xs">
                                                 <div className="w-2 h-2 rounded-full shrink-0" style={{ background: p.color }} />
-                                                <span className="flex-1 truncate text-slate-700 font-medium">{p.label}</span>
+                                                <span className="flex-1 truncate text-zinc-700 font-medium">{p.label}</span>
                                                 <div className="w-16">
                                                     <HBar value={p.value} max={maxP} color={p.color} height={6} />
                                                 </div>
-                                                <span className="w-8 text-right font-black text-slate-900 tabular-nums">{fmt(p.value)}</span>
+                                                <span className="w-8 text-right font-black text-zinc-900 tabular-nums">{fmt(p.value)}</span>
                                             </div>
                                         );
                                     })}
@@ -633,8 +637,8 @@ export default function ProductionDashboard() {
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
 
                             {/* Metros por Material — pendiente */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Metros por Material
                                 </h3>
                                 {(() => {
@@ -644,7 +648,7 @@ export default function ProductionDashboard() {
                                     const maxM   = Math.max(...mats.map(x => x.totalMetros), 1);
                                     return (
                                         <>
-                                            <div className="grid grid-cols-[1fr_40px_60px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-200 pb-1.5 mb-1">
+                                            <div className="grid grid-cols-[1fr_40px_72px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-zinc-400 border-b border-zinc-200 pb-1.5 mb-1">
                                                 <span>Material</span>
                                                 <span className="text-right">Órd.</span>
                                                 <span className="text-right">Metros</span>
@@ -655,24 +659,24 @@ export default function ProductionDashboard() {
                                                 {mats.map((m, i) => {
                                                     const pctN  = Math.round((m.totalOrdenes / totalA) * 100);
                                                     const pctM  = Math.round((m.totalMetros  / totalM) * 100);
-                                                    const color = AREA_COLORS[i % AREA_COLORS.length];
+                                                    const color = COLORS.brand;
                                                     return (
                                                         <div key={m.material}>
-                                                            <div className="grid grid-cols-[1fr_40px_60px_30px_34px] gap-x-2 items-center py-1 hover:bg-slate-50 rounded transition-colors">
+                                                            <div className="grid grid-cols-[1fr_40px_72px_30px_34px] gap-x-2 items-center py-1 hover:bg-zinc-50 rounded transition-colors">
                                                                 <div className="flex items-center gap-1.5 min-w-0">
                                                                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                                                    <span className="text-xs font-semibold text-slate-800 truncate">{m.material}</span>
+                                                                    <span className="text-xs font-semibold text-zinc-800 truncate">{m.material}</span>
                                                                 </div>
-                                                                <div className="text-right"><span className="text-xs font-black text-slate-900 tabular-nums">{fmt(m.totalOrdenes)}</span></div>
-                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums" style={{ color }}>{fmtM(m.totalMetros)}</span></div>
-                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-slate-700">{pctN}%</span></div>
+                                                                <div className="text-right"><span className="text-xs font-black text-zinc-900 tabular-nums">{fmt(m.totalOrdenes)}</span></div>
+                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums whitespace-nowrap" style={{ color }}>{fmtM(m.totalMetros)}</span></div>
+                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-zinc-700">{pctN}%</span></div>
                                                                 <div className="text-right"><span className="text-[11px] font-bold tabular-nums" style={{ color }}>{pctM}%</span></div>
                                                             </div>
                                                             <HBar value={m.totalMetros} max={maxM} color={color} height={4} />
                                                         </div>
                                                     );
                                                 })}
-                                                {!mats.length && <p className="text-sm text-slate-400 text-center py-4">Sin datos</p>}
+                                                {!mats.length && <p className="text-sm text-zinc-400 text-center py-4">Sin datos</p>}
                                             </div>
                                         </>
                                     );
@@ -680,9 +684,9 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Finalizadas Hoy */}
-                            <div className="bg-white rounded-xl border border-emerald-100 shadow-sm p-5 border-l-4" style={{ borderLeftColor: COLORS.emerald }}>
-                                <h3 className="text-sm font-bold text-emerald-700 mb-3 uppercase tracking-wide">
-                                    Finalizadas Hoy
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
+                                    Finalizadas hoy
                                 </h3>
                                 <div className="space-y-3">
                                     {(ov.metrosMaterialProntas || []).map((m, i) => {
@@ -690,9 +694,9 @@ export default function ProductionDashboard() {
                                         return (
                                             <div key={m.material}>
                                                 <div className="flex items-center justify-between text-xs mb-1">
-                                                    <span className="font-semibold text-slate-700 truncate max-w-[120px]">{m.material}</span>
+                                                    <span className="font-semibold text-zinc-700 truncate min-w-0">{m.material}</span>
                                                     <div className="flex gap-2 shrink-0">
-                                                        <span className="text-slate-500">{fmt(m.totalOrdenes)} órd.</span>
+                                                        <span className="text-zinc-500">{fmt(m.totalOrdenes)} órd.</span>
                                                         <span className="font-black text-emerald-700">{fmtM(m.totalMetros)}</span>
                                                     </div>
                                                 </div>
@@ -700,13 +704,13 @@ export default function ProductionDashboard() {
                                             </div>
                                         );
                                     })}
-                                    {!(ov.metrosMaterialProntas?.length) && <p className="text-sm text-slate-400 text-center py-4">Sin prontas hoy aún</p>}
+                                    {!(ov.metrosMaterialProntas?.length) && <p className="text-sm text-zinc-400 text-center py-4">Sin prontas hoy aún</p>}
                                 </div>
                             </div>
 
                             {/* Por Máquina — prontas hoy */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Por Máquina — Prontas Hoy
                                 </h3>
                                 <div className="space-y-3">
@@ -714,19 +718,18 @@ export default function ProductionDashboard() {
                                         <div key={m.maquina}>
                                             <div className="flex items-center justify-between text-xs mb-1">
                                                 <div className="flex items-center gap-1.5 min-w-0">
-                                                    <span className="text-base shrink-0">{MEDALS[i] || '🔩'}</span>
-                                                    <span className="font-semibold text-slate-700 truncate">{m.maquina}</span>
+                                                    <span className="w-5 shrink-0 text-center text-[11px] font-black text-zinc-400 tabular-nums">{i + 1}</span>
+                                                    <span className="font-semibold text-zinc-700 truncate">{m.maquina}</span>
                                                 </div>
                                                 <div className="flex gap-2 shrink-0">
-                                                    <span className="text-slate-400">{fmtM(m.totalMetros)}</span>
-                                                    <span className="font-black text-slate-900">{fmt(m.totalOrdenes)}</span>
+                                                    <span className="text-zinc-400">{fmtM(m.totalMetros)}</span>
+                                                    <span className="font-black text-zinc-900">{fmt(m.totalOrdenes)}</span>
                                                 </div>
                                             </div>
-                                            <HBar value={m.totalOrdenes} max={maxMaquina}
-                                                  color={AREA_COLORS[i % AREA_COLORS.length]} height={7} />
+                                            <HBar value={m.totalOrdenes} max={maxMaquina} color={COLORS.brand} height={6} />
                                         </div>
                                     ))}
-                                    {!(ov.porMaquina?.length) && <p className="text-sm text-slate-400 text-center py-4">Sin prontas hoy aún</p>}
+                                    {!(ov.porMaquina?.length) && <p className="text-sm text-zinc-400 text-center py-4">Sin prontas hoy aún</p>}
                                 </div>
                             </div>
                         </div>
@@ -735,19 +738,19 @@ export default function ProductionDashboard() {
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
 
                             {/* Antigüedad de Cola */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-1 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-1`}>
                                     Antigüedad de Cola
                                 </h3>
-                                <p className="text-[10px] text-slate-400 mb-3">Cuánto tiempo llevan esperando las activas</p>
+                                <p className="text-xs text-zinc-400 mb-3">Cuánto tiempo llevan esperando las activas</p>
                                 <div className="flex gap-2 mb-4">
-                                    <div className="flex-1 rounded-lg bg-indigo-50 border border-indigo-100 p-3 text-center">
-                                        <div className="text-2xl font-black text-indigo-700">{fmt(ov.kpis.entraronHoy)}</div>
-                                        <div className="text-[10px] text-indigo-500 font-semibold mt-0.5">Entraron HOY</div>
+                                    <div className="flex-1 rounded-xl border border-zinc-200 p-3 text-center">
+                                        <div className="text-2xl font-black text-zinc-800 tabular-nums">{fmt(ov.kpis.entraronHoy)}</div>
+                                        <div className="text-[11px] text-zinc-500 font-bold mt-0.5">Entraron hoy</div>
                                     </div>
-                                    <div className="flex-1 rounded-lg bg-amber-50 border border-amber-100 p-3 text-center">
-                                        <div className="text-2xl font-black text-amber-700">{fmt(ov.kpis.entraronAnteriores)}</div>
-                                        <div className="text-[10px] text-amber-500 font-semibold mt-0.5">Días anteriores</div>
+                                    <div className="flex-1 rounded-xl border border-zinc-200 p-3 text-center">
+                                        <div className="text-2xl font-black text-amber-600 tabular-nums">{fmt(ov.kpis.entraronAnteriores)}</div>
+                                        <div className="text-[11px] text-zinc-500 font-bold mt-0.5">Días anteriores</div>
                                     </div>
                                 </div>
                                 <div className="space-y-2">
@@ -757,33 +760,33 @@ export default function ProductionDashboard() {
                                             <div key={b.bucket}>
                                                 <div className="flex items-center justify-between text-xs mb-0.5">
                                                     <div className="flex items-center gap-1.5">
-                                                        <span className={`w-1.5 h-1.5 rounded-full ${isHoy ? 'bg-indigo-500' : 'bg-amber-500'}`} />
-                                                        <span className="text-slate-600">{b.bucket}</span>
+                                                        <span className={`w-1.5 h-1.5 rounded-full ${isHoy ? 'bg-brand-cyan' : 'bg-amber-500'}`} />
+                                                        <span className="text-zinc-600">{b.bucket}</span>
                                                     </div>
                                                     <div className="flex gap-2 shrink-0">
-                                                        <span className="text-slate-400">{fmtM(b.metros)}</span>
-                                                        <span className="font-bold text-slate-900">{fmt(b.total)}</span>
+                                                        <span className="text-zinc-400">{fmtM(b.metros)}</span>
+                                                        <span className="font-bold text-zinc-900">{fmt(b.total)}</span>
                                                     </div>
                                                 </div>
                                                 <HBar value={b.total} max={maxAntiguedad}
-                                                      color={isHoy ? COLORS.indigo : COLORS.amber} height={5} />
+                                                      color={isHoy ? COLORS.brand : COLORS.amber} height={5} />
                                             </div>
                                         );
                                     })}
-                                    {!(ov.antiguedad?.length) && <p className="text-sm text-slate-400 text-center py-2">Sin activas</p>}
+                                    {!(ov.antiguedad?.length) && <p className="text-sm text-zinc-400 text-center py-2">Sin activas</p>}
                                 </div>
                             </div>
 
                             {/* Prontas por Hora del Día — acumulado */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-1 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-1`}>
                                     Prontas por Hora del Día
                                 </h3>
-                                <p className="text-[10px] text-slate-400 mb-3">
+                                <p className="text-xs text-zinc-400 mb-3">
                                     Acumulado de órdenes finalizadas · línea naranja = corte turno 14 h
                                 </p>
                                 <ProntasHoraChart data={ov.prontasPorHora || []} />
-                                <div className="flex gap-4 mt-2 text-[10px] text-slate-500 justify-center">
+                                <div className="flex gap-4 mt-2 text-[10px] text-zinc-500 justify-center">
                                     <div className="flex items-center gap-1">
                                         <span className="inline-block w-5 h-0.5 rounded" style={{ background: COLORS.emerald }} />
                                         Acumulado prontas
@@ -802,13 +805,13 @@ export default function ProductionDashboard() {
                     SECCIÓN 2: ANÁLISIS FILTRADO
                 ══════════════════════════════════════════════════════════════ */}
                 <section>
-                    <div className="flex items-center justify-between mb-1">
-                        <SectionHeader
-                            title="Análisis de Producción Filtrado"
-                            sub="Métricas por período, área, turno, material y cliente"
-                            accent={COLORS.emerald}
-                        />
+                    <SectionHeader
+                        title="Análisis de producción"
+                        sub="Métricas por período, área, turno, material y cliente"
+                        Icono={SlidersHorizontal}
+                    >
                         <button
+                            type="button"
                             disabled={!an || generandoPDF}
                             onClick={async () => {
                                 if (!an) return;
@@ -831,84 +834,74 @@ export default function ProductionDashboard() {
                                     setGenerandoPDF(false);
                                 }
                             }}
-                            className="flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-sm transition-all shadow-sm"
-                            style={{
-                                background: generandoPDF ? '#e2e8f0' : '#6366f1',
-                                color:      generandoPDF ? '#94a3b8' : '#fff',
-                                cursor:     generandoPDF ? 'not-allowed' : 'pointer',
-                            }}
+                            className={BTN_PRINCIPAL}
                         >
                             {generandoPDF
-                                ? <><span className="animate-spin inline-block">⏳</span> Generando...</>
-                                : <>📄 Generar Informe PDF</>
+                                ? <><Loader2 size={16} className="animate-spin" /> Generando…</>
+                                : <><FileDown size={16} /> Informe en PDF</>
                             }
                         </button>
-                    </div>
+                    </SectionHeader>
 
                     {/* ── BARRA DE FILTROS ────────────────────────────────────── */}
-                    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-4 mb-5 space-y-3">
+                    <div className="bg-white rounded-2xl border border-zinc-200 p-3 md:p-4 mb-4 space-y-3">
 
                         {/* Fila 1: Áreas */}
-                        <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-bold text-slate-500 w-14 shrink-0">ÁREA</span>
-                            <Chip label="Todas" active={!selArea} onClick={() => setSelArea('')} color={COLORS.indigo} />
-                            {areas.map((a, i) => (
+                        <div className={FILA_CHIPS}>
+                            <span className={`${ROTULO} w-16`}>Área</span>
+                            <Chip label="Todas" active={!selArea} onClick={() => setSelArea('')} />
+                            {areas.map(a => (
                                 <Chip key={a.area}
                                       label={a.nombre || a.area}
                                       active={selArea === a.area}
-                                      onClick={() => setSelArea(selArea === a.area ? '' : a.area)}
-                                      color={AREA_COLORS[i % AREA_COLORS.length]} />
+                                      onClick={() => setSelArea(selArea === a.area ? '' : a.area)} />
                             ))}
                         </div>
 
                         {/* Fila 2: Fechas */}
-                        <div className="flex flex-wrap items-center gap-2">
-                            <span className="text-xs font-bold text-slate-500 w-14 shrink-0">FECHA</span>
+                        <div className={FILA_CHIPS}>
+                            <span className={`${ROTULO} w-16`}>Fecha</span>
                             {Object.entries(presetsMap).filter(([k]) => k !== 'custom').map(([k, v]) => (
-                                <Chip key={k} label={v.label} active={preset === k}
-                                      onClick={() => setPreset(k)} color={COLORS.sky} />
+                                <Chip key={k} label={v.label} active={preset === k} onClick={() => setPreset(k)} />
                             ))}
-                            <Chip label="Personalizado" active={preset === 'custom'}
-                                  onClick={() => setPreset('custom')} color={COLORS.violet} />
-                            {preset === 'custom' && (
-                                <div className="flex gap-2 items-center ml-2">
-                                    <input type="date" value={customDesde} onChange={e => setCustomD(e.target.value)}
-                                           className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-400" />
-                                    <span className="text-slate-400 text-xs">→</span>
-                                    <input type="date" value={customHasta} onChange={e => setCustomH(e.target.value)}
-                                           className="border border-slate-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-indigo-400" />
-                                </div>
-                            )}
+                            <Chip label="Personalizado" active={preset === 'custom'} onClick={() => setPreset('custom')} />
                         </div>
+                        {preset === 'custom' && (
+                            <div className="grid grid-cols-2 sm:flex gap-2 items-center sm:pl-[4.5rem]">
+                                <SelectorFecha filtro value={customDesde} onChange={e => setCustomD(e.target.value)} placeholder="Desde" max={customHasta || undefined} />
+                                <SelectorFecha filtro value={customHasta} onChange={e => setCustomH(e.target.value)} placeholder="Hasta" min={customDesde || undefined} />
+                            </div>
+                        )}
 
                         {/* Fila 3: Turno + Material + Cliente */}
-                        <div className="flex flex-wrap items-center gap-3">
-                            <span className="text-xs font-bold text-slate-500 w-14 shrink-0">TURNO</span>
-                            <Chip label="Ambos"         active={!selTurno}      onClick={() => setSelTurno('')}  color={COLORS.indigo} />
-                            <Chip label="T1 · 00-14 h"  active={selTurno==='1'} onClick={() => setSelTurno(selTurno==='1' ? '' : '1')} color={COLORS.indigo} />
-                            <Chip label="T2 · 14-24 h"  active={selTurno==='2'} onClick={() => setSelTurno(selTurno==='2' ? '' : '2')} color={COLORS.emerald} />
-
-                            <span className="text-xs font-bold text-slate-500 w-16 shrink-0 ml-2">MATERIAL</span>
-                            <select value={selMat} onChange={e => setSelMat(e.target.value)}
-                                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white focus:outline-none focus:border-indigo-400 max-w-[180px]">
-                                <option value="">Todos los materiales</option>
-                                {materiales.map(m => (
-                                    <option key={m.material} value={m.material}>{m.material} ({m.total})</option>
-                                ))}
-                            </select>
-
-                            <span className="text-xs font-bold text-slate-500 w-14 shrink-0">CLIENTE</span>
+                        <div className={FILA_CHIPS}>
+                            <span className={`${ROTULO} w-16`}>Turno</span>
+                            <Chip label="Ambos"            active={!selTurno}      onClick={() => setSelTurno('')} />
+                            <Chip label="T1 · 00 a 14 h"   active={selTurno==='1'} onClick={() => setSelTurno(selTurno==='1' ? '' : '1')} />
+                            <Chip label="T2 · 14 a 24 h"   active={selTurno==='2'} onClick={() => setSelTurno(selTurno==='2' ? '' : '2')} />
+                        </div>
+                        <div className="grid grid-cols-1 sm:flex sm:flex-wrap sm:items-center gap-2">
+                            <span className={`${ROTULO} w-16 hidden sm:block`}>Material</span>
+                            <div className="sm:w-64">
+                                <Selector filtro value={selMat} onChange={e => setSelMat(e.target.value)}>
+                                    <option value="">Todos los materiales</option>
+                                    {materiales.map(m => (
+                                        <option key={m.material} value={m.material}>{m.material} ({m.total})</option>
+                                    ))}
+                                </Selector>
+                            </div>
                             <input
-                                type="text" placeholder="Buscar cliente..."
+                                type="text" placeholder="Buscar cliente…" aria-label="Cliente"
                                 value={selCli} onChange={e => setSelCli(e.target.value)}
-                                className="border border-slate-200 rounded-lg px-3 py-1.5 text-xs bg-white focus:outline-none focus:border-indigo-400 w-44"
+                                className={`${CAMPO} sm:w-56`}
                             />
                             {(selArea || selMat || selCli || selTurno || preset !== '30d') && (
                                 <button
+                                    type="button"
                                     onClick={() => { setSelArea(''); setSelMat(''); setSelCli(''); setSelTurno(''); setPreset('30d'); }}
-                                    className="ml-2 px-3 py-1.5 text-xs text-red-500 border border-red-200 rounded-full hover:bg-red-50 transition-all font-semibold"
+                                    className="inline-flex items-center justify-center gap-1 px-3 py-2 text-sm font-bold text-zinc-500 hover:text-zinc-800"
                                 >
-                                    ✕ Limpiar filtros
+                                    <X size={15} /> Limpiar
                                 </button>
                             )}
                         </div>
@@ -919,8 +912,8 @@ export default function ProductionDashboard() {
 
                         {/* Aviso cuando no hay datos en el período */}
                         {an.kpis.insertadas === 0 && (
-                            <div className="mb-4 rounded-xl bg-amber-50 border border-amber-200 px-5 py-3 flex items-center gap-3">
-                                <span className="text-xl">ℹ️</span>
+                            <div className="mb-4 rounded-2xl bg-amber-50 border border-amber-200 px-4 py-3 flex items-start gap-3">
+                                <Info size={20} className="shrink-0 text-amber-600 mt-0.5" aria-hidden="true" />
                                 <div>
                                     <p className="text-sm font-bold text-amber-800">Sin órdenes ingresadas en el período seleccionado</p>
                                     <p className="text-xs text-amber-600 mt-0.5">
@@ -933,26 +926,23 @@ export default function ProductionDashboard() {
                         )}
 
                         {/* KPIs de análisis */}
-                        <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+                        <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-3 mb-4">
                             <KpiCard
-                                label="Órdenes Ingresadas" value={fmt(an.kpis.insertadas)}
-                                icon="📥" accent={COLORS.indigo}
-                                sub={`Período seleccionado`}
+                                label="Ingresadas" value={fmt(an.kpis.insertadas)} Icono={Inbox}
+                                sub="En el período"
                             />
                             <KpiCard
-                                label="Órdenes Completadas" value={fmt(an.kpis.completadas)}
-                                icon="✅" accent={COLORS.emerald}
-                                sub={`Finalizadas / Entregadas`}
+                                label="Completadas" value={fmt(an.kpis.completadas)} Icono={CircleCheck} tono="verde"
+                                sub="Finalizadas o entregadas"
                             />
                             <KpiCard
-                                label="Eficiencia" value={`${an.kpis.eficiencia}%`}
-                                icon="⚡" accent={an.kpis.eficiencia >= 80 ? COLORS.emerald : an.kpis.eficiencia >= 50 ? COLORS.amber : COLORS.red}
-                                sub={`Completadas / Ingresadas`}
+                                label="Eficiencia" value={`${an.kpis.eficiencia}%`} Icono={Gauge}
+                                tono={an.kpis.eficiencia >= 80 ? 'verde' : an.kpis.eficiencia >= 50 ? 'ambar' : 'rojo'}
+                                sub="Completadas / ingresadas"
                             />
                             <KpiCard
-                                label="Metros Procesados" value={fmtM(an.kpis.metros)}
-                                icon="📐" accent={COLORS.sky}
-                                sub={`Total en período`}
+                                label="Metros procesados" value={fmtM(an.kpis.metros)} Icono={Ruler}
+                                sub="Total del período"
                             />
                             {(() => {
                                 const fr     = an.fallaReposicion || { ordenes: 0, metros: 0 };
@@ -962,12 +952,11 @@ export default function ProductionDashboard() {
                                 const pctN   = an.kpis.insertadas > 0
                                     ? Math.round((fr.ordenes / an.kpis.insertadas) * 100)
                                     : 0;
-                                const accent = pctM >= 15 ? COLORS.red : pctM >= 8 ? COLORS.amber : '#94a3b8';
+                                const tono = pctM >= 15 ? 'rojo' : pctM >= 8 ? 'ambar' : 'neutro';
                                 return (
                                     <KpiCard
-                                        label="Falla + Reposición" value={fmtM(fr.metros)}
-                                        icon="⚠️" accent={accent}
-                                        sub={`${pctM}% metros · ${pctN}% órdenes`}
+                                        label="Falla + reposición" value={fmtM(fr.metros)} Icono={TriangleAlert} tono={tono}
+                                        sub={`${pctM}% de los metros · ${pctN}% de las órdenes`}
                                     />
                                 );
                             })()}
@@ -977,35 +966,29 @@ export default function ProductionDashboard() {
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
 
                             {/* Comportamiento en el tiempo — entradas vs salidas */}
-                            <div className="lg:col-span-2 bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <div className="flex items-center justify-between mb-3">
-                                    <div>
-                                        <h3 className="text-sm font-bold text-slate-700 uppercase tracking-wide">
+                            <div className={`lg:col-span-2 ${CARD}`}>
+                                <div className="flex items-start justify-between flex-wrap gap-3 mb-3">
+                                    <div className="min-w-0">
+                                        <h3 className={TITULO}>
                                             Comportamiento en el Tiempo
                                         </h3>
-                                        <p className="text-[10px] text-slate-400 mt-0.5">Entradas vs salidas en el período — no necesariamente las mismas órdenes</p>
+                                        <p className="text-xs text-zinc-400 mt-0.5">Entradas vs salidas en el período — no necesariamente las mismas órdenes</p>
                                     </div>
                                     <div className="flex items-center gap-3">
                                         {!tendenciaDetalle && (
                                             <div className="flex gap-3 text-[10px]">
                                                 <span className="flex items-center gap-1.5">
-                                                    <span className="w-5 h-0.5 inline-block rounded" style={{ background: COLORS.indigo }} />
-                                                    <span className="text-slate-600 font-medium">Entradas</span>
+                                                    <span className="w-5 h-1 inline-block rounded" style={{ background: COLORS.brand }} />
+                                                    <span className="text-zinc-600 font-medium">Entradas</span>
                                                 </span>
                                                 <span className="flex items-center gap-1.5">
-                                                    <span className="w-5 h-0.5 inline-block rounded" style={{ background: COLORS.emerald }} />
-                                                    <span className="text-slate-600 font-medium">Salidas</span>
+                                                    <span className="w-5 h-1 inline-block rounded" style={{ background: COLORS.emerald }} />
+                                                    <span className="text-zinc-600 font-medium">Salidas</span>
                                                 </span>
                                             </div>
                                         )}
-                                        <button
-                                            onClick={() => setTendenciaDetalle(v => !v)}
-                                            className="flex items-center gap-1.5 text-[11px] font-semibold px-3 py-1.5 rounded-lg border transition-colors"
-                                            style={tendenciaDetalle
-                                                ? { background: COLORS.indigo, color: '#fff', borderColor: COLORS.indigo }
-                                                : { background: '#f8fafc', color: '#64748b', borderColor: '#e2e8f0' }}
-                                        >
-                                            {tendenciaDetalle ? '📈 Ver gráfico' : '📋 Ver detalle'}
+                                        <button type="button" onClick={() => setTendenciaDetalle(v => !v)} className={BTN_SECUNDARIO}>
+                                            {tendenciaDetalle ? <><ChartLine size={15} /> Ver gráfico</> : <><Table2 size={15} /> Ver detalle</>}
                                         </button>
                                     </div>
                                 </div>
@@ -1015,9 +998,9 @@ export default function ProductionDashboard() {
                                     <div className="overflow-auto max-h-64">
                                         <table className="w-full text-xs">
                                             <thead>
-                                                <tr className="border-b border-slate-200">
-                                                    <th className="text-left py-1.5 pr-3 font-bold text-slate-500 uppercase tracking-wide text-[10px]">Fecha</th>
-                                                    <th className="text-right py-1.5 px-3 font-bold text-indigo-500 uppercase tracking-wide text-[10px]">Entradas</th>
+                                                <tr className="border-b border-zinc-200">
+                                                    <th className="text-left py-1.5 pr-3 font-bold text-zinc-500 uppercase tracking-wide text-[10px]">Fecha</th>
+                                                    <th className="text-right py-1.5 px-3 font-bold text-brand-cyan uppercase tracking-wide text-[10px]">Entradas</th>
                                                     <th className="text-right py-1.5 px-3 font-bold text-emerald-500 uppercase tracking-wide text-[10px]">Salidas</th>
                                                     <th className="text-right py-1.5 pl-3 font-bold text-amber-500 uppercase tracking-wide text-[10px]">Flujo</th>
                                                 </tr>
@@ -1028,11 +1011,11 @@ export default function ProductionDashboard() {
                                                     const fecha = new Date(d.fecha + 'T12:00:00');
                                                     const label = fecha.toLocaleDateString('es-AR', { day: '2-digit', month: 'short', weekday: 'short' });
                                                     return (
-                                                        <tr key={d.fecha} className="border-b border-slate-50 hover:bg-slate-50 transition-colors">
-                                                            <td className="py-1.5 pr-3 text-slate-600 font-medium capitalize">{label}</td>
-                                                            <td className="py-1.5 px-3 text-right font-black text-indigo-700 tabular-nums">{fmt(d.insertadas || 0)}</td>
+                                                        <tr key={d.fecha} className="border-b border-zinc-50 hover:bg-zinc-50 transition-colors">
+                                                            <td className="py-1.5 pr-3 text-zinc-600 font-medium capitalize">{label}</td>
+                                                            <td className="py-1.5 px-3 text-right font-black text-brand-cyan tabular-nums">{fmt(d.insertadas || 0)}</td>
                                                             <td className="py-1.5 px-3 text-right font-black text-emerald-700 tabular-nums">{fmt(d.completadas || 0)}</td>
-                                                            <td className={`py-1.5 pl-3 text-right font-black tabular-nums ${flujo > 0 ? 'text-amber-600' : flujo < 0 ? 'text-emerald-600' : 'text-slate-400'}`}>
+                                                            <td className={`py-1.5 pl-3 text-right font-black tabular-nums ${flujo > 0 ? 'text-amber-600' : flujo < 0 ? 'text-emerald-600' : 'text-zinc-400'}`}>
                                                                 {flujo > 0 ? '+' : ''}{fmt(flujo)}
                                                             </td>
                                                         </tr>
@@ -1040,9 +1023,9 @@ export default function ProductionDashboard() {
                                                 })}
                                             </tbody>
                                             <tfoot>
-                                                <tr className="border-t-2 border-slate-200 bg-slate-50">
-                                                    <td className="py-2 pr-3 font-bold text-slate-600 text-[10px] uppercase tracking-wide">Total</td>
-                                                    <td className="py-2 px-3 text-right font-black text-indigo-700 tabular-nums">{fmt(an.kpis.insertadas)}</td>
+                                                <tr className="border-t-2 border-zinc-200 bg-zinc-50">
+                                                    <td className="py-2 pr-3 font-bold text-zinc-600 text-[10px] uppercase tracking-wide">Total</td>
+                                                    <td className="py-2 px-3 text-right font-black text-brand-cyan tabular-nums">{fmt(an.kpis.insertadas)}</td>
                                                     <td className="py-2 px-3 text-right font-black text-emerald-700 tabular-nums">{fmt(an.kpis.completadas)}</td>
                                                     <td className={`py-2 pl-3 text-right font-black tabular-nums ${an.kpis.insertadas - an.kpis.completadas > 0 ? 'text-amber-600' : 'text-emerald-600'}`}>
                                                         {an.kpis.insertadas - an.kpis.completadas > 0 ? '+' : ''}{fmt(an.kpis.insertadas - an.kpis.completadas)}
@@ -1060,23 +1043,23 @@ export default function ProductionDashboard() {
                                     const sal = an.kpis.completadas || 0;
                                     const dif = ent - sal;
                                     return (
-                                        <div className="flex gap-3 mt-3 text-[11px]">
-                                            <div className="flex-1 rounded-lg bg-indigo-50 border border-indigo-100 px-3 py-2 text-center">
-                                                <div className="text-lg font-black text-indigo-700 tabular-nums">{fmt(ent)}</div>
-                                                <div className="text-indigo-500 font-semibold">Órd. Ingresadas</div>
-                                                <div className="text-[9px] text-indigo-300 mt-0.5">por FechaIngreso</div>
+                                        <div className="grid grid-cols-3 gap-2 md:gap-3 mt-3 text-[11px]">
+                                            <div className="rounded-xl border border-zinc-200 px-2 md:px-3 py-2 text-center">
+                                                <div className="text-lg font-black text-brand-cyan tabular-nums">{fmt(ent)}</div>
+                                                <div className="text-zinc-600 font-bold">Ingresadas</div>
+                                                <div className="text-[10px] text-zinc-400 mt-0.5">por fecha de ingreso</div>
                                             </div>
-                                            <div className="flex-1 rounded-lg bg-emerald-50 border border-emerald-100 px-3 py-2 text-center">
-                                                <div className="text-lg font-black text-emerald-700 tabular-nums">{fmt(sal)}</div>
-                                                <div className="text-emerald-500 font-semibold">Cerradas</div>
-                                                <div className="text-[9px] text-emerald-300 mt-0.5">por fecha de cierre</div>
+                                            <div className="rounded-xl border border-zinc-200 px-2 md:px-3 py-2 text-center">
+                                                <div className="text-lg font-black text-emerald-600 tabular-nums">{fmt(sal)}</div>
+                                                <div className="text-zinc-600 font-bold">Cerradas</div>
+                                                <div className="text-[10px] text-zinc-400 mt-0.5">por fecha de cierre</div>
                                             </div>
-                                            <div className={`flex-1 rounded-lg px-3 py-2 text-center border ${dif > 0 ? 'bg-amber-50 border-amber-100' : 'bg-slate-50 border-slate-200'}`}>
-                                                <div className={`text-lg font-black tabular-nums ${dif > 0 ? 'text-amber-600' : 'text-slate-600'}`}>
+                                            <div className="rounded-xl border border-zinc-200 px-2 md:px-3 py-2 text-center">
+                                                <div className={`text-lg font-black tabular-nums ${dif > 0 ? 'text-amber-600' : 'text-zinc-600'}`}>
                                                     {dif > 0 ? '+' : ''}{fmt(dif)}
                                                 </div>
-                                                <div className={`font-semibold ${dif > 0 ? 'text-amber-500' : 'text-slate-400'}`}>Flujo neto</div>
-                                                <div className="text-[9px] text-slate-300 mt-0.5">entradas − salidas</div>
+                                                <div className="text-zinc-600 font-bold">Flujo neto</div>
+                                                <div className="text-[10px] text-zinc-400 mt-0.5">entradas − salidas</div>
                                             </div>
                                         </div>
                                     );
@@ -1084,8 +1067,8 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Donut estados en período */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-4 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-4`}>
                                     Estados en Período
                                 </h3>
                                 <div className="flex flex-col items-center gap-3">
@@ -1094,8 +1077,8 @@ export default function ProductionDashboard() {
                                         {anEstadosData.map(e => (
                                             <div key={e.label} className="flex items-center gap-2 text-xs">
                                                 <div className="w-2 h-2 rounded-full shrink-0" style={{ background: e.color }} />
-                                                <span className="flex-1 truncate text-slate-600">{e.label}</span>
-                                                <span className="font-bold text-slate-800">{fmt(e.value)}</span>
+                                                <span className="flex-1 truncate text-zinc-600">{e.label}</span>
+                                                <span className="font-bold text-zinc-800">{fmt(e.value)}</span>
                                             </div>
                                         ))}
                                     </div>
@@ -1107,8 +1090,8 @@ export default function ProductionDashboard() {
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 mb-4">
 
                             {/* Top Operadores */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Top Operadores
                                 </h3>
                                 {(() => {
@@ -1116,7 +1099,7 @@ export default function ProductionDashboard() {
                                     return (
                                         <>
                                             {/* Header */}
-                                            <div className="grid grid-cols-[20px_1fr_44px_44px_44px_50px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-200 pb-1.5 mb-1">
+                                            <div className="grid grid-cols-[20px_1fr_40px_44px_44px_76px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-zinc-400 border-b border-zinc-200 pb-1.5 mb-1">
                                                 <span>#</span>
                                                 <span>Operador</span>
                                                 <span className="text-right">Prep.</span>
@@ -1126,47 +1109,39 @@ export default function ProductionDashboard() {
                                             </div>
                                             <div className="space-y-2">
                                                 {ops.map((op, i) => {
-                                                    const medal = i === 0 ? '#f59e0b' : i === 1 ? '#94a3b8' : i === 2 ? '#cd7f32' : COLORS.indigo;
                                                     const prep  = op.preparacion || 0;
                                                     const impr  = op.impresion   || 0;
                                                     const ctrl  = op.controlado  || 0;
                                                     return (
-                                                        <div key={op.Usuario + i} className="grid grid-cols-[20px_1fr_44px_44px_44px_50px] gap-x-2 items-center py-1.5 hover:bg-slate-50 rounded px-1 transition-colors">
-                                                            <span className="text-[11px] font-black text-center" style={{ color: medal }}>
-                                                                {i < 3 ? ['🥇','🥈','🥉'][i] : `${i+1}`}
-                                                            </span>
-                                                            <span className="text-xs font-semibold text-slate-800 truncate">{op.Usuario}</span>
+                                                        <div key={op.Usuario + i} className="grid grid-cols-[20px_1fr_40px_44px_44px_76px] gap-x-2 items-center py-1.5 hover:bg-zinc-50 rounded px-1 transition-colors">
+                                                            <span className="text-[11px] font-black text-center text-zinc-400 tabular-nums">{i + 1}</span>
+                                                            <span className="text-xs font-semibold text-zinc-800 truncate">{op.Usuario}</span>
                                                             <div className="text-right">
-                                                                <span className="text-xs font-black tabular-nums" style={{ color: prep > 0 ? COLORS.sky : '#cbd5e1' }}>{fmt(prep)}</span>
+                                                                <span className={`text-xs font-black tabular-nums ${prep > 0 ? 'text-zinc-800' : 'text-zinc-300'}`}>{fmt(prep)}</span>
                                                             </div>
                                                             <div className="text-right">
-                                                                <span className="text-xs font-black tabular-nums" style={{ color: impr > 0 ? COLORS.violet : '#cbd5e1' }}>{fmt(impr)}</span>
+                                                                <span className={`text-xs font-black tabular-nums ${impr > 0 ? 'text-zinc-800' : 'text-zinc-300'}`}>{fmt(impr)}</span>
                                                             </div>
                                                             <div className="text-right">
-                                                                <span className="text-xs font-black tabular-nums" style={{ color: ctrl > 0 ? COLORS.emerald : '#cbd5e1' }}>{fmt(ctrl)}</span>
+                                                                <span className={`text-xs font-black tabular-nums ${ctrl > 0 ? 'text-zinc-800' : 'text-zinc-300'}`}>{fmt(ctrl)}</span>
                                                             </div>
                                                             <div className="text-right">
-                                                                <span className="text-xs font-bold tabular-nums" style={{ color: medal }}>{fmtM(op.totalMetros)}</span>
+                                                                <span className="text-xs font-bold tabular-nums whitespace-nowrap text-brand-cyan">{fmtM(op.totalMetros)}</span>
                                                             </div>
                                                         </div>
                                                     );
                                                 })}
-                                                {!ops.length && <p className="text-sm text-slate-400 text-center py-4">Sin historial en el período</p>}
+                                                {!ops.length && <p className="text-sm text-zinc-400 text-center py-4">Sin historial en el período</p>}
                                             </div>
-                                            {/* Leyenda */}
-                                            <div className="flex gap-3 mt-3 text-[9px] text-slate-400 justify-end">
-                                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{background: COLORS.sky}} />Preparación</span>
-                                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{background: COLORS.violet}} />Impresión</span>
-                                                <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full inline-block" style={{background: COLORS.emerald}} />Controlado</span>
-                                            </div>
+                                            <p className="mt-3 text-[11px] text-zinc-400 text-right">Prep. = preparación · Impr. = impresión · Ctrl. = controlado</p>
                                         </>
                                     );
                                 })()}
                             </div>
 
                             {/* Top Clientes */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Top Clientes
                                 </h3>
                                 {(() => {
@@ -1175,7 +1150,7 @@ export default function ProductionDashboard() {
                                     const totalM = an.kpis.metros     || 1;
                                     return (
                                         <>
-                                            <div className="grid grid-cols-[20px_1fr_40px_58px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-200 pb-1.5 mb-1">
+                                            <div className="grid grid-cols-[20px_1fr_40px_76px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-zinc-400 border-b border-zinc-200 pb-1.5 mb-1">
                                                 <span>#</span>
                                                 <span>Cliente</span>
                                                 <span className="text-right">Órd.</span>
@@ -1188,22 +1163,22 @@ export default function ProductionDashboard() {
                                                     const maxC  = clis[0]?.totalOrdenes || 1;
                                                     const pctN  = Math.round((c.totalOrdenes / totalN) * 100);
                                                     const pctM  = Math.round((c.totalMetros  / totalM) * 100);
-                                                    const color = AREA_COLORS[i % AREA_COLORS.length];
+                                                    const color = COLORS.brand;
                                                     return (
                                                         <div key={c.cliente}>
-                                                            <div className="grid grid-cols-[20px_1fr_40px_58px_30px_34px] gap-x-2 items-center py-1 hover:bg-slate-50 rounded transition-colors">
-                                                                <span className="text-[10px] font-black text-slate-400 text-center tabular-nums">{i + 1}</span>
-                                                                <span className="text-xs font-semibold text-slate-800 truncate">{c.cliente}</span>
-                                                                <div className="text-right"><span className="text-xs font-black text-slate-900 tabular-nums">{fmt(c.totalOrdenes)}</span></div>
-                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums" style={{ color }}>{fmtM(c.totalMetros)}</span></div>
-                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-slate-700">{pctN}%</span></div>
+                                                            <div className="grid grid-cols-[20px_1fr_40px_76px_30px_34px] gap-x-2 items-center py-1 hover:bg-zinc-50 rounded transition-colors">
+                                                                <span className="text-[10px] font-black text-zinc-400 text-center tabular-nums">{i + 1}</span>
+                                                                <span className="text-xs font-semibold text-zinc-800 truncate">{c.cliente}</span>
+                                                                <div className="text-right"><span className="text-xs font-black text-zinc-900 tabular-nums">{fmt(c.totalOrdenes)}</span></div>
+                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums whitespace-nowrap" style={{ color }}>{fmtM(c.totalMetros)}</span></div>
+                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-zinc-700">{pctN}%</span></div>
                                                                 <div className="text-right"><span className="text-[11px] font-bold tabular-nums" style={{ color }}>{pctM}%</span></div>
                                                             </div>
                                                             <HBar value={c.totalOrdenes} max={maxC} color={color} height={3} />
                                                         </div>
                                                     );
                                                 })}
-                                                {!clis.length && <p className="text-sm text-slate-400 text-center py-4">Sin datos en el período</p>}
+                                                {!clis.length && <p className="text-sm text-zinc-400 text-center py-4">Sin datos en el período</p>}
                                             </div>
                                         </>
                                     );
@@ -1211,8 +1186,8 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Top Materiales */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-3 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-3`}>
                                     Top Materiales
                                 </h3>
                                 {(() => {
@@ -1221,7 +1196,7 @@ export default function ProductionDashboard() {
                                     const totalM = an.kpis.metros     || 1;
                                     return (
                                         <>
-                                            <div className="grid grid-cols-[1fr_40px_58px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-slate-400 border-b border-slate-200 pb-1.5 mb-1">
+                                            <div className="grid grid-cols-[1fr_40px_76px_30px_34px] gap-x-2 text-[9px] font-bold uppercase tracking-wide text-zinc-400 border-b border-zinc-200 pb-1.5 mb-1">
                                                 <span>Material</span>
                                                 <span className="text-right">Órd.</span>
                                                 <span className="text-right">Metros</span>
@@ -1233,24 +1208,24 @@ export default function ProductionDashboard() {
                                                     const maxM  = mats[0]?.totalOrdenes || 1;
                                                     const pctN  = Math.round((m.totalOrdenes / totalN) * 100);
                                                     const pctM  = Math.round((m.totalMetros  / totalM) * 100);
-                                                    const color = AREA_COLORS[i % AREA_COLORS.length];
+                                                    const color = COLORS.brand;
                                                     return (
                                                         <div key={m.material}>
-                                                            <div className="grid grid-cols-[1fr_40px_58px_30px_34px] gap-x-2 items-center py-1 hover:bg-slate-50 rounded transition-colors">
+                                                            <div className="grid grid-cols-[1fr_40px_76px_30px_34px] gap-x-2 items-center py-1 hover:bg-zinc-50 rounded transition-colors">
                                                                 <div className="flex items-center gap-1.5 min-w-0">
                                                                     <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
-                                                                    <span className="text-xs font-semibold text-slate-800 truncate">{m.material}</span>
+                                                                    <span className="text-xs font-semibold text-zinc-800 truncate">{m.material}</span>
                                                                 </div>
-                                                                <div className="text-right"><span className="text-xs font-black text-slate-900 tabular-nums">{fmt(m.totalOrdenes)}</span></div>
-                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums" style={{ color }}>{fmtM(m.totalMetros)}</span></div>
-                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-slate-700">{pctN}%</span></div>
+                                                                <div className="text-right"><span className="text-xs font-black text-zinc-900 tabular-nums">{fmt(m.totalOrdenes)}</span></div>
+                                                                <div className="text-right"><span className="text-xs font-bold tabular-nums whitespace-nowrap" style={{ color }}>{fmtM(m.totalMetros)}</span></div>
+                                                                <div className="text-right"><span className="text-[11px] font-bold tabular-nums text-zinc-700">{pctN}%</span></div>
                                                                 <div className="text-right"><span className="text-[11px] font-bold tabular-nums" style={{ color }}>{pctM}%</span></div>
                                                             </div>
                                                             <HBar value={m.totalOrdenes} max={maxM} color={color} height={3} />
                                                         </div>
                                                     );
                                                 })}
-                                                {!mats.length && <p className="text-sm text-slate-400 text-center py-4">Sin datos</p>}
+                                                {!mats.length && <p className="text-sm text-zinc-400 text-center py-4">Sin datos</p>}
                                             </div>
                                         </>
                                     );
@@ -1262,11 +1237,11 @@ export default function ProductionDashboard() {
                         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
                             {/* Demora por Prioridad */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-1 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-1`}>
                                     Demora Promedio por Prioridad
                                 </h3>
-                                <p className="text-[10px] text-slate-400 mb-4">Tiempo efectivo — descuenta 12h no trabajadas por día</p>
+                                <p className="text-xs text-zinc-400 mb-4">Tiempo efectivo — descuenta 12h no trabajadas por día</p>
                                 {(() => {
                                     const rows = an.demoraPorPrioridad || [];
                                     const maxH = rows.reduce((m, r) => Math.max(m, parseFloat(r.promedioHoras) || 0), 0) || 1;
@@ -1286,7 +1261,7 @@ export default function ProductionDashboard() {
                                         return `${(v / 24).toFixed(1)}d`;
                                     };
                                     if (!sorted.length) return (
-                                        <p className="text-sm text-slate-400 text-center py-4">Sin órdenes completadas en el período</p>
+                                        <p className="text-sm text-zinc-400 text-center py-4">Sin órdenes completadas en el período</p>
                                     );
                                     return (
                                         <div className="space-y-4">
@@ -1298,25 +1273,25 @@ export default function ProductionDashboard() {
                                                         <div className="flex items-center justify-between mb-1">
                                                             <div className="flex items-center gap-2">
                                                                 <span className="w-2.5 h-2.5 rounded-full shrink-0" style={{ background: color }} />
-                                                                <span className="text-xs font-semibold text-slate-700">{r.prioridad}</span>
-                                                                <span className="text-[10px] text-slate-400">{fmt(r.totalOrdenes)} órd.</span>
+                                                                <span className="text-xs font-semibold text-zinc-700">{r.prioridad}</span>
+                                                                <span className="text-[10px] text-zinc-400">{fmt(r.totalOrdenes)} órd.</span>
                                                             </div>
                                                             <div className="flex items-baseline gap-3">
                                                                 <div className="text-right">
-                                                                    <div className="text-[9px] text-slate-400 leading-none mb-0.5">prom.</div>
+                                                                    <div className="text-[9px] text-zinc-400 leading-none mb-0.5">prom.</div>
                                                                     <span className="text-sm font-black tabular-nums" style={{ color }}>{fmtH(r.promedioHoras)}</span>
                                                                 </div>
                                                                 <div className="text-right">
-                                                                    <div className="text-[9px] text-slate-400 leading-none mb-0.5">media</div>
-                                                                    <span className="text-sm font-bold tabular-nums text-slate-500">{fmtH(r.medianaHoras)}</span>
+                                                                    <div className="text-[9px] text-zinc-400 leading-none mb-0.5">media</div>
+                                                                    <span className="text-sm font-bold tabular-nums text-zinc-500">{fmtH(r.medianaHoras)}</span>
                                                                 </div>
                                                             </div>
                                                         </div>
-                                                        <div className="w-full bg-slate-100 rounded-full h-2.5">
+                                                        <div className="w-full bg-zinc-100 rounded-full h-2.5">
                                                             <div className="h-2.5 rounded-full transition-all"
                                                                  style={{ width: `${pct}%`, background: color }} />
                                                         </div>
-                                                        <div className="flex justify-between text-[10px] text-slate-400 mt-0.5">
+                                                        <div className="flex justify-between text-[10px] text-zinc-400 mt-0.5">
                                                             <span>min {fmtH(r.minHoras)}</span>
                                                             <span>máx {fmtH(r.maxHoras)}</span>
                                                         </div>
@@ -1329,31 +1304,31 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Distribución por Turno */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-4 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-4`}>
                                     Distribución por Turno
                                 </h3>
                                 <div className="space-y-4">
                                     {turnoData.map(t => (
                                         <div key={t.turno}>
                                             <div className="flex items-center justify-between text-xs mb-1.5">
-                                                <span className="font-semibold text-slate-700">{t.turno}</span>
+                                                <span className="font-semibold text-zinc-700">{t.turno}</span>
                                                 <div className="flex gap-4">
-                                                    <span className="text-slate-500">{fmtM(t.totalMetros)}</span>
-                                                    <span className="font-black text-slate-900">{fmt(t.totalOrdenes)} órd.</span>
+                                                    <span className="text-zinc-500">{fmtM(t.totalMetros)}</span>
+                                                    <span className="font-black text-zinc-900">{fmt(t.totalOrdenes)} órd.</span>
                                                 </div>
                                             </div>
                                             <HBar value={t.totalOrdenes} max={turnoMax}
-                                                  color={t.turnoNum === 1 ? COLORS.indigo : COLORS.emerald} height={14} />
-                                            <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+                                                  color={t.turnoNum === 1 ? COLORS.brand : '#22d3ee'} height={12} />
+                                            <div className="flex justify-between text-[10px] text-zinc-400 mt-1">
                                                 <span>{turnoMax > 0 ? Math.round((t.totalOrdenes / turnoMax) * 100) : 0}% del total</span>
-                                                <span className="font-semibold" style={{ color: t.turnoNum === 1 ? COLORS.indigo : COLORS.emerald }}>
+                                                <span className="font-semibold" style={{ color: t.turnoNum === 1 ? COLORS.brand : '#0891b2' }}>
                                                     {t.totalOrdenes > 0 ? fmtM(t.totalMetros / t.totalOrdenes) : '—'} / órd.
                                                 </span>
                                             </div>
                                         </div>
                                     ))}
-                                    {!turnoData.length && <p className="text-sm text-slate-400 text-center py-4">Sin datos en el período</p>}
+                                    {!turnoData.length && <p className="text-sm text-zinc-400 text-center py-4">Sin datos en el período</p>}
                                 </div>
                                 {turnoData.length === 2 && (() => {
                                     const sorted = [...turnoData].sort((a, b) => a.turnoNum - b.turnoNum);
@@ -1362,12 +1337,12 @@ export default function ProductionDashboard() {
                                     const pct1 = total > 0 ? Math.round((t1.totalOrdenes / total) * 100) : 50;
                                     return (
                                         <div className="mt-5">
-                                            <div className="text-[10px] text-slate-500 mb-1 text-center">Comparativa T1 vs T2</div>
+                                            <div className="text-[10px] text-zinc-500 mb-1 text-center">Comparativa T1 vs T2</div>
                                             <div className="flex rounded-full overflow-hidden h-5">
                                                 <div className="flex items-center justify-center text-white text-[10px] font-bold"
-                                                     style={{ width: `${pct1}%`, background: COLORS.indigo, minWidth: 20 }}>{pct1}%</div>
-                                                <div className="flex items-center justify-center text-white text-[10px] font-bold"
-                                                     style={{ width: `${100 - pct1}%`, background: COLORS.emerald, minWidth: 20 }}>{100 - pct1}%</div>
+                                                     style={{ width: `${pct1}%`, background: COLORS.brand, minWidth: 20 }}>{pct1}%</div>
+                                                <div className="flex items-center justify-center text-cyan-950 text-[10px] font-bold"
+                                                     style={{ width: `${100 - pct1}%`, background: '#22d3ee', minWidth: 20 }}>{100 - pct1}%</div>
                                             </div>
                                         </div>
                                     );
@@ -1375,8 +1350,8 @@ export default function ProductionDashboard() {
                             </div>
 
                             {/* Actividad por Hora */}
-                            <div className="bg-white rounded-xl border border-slate-100 shadow-sm p-5">
-                                <h3 className="text-sm font-bold text-slate-700 mb-4 uppercase tracking-wide">
+                            <div className={CARD}>
+                                <h3 className={`${TITULO} mb-4`}>
                                     Actividad por Hora del Día
                                 </h3>
                                 <HourLineChart data={an.distribucionHora || []} />
@@ -1385,11 +1360,9 @@ export default function ProductionDashboard() {
                     </>)}
                 </section>
 
+            <div className="text-center text-[11px] text-zinc-400">
+                Área: {areas.find(a => a.area === selArea)?.nombre || selArea || 'todas'} · Turno: {selTurno === '1' ? 'T1 (00 a 14 h)' : selTurno === '2' ? 'T2 (14 a 24 h)' : 'ambos'}
             </div>
-
-            {/* Footer indicator */}
-            <div className="text-center py-4 text-[10px] text-slate-400">
-                Panel de Producción · Datos de SecureAppDB · Área activa: {selArea || 'Todas'} · Turno: {selTurno === '1' ? 'T1 (00-14h)' : selTurno === '2' ? 'T2 (14-24h)' : 'Ambos'}
             </div>
         </div>
     );

@@ -34,7 +34,7 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
                 })
                 .catch(err => console.error(err));
                 
-            // Órdenes entregadas en los últimos 30 días (endpoint propio del helpdesk)
+            // Órdenes entregadas cuyo aviso fue hace 21 días o menos (endpoint propio del helpdesk)
             apiClient.get('/tickets/ordenes-recientes')
                 .then(res => {
                     if (res.success && res.data) {
@@ -56,6 +56,12 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
         }
     }, [isOpen]);
 
+    // Reclamo de calidad / producción: la FOTO del problema es obligatoria (22/10, pedido de Santiago).
+    // El backend marca qué departamentos la piden (RequiereFoto) y lo vuelve a controlar al crear.
+    const deptoSel = departamentos.find(d => String(d.ID) === String(departamentoId));
+    const fotoObligatoria = !!deptoSel?.RequiereFoto;
+    const hayFoto = archivos.some(f => /^image\//i.test(f.type || ''));
+
     const handleFileChange = (e) => {
         const files = Array.from(e.target.files);
         const validFiles = files.filter(f => f.size <= 5 * 1024 * 1024);
@@ -73,6 +79,10 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
         
         if (!asunto.trim() || !descripcion.trim() || !departamentoId || !ordenId) {
             setErrorMsg('Por favor completá los campos obligatorios (*).');
+            return;
+        }
+        if (fotoObligatoria && !hayFoto) {
+            setErrorMsg('En un reclamo de calidad / producción tenés que adjuntar al menos una foto del problema.');
             return;
         }
 
@@ -175,13 +185,19 @@ export default function CreateTicketModal({ isOpen, onClose, onCreated, initialO
                         </div>
 
                         <div>
-                            <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Adjuntar fotos o archivos (Opcional)</label>
-                            <div className="relative border-2 border-dashed border-zinc-700 rounded-lg p-6 hover:border-custom-cyan/50 transition-colors bg-zinc-800/30 text-center">
-                                <input 
-                                    type="file" 
+                            <label className="block text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">
+                                {fotoObligatoria ? 'Adjuntar fotos del problema *' : 'Adjuntar fotos o archivos (Opcional)'}
+                            </label>
+                            {fotoObligatoria && (
+                                <p className="text-[11px] text-zinc-400 -mt-1 mb-2">En un reclamo de calidad / producción tenés que subir al menos una foto donde se vea el problema.</p>
+                            )}
+                            <div className={`relative border-2 border-dashed rounded-lg p-6 hover:border-custom-cyan/50 transition-colors bg-zinc-800/30 text-center ${fotoObligatoria && !hayFoto ? 'border-amber-500/50' : 'border-zinc-700'}`}>
+                                <input
+                                    type="file"
                                     multiple
                                     accept="image/*,.pdf"
                                     onChange={handleFileChange}
+                                    required={fotoObligatoria && !hayFoto}
                                     className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                                     disabled={loading}
                                 />

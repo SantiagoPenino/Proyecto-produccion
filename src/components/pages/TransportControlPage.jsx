@@ -3,6 +3,14 @@ import { authService } from '../../services/api';
 import { logisticsService } from '../../services/modules/logisticsService';
 import { toast } from 'sonner';
 import { useAuth } from '../../context/AuthContext';
+import { Truck, ScanBarcode, ArrowRight, FileSignature, CheckCircle2, Check, ShieldCheck, AlertTriangle, Loader2, ScanLine } from 'lucide-react';
+
+// Estética nueva (22/10/2026): encabezado con ícono brand-cyan sin fondo, tarjetas blancas zinc, escáner claro,
+// íconos Lucide en vez de Font Awesome y el modal de firma en z-[6000]. El color queda para el estado del escaneo.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO_MODAL = 'w-full px-4 py-2.5 rounded-xl border border-zinc-200 bg-white outline-none font-bold text-zinc-800 placeholder:text-zinc-300 placeholder:font-normal focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
 
 const TransportControlPage = () => {
     const { user } = useAuth();
@@ -178,37 +186,40 @@ const TransportControlPage = () => {
     // Metrics
     const totalItems = remitoData?.items?.length || 0;
     const scannedCount = scannedCodes.size;
-    const progressColor = scannedCount === totalItems ? 'text-emerald-500' : 'text-blue-600';
+    const progressColor = scannedCount === totalItems ? 'text-emerald-600' : 'text-zinc-900';
+
+    const faltanCount = totalItems - scannedCount;
+    const ESTADO_ESCANEO = {
+        success: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+        error:   'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20',
+        warning: 'bg-amber-50 text-amber-700 border-amber-200',
+    };
 
     return (
-        <div className="p-6 bg-slate-100 min-h-screen">
-            <div className="max-w-7xl mx-auto space-y-6">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
+            <div className="space-y-4">
 
                 {/* HEADER */}
-                <div className="flex justify-between items-center bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                    <div>
-                        <h1 className="text-2xl font-black text-slate-800 uppercase tracking-tight">
-                            <i className="fa-solid fa-truck-fast mr-3 text-indigo-600"></i>
-                            Control de Transporte
-                        </h1>
-                        <p className="text-slate-500 text-sm font-medium">Validación de carga por transportista/cadete</p>
+                <div className="flex items-center gap-3">
+                    <Truck size={30} className="text-brand-cyan shrink-0" />
+                    <div className="min-w-0">
+                        <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Control de Transporte</h1>
+                        <p className="text-sm text-zinc-500 mt-1">Validación de carga por transportista/cadete</p>
                     </div>
                 </div>
 
                 {/* STEP 1: SELECT REMITO */}
                 {step === 1 && (
-                    <div className="max-w-2xl mx-auto mt-12 bg-white p-8 rounded-2xl shadow-xl border border-slate-200 text-center">
-                        <div className="w-20 h-20 bg-indigo-50 rounded-full flex items-center justify-center mx-auto mb-6 text-indigo-500 text-3xl">
-                            <i className="fa-solid fa-barcode"></i>
-                        </div>
-                        <h2 className="text-xl font-bold text-slate-800 mb-2">Escanear Remito</h2>
-                        <p className="text-slate-500 mb-6">Escanea el código QR del remito (REM-XXXXXX) para comenzar la validación.</p>
+                    <div className={`${CARD} max-w-2xl mx-auto mt-6 sm:mt-10 px-5 py-8 sm:p-10 text-center`}>
+                        <ScanBarcode size={44} className="text-brand-cyan mx-auto mb-4" />
+                        <h2 className="text-lg font-black text-zinc-900 mb-1">Escanear remito</h2>
+                        <p className="text-sm text-zinc-500 mb-6">Escaneá el código QR del remito (REM-XXXXXX) para comenzar la validación.</p>
 
                         <form onSubmit={handleSearchRemito} className="relative max-w-md mx-auto">
                             <input
                                 autoFocus
                                 type="text"
-                                className="w-full text-center text-2xl font-mono font-bold py-4 px-6 border-2 border-slate-300 rounded-xl focus:border-indigo-500 focus:ring-4 focus:ring-indigo-100 outline-none transition-all uppercase placeholder:text-slate-300"
+                                className="w-full text-center text-xl sm:text-2xl font-mono font-bold text-zinc-900 py-4 pl-4 pr-20 sm:px-20 bg-white border border-zinc-200 rounded-xl outline-none transition-colors uppercase hover:border-zinc-300 focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/10 placeholder:text-zinc-300"
                                 placeholder="REM-000000"
                                 value={remitoCode}
                                 onChange={e => setRemitoCode(e.target.value)}
@@ -216,9 +227,10 @@ const TransportControlPage = () => {
                             <button
                                 type="submit"
                                 disabled={loading || !remitoCode}
-                                className="absolute right-2 top-2 bottom-2 bg-indigo-600 text-white px-6 rounded-lg font-bold hover:bg-indigo-700 transition-colors disabled:opacity-50"
+                                title="Buscar remito"
+                                className="absolute right-2 top-2 bottom-2 w-14 rounded-lg bg-brand-cyan text-white inline-flex items-center justify-center hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                             >
-                                <i className="fa-solid fa-arrow-right"></i>
+                                {loading ? <Loader2 size={20} className="animate-spin" /> : <ArrowRight size={20} />}
                             </button>
                         </form>
                     </div>
@@ -226,43 +238,40 @@ const TransportControlPage = () => {
 
                 {/* STEP 2: SCANNING INTERFACE (COMPACT VERTICAL) */}
                 {step === 2 && remitoData && (
-                    <div className="flex flex-col gap-2 pb-20 mt-4">
+                    <div className="flex flex-col gap-3 pb-20">
                         {/* HEADER DETAIL */}
-                        <div className="flex justify-between items-center bg-white px-4 py-3 rounded-xl shadow-sm border border-slate-200">
-                            <div>
-                                <h1 className="text-lg font-black text-slate-800 uppercase tracking-tight flex items-center gap-2">
-                                    <i className="fa-solid fa-truck-fast text-indigo-600"></i>
-                                    {remitoData.CodigoRemito}
-                                </h1>
-                                <p className="text-slate-500 text-[10px] font-medium">Origen: {remitoData.AreaOrigenID} • Destino: {remitoData.AreaDestinoID}</p>
+                        <div className={`${CARD} px-4 sm:px-5 py-4 flex flex-wrap items-center gap-x-4 gap-y-3`}>
+                            <div className="min-w-0 flex-1">
+                                <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Remito</p>
+                                <h2 className="text-lg font-black font-mono text-zinc-900 leading-tight truncate">{remitoData.CodigoRemito}</h2>
+                                <p className="text-xs text-zinc-500 mt-0.5">Origen: <span className="font-bold text-zinc-700">{remitoData.AreaOrigenID}</span> · Destino: <span className="font-bold text-zinc-700">{remitoData.AreaDestinoID}</span></p>
                             </div>
-                            <div className="text-right flex items-center gap-2 sm:gap-4">
-                                <button onClick={() => setStep(1)} className="bg-slate-100 hover:bg-slate-200 text-slate-600 px-3 py-1.5 rounded-lg font-bold text-[10px] sm:text-xs transition-colors uppercase shadow-sm mr-2 whitespace-nowrap">
-                                    Cambiar
-                                </button>
-                                
-                                <button onClick={handleConfirmClick} className="bg-slate-800 text-white px-4 py-2 rounded-lg font-bold text-[10px] sm:text-xs hover:bg-slate-900 transition-colors uppercase shadow-sm flex items-center gap-2 whitespace-nowrap">
-                                    Confirmar Retiro
-                                    <i className="fa-solid fa-file-signature"></i>
-                                </button>
 
-                                {scannedCount === totalItems && (
-                                    <div className="text-center text-emerald-600 font-bold text-xs py-1 px-2"><i className="fa-solid fa-check-circle mr-1"></i> Completo</div>
-                                )}
-                                
-                                <div className="border-l border-slate-200 pl-4 ml-2">
-                                    <div className={`text-2xl font-black leading-none ${progressColor}`}>
-                                        {scannedCount} <span className="text-slate-300 text-lg">/ {totalItems}</span>
+                            <div className="flex items-center gap-4">
+                                <div className="text-right">
+                                    <div className={`text-2xl font-black leading-none tabular-nums ${progressColor}`}>
+                                        {scannedCount}<span className="text-zinc-300 text-lg"> / {totalItems}</span>
                                     </div>
-                                    <div className="text-[9px] font-bold text-slate-400 uppercase tracking-widest mt-1">Verificados</div>
+                                    <div className="text-[10px] font-black text-zinc-400 uppercase tracking-widest mt-1 inline-flex items-center gap-1">
+                                        {scannedCount === totalItems && <CheckCircle2 size={11} className="text-emerald-600" />}
+                                        {scannedCount === totalItems ? 'Completo' : 'Verificados'}
+                                    </div>
+                                </div>
+                                <div className="flex items-center gap-2">
+                                    <button onClick={() => setStep(1)} className={BTN_SECUNDARIO}>
+                                        Cambiar
+                                    </button>
+                                    <button onClick={handleConfirmClick} className={BTN_PRINCIPAL}>
+                                        <FileSignature size={15} /> Confirmar retiro
+                                    </button>
                                 </div>
                             </div>
                         </div>
 
                         {/* SCANNER COMPACT */}
-                        <div className="bg-slate-800 rounded-xl shadow-lg border border-slate-700 p-3 flex flex-col sm:flex-row justify-center items-center gap-3 relative overflow-hidden">
-                            <h3 className="text-slate-300 font-bold uppercase tracking-wider text-xs whitespace-nowrap">Escáner</h3>
-                            <form onSubmit={(e) => handleScanItem(e)} className="w-full max-w-md">
+                        <div className={`${CARD} p-3 sm:p-4 flex flex-col sm:flex-row items-stretch sm:items-center gap-3`}>
+                            <form onSubmit={(e) => handleScanItem(e)} className="relative flex-1 min-w-0">
+                                <ScanLine size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-cyan pointer-events-none" />
                                 <input
                                     ref={itemInputRef}
                                     autoFocus
@@ -270,26 +279,34 @@ const TransportControlPage = () => {
                                     value={itemInput}
                                     onChange={handleScanInputChange}
                                     onKeyDown={handleKeyDown}
-                                    className="w-full bg-slate-900 border-2 border-slate-600 rounded-lg py-2 px-4 text-center text-white font-mono text-lg focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none transition-all placeholder:text-slate-700"
+                                    aria-label="Escáner de bultos"
+                                    className="w-full pl-12 pr-4 py-3 bg-white border border-zinc-200 rounded-xl font-mono text-lg font-bold text-zinc-800 outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/10 placeholder:text-zinc-300 placeholder:font-normal"
                                     placeholder="Escanear QR..."
                                 />
                             </form>
-                            <div className={`min-w-[180px] flex items-center justify-center rounded-lg p-1.5 font-bold transition-all text-xs ${lastScanMsg?.type === 'success' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/50' : lastScanMsg?.type === 'error' ? 'bg-red-500/20 text-red-400 border border-red-500/50' : lastScanMsg?.type === 'warning' ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/50' : 'bg-transparent text-slate-500'}`}>
-                                {lastScanMsg ? lastScanMsg.text : <span>Esperando...</span>}
+                            <div className={`sm:w-[300px] shrink-0 flex items-center justify-center gap-2 rounded-xl border px-3 py-3 text-xs font-bold text-center transition-colors min-w-0 ${ESTADO_ESCANEO[lastScanMsg?.type] || 'bg-zinc-50 text-zinc-400 border-zinc-200'}`}>
+                                {lastScanMsg?.type === 'success' && <CheckCircle2 size={15} className="shrink-0" />}
+                                {(lastScanMsg?.type === 'error' || lastScanMsg?.type === 'warning') && <AlertTriangle size={15} className="shrink-0" />}
+                                <span className="min-w-0 break-words">{lastScanMsg ? lastScanMsg.text : 'Esperando...'}</span>
                             </div>
                         </div>
 
                         {/* LIST */}
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col overflow-hidden max-h-[600px]">
-                            <div className="p-3 bg-slate-50 border-b border-slate-100 font-bold text-slate-700 text-sm flex justify-between items-center">
-                                <div className="flex items-center gap-4">
-                                    <span>Lista de Carga ({totalItems})</span>
-                                    <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-600 bg-white px-2 py-1 rounded border shadow-sm">
-                                        <input type="checkbox" checked={showOnlyPending} onChange={e => setShowOnlyPending(e.target.checked)} className="form-checkbox text-indigo-600 rounded cursor-pointer" />
-                                        Solo Pendientes
+                        <div className={`${CARD} flex flex-col overflow-hidden max-h-[600px]`}>
+                            <div className="px-4 sm:px-5 py-3 border-b border-zinc-100 flex flex-wrap justify-between items-center gap-2">
+                                <div className="flex flex-wrap items-center gap-3">
+                                    <span className="text-sm font-black uppercase tracking-wide text-zinc-800">Lista de carga <span className="text-zinc-400 tabular-nums">({totalItems})</span></span>
+                                    <label className="inline-flex items-center gap-2 cursor-pointer select-none text-xs font-bold text-zinc-600">
+                                        <input type="checkbox" checked={showOnlyPending} onChange={e => setShowOnlyPending(e.target.checked)} className="w-4 h-4 rounded border-zinc-300 accent-brand-cyan cursor-pointer" />
+                                        Solo pendientes
                                     </label>
                                 </div>
                                 <div className="flex items-center gap-2">
+                                    {faltanCount > 0 && (
+                                        <span className="text-[11px] font-bold px-2.5 py-1 rounded-full border bg-amber-50 text-amber-700 border-amber-200">
+                                            Faltan {faltanCount}
+                                        </span>
+                                    )}
                                     <button
                                         onClick={() => {
                                             if (scannedCodes.size === remitoData.items.length) {
@@ -298,22 +315,13 @@ const TransportControlPage = () => {
                                                 setScannedCodes(new Set(remitoData.items.map(i => i.CodigoEtiqueta)));
                                             }
                                         }}
-                                        className="text-[10px] bg-slate-200 hover:bg-slate-300 text-slate-700 font-bold px-2 py-1 rounded transition-colors uppercase"
+                                        className="px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition-colors"
                                     >
-                                        {scannedCodes.size === remitoData.items.length ? 'Deseleccionar' : 'Marcar Todos'}
+                                        {scannedCodes.size === remitoData.items.length ? 'Deseleccionar' : 'Marcar todos'}
                                     </button>
-                                    
-                                    {(() => {
-                                        const faltanCount = totalItems - scannedCount;
-                                        return faltanCount > 0 ? (
-                                            <span className="text-rose-500 font-bold uppercase text-[10px] bg-rose-50 px-2 py-1 rounded border border-rose-100">
-                                                Faltan {faltanCount}
-                                            </span>
-                                        ) : null;
-                                    })()}
                                 </div>
                             </div>
-                            <div className="flex-1 overflow-y-auto p-3">
+                            <div className="flex-1 overflow-y-auto p-3 sm:p-4">
                                 <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
                                     {remitoData.items.filter(item => {
                                         const scanned = scannedCodes.has(item.CodigoEtiqueta);
@@ -333,19 +341,19 @@ const TransportControlPage = () => {
                                                         setScannedCodes(prev => new Set(prev).add(item.CodigoEtiqueta));
                                                     }
                                                 }}
-                                                className={`p-2 rounded-lg border flex flex-col gap-1 transition-all cursor-pointer select-none text-xs ${scanned
-                                                    ? 'bg-emerald-50 border-emerald-200 opacity-75'
-                                                    : 'bg-white border-slate-100 hover:border-slate-300'
+                                                className={`px-3 py-2.5 rounded-xl border flex flex-col gap-1 transition-colors cursor-pointer select-none text-xs ${scanned
+                                                    ? 'bg-emerald-50 border-emerald-200'
+                                                    : 'bg-white border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50'
                                                     }`}
                                             >
                                                 <div className="flex justify-between items-start gap-2">
-                                                    <div className="font-bold font-mono text-slate-700 truncate">{item.CodigoEtiqueta}</div>
-                                                    <div className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold ${scanned ? 'bg-emerald-500 text-white' : 'bg-slate-100 text-slate-400'}`}>
-                                                        {scanned ? <i className="fa-solid fa-check"></i> : (idx + 1)}
+                                                    <div className="font-bold font-mono text-zinc-800 truncate">{item.CodigoEtiqueta}</div>
+                                                    <div className={`w-5 h-5 shrink-0 rounded-full flex items-center justify-center text-[10px] font-bold tabular-nums ${scanned ? 'bg-emerald-600 text-white' : 'bg-zinc-100 text-zinc-400'}`}>
+                                                        {scanned ? <Check size={12} strokeWidth={3} /> : (idx + 1)}
                                                     </div>
                                                 </div>
-                                                <div className="text-[10px] text-slate-500 truncate w-full">{item.Descripcion || "Sin descripción"}</div>
-                                                {scanned && <span className="text-[9px] font-bold text-emerald-600 uppercase mt-0.5">Verificado</span>}
+                                                <div className="text-[11px] text-zinc-500 truncate w-full">{item.Descripcion || "Sin descripción"}</div>
+                                                {scanned && <span className="text-[10px] font-black text-emerald-700 uppercase tracking-wider mt-0.5">Verificado</span>}
                                             </div>
                                         );
                                     })}
@@ -358,35 +366,35 @@ const TransportControlPage = () => {
 
             {/* AUTH MODAL */}
             {showAuth && (
-                <div className="fixed inset-0 bg-slate-900/80  flex items-center justify-center p-4 z-50">
-                    <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md animate-in zoom-in duration-200">
+                <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-[6000]">
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl p-6 sm:p-8 w-full max-w-md animate-in zoom-in duration-200">
                         <div className="text-center mb-6">
-                            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center mx-auto mb-4 text-slate-600 text-2xl">
-                                <i className="fa-solid fa-user-shield"></i>
-                            </div>
-                            <h3 className="text-xl font-bold text-slate-800">Autenticación de Salida</h3>
-                            <p className="text-slate-500 text-sm">Ingrese credenciales del responsable para firmar la salida.</p>
+                            <ShieldCheck size={40} className="text-brand-cyan mx-auto mb-3" />
+                            <h3 className="text-lg font-black text-zinc-900">Autenticación de salida</h3>
+                            <p className="text-sm text-zinc-500 mt-1">Ingrese credenciales del responsable para firmar la salida.</p>
                         </div>
 
                         <form onSubmit={handleAuthSubmit} className="space-y-4">
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Usuario</label>
+                                <label htmlFor="transporte-usuario" className="block text-[11px] font-black text-zinc-400 uppercase tracking-widest mb-1.5">Usuario</label>
                                 <input
+                                    id="transporte-usuario"
                                     type="text"
                                     autoFocus
                                     autoComplete="username"
-                                    className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-200 outline-none font-bold text-slate-700"
+                                    className={CAMPO_MODAL}
                                     placeholder="ej: usuario.sistema"
                                     value={creds.username || ''} // Handle undefined init
                                     onChange={e => setCreds(prev => ({ ...prev, username: e.target.value }))}
                                 />
                             </div>
                             <div>
-                                <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Contraseña</label>
+                                <label htmlFor="transporte-clave" className="block text-[11px] font-black text-zinc-400 uppercase tracking-widest mb-1.5">Contraseña</label>
                                 <input
+                                    id="transporte-clave"
                                     type="password"
                                     autoComplete="current-password"
-                                    className="w-full px-4 py-2 rounded-lg border border-slate-300 focus:ring-2 focus:ring-indigo-200 outline-none font-bold text-slate-700"
+                                    className={CAMPO_MODAL}
                                     placeholder="••••••••"
                                     value={creds.password || ''}
                                     onChange={e => setCreds(prev => ({ ...prev, password: e.target.value }))}
@@ -394,28 +402,28 @@ const TransportControlPage = () => {
                             </div>
 
                             {scannedCount < totalItems && (
-                                <div className="p-3 bg-amber-50 rounded-lg border border-amber-200 text-amber-800 text-xs font-medium flex gap-2">
-                                    <i className="fa-solid fa-triangle-exclamation mt-0.5"></i>
+                                <div className="px-3.5 py-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-800 text-xs font-medium flex gap-2">
+                                    <AlertTriangle size={15} className="shrink-0 mt-px" />
                                     <div>
                                         Advertencia: Solo has verificado {scannedCount} de {totalItems} bultos. Esto generará un retiro parcial.
                                     </div>
                                 </div>
                             )}
 
-                            <div className="pt-4 flex gap-3">
+                            <div className="pt-2 flex gap-3">
                                 <button
                                     type="button"
                                     onClick={() => setShowAuth(false)}
-                                    className="flex-1 py-2 rounded-lg border border-slate-200 font-bold text-slate-600 hover:bg-slate-50"
+                                    className={`${BTN_SECUNDARIO} flex-1 py-2.5`}
                                 >
                                     Cancelar
                                 </button>
                                 <button
                                     type="submit"
                                     disabled={loading}
-                                    className="flex-1 py-2 rounded-lg bg-emerald-600 text-white font-bold hover:bg-emerald-700 shadow-md shadow-emerald-200"
+                                    className={`${BTN_PRINCIPAL} flex-1 py-2.5`}
                                 >
-                                    {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : 'Firmar y Salir'}
+                                    {loading ? <Loader2 size={16} className="animate-spin" /> : 'Firmar y Salir'}
                                 </button>
                             </div>
                         </form>

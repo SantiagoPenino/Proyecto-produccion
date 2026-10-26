@@ -15,9 +15,13 @@ exports.getCategorias = async (req, res) => {
         // Si es cliente, filtramos los departamentos que sean "Públicos Web"
         // Si no existe la configuración, mandamos un mapeo hardcodeado hasta que creen la tabla
         
+        // RequiereFoto: en los reclamos de CALIDAD / PRODUCCIÓN el cliente tiene que adjuntar al menos
+        // una foto del problema (22/10, pedido de Santiago). Se reconoce por el nombre (ver
+        // departamentoPideFoto, que lo vuelve a controlar al crear el ticket).
         let query = `
-            SELECT DepIdDepartamento as ID, DepNombre as Nombre, DepAplicaClienteWeb as AplicaWeb 
-            FROM Tickets_Departamentos 
+            SELECT DepIdDepartamento as ID, DepNombre as Nombre, DepAplicaClienteWeb as AplicaWeb,
+                   CAST(CASE WHEN DepNombre LIKE '%calidad%' THEN 1 ELSE 0 END AS bit) AS RequiereFoto
+            FROM Tickets_Departamentos
             WHERE DepActivo = 1
         `;
         
@@ -37,7 +41,7 @@ exports.getCategorias = async (req, res) => {
         } catch (e) {
             // Fallback si la tabla aún no fue creada
             const fakeData = isClient ? [
-                { ID: 1, Nombre: "Reclamo de Calidad / Producción" },
+                { ID: 1, Nombre: "Reclamo de Calidad / Producción", RequiereFoto: true },
                 { ID: 2, Nombre: "Consultas de Finanzas / Pagos" },
                 { ID: 3, Nombre: "Dudas sobre mi Envío / Logística" },
                 { ID: 4, Nombre: "Presupuestos / Área de Ventas" },
@@ -64,9 +68,12 @@ exports.getCategorias = async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // ÓRDENES VINCULABLES A UN TICKET (portal)
 // ─────────────────────────────────────────────────────────────────────────────
-// Órdenes del cliente ENTREGADAS en los últimos 30 días. La entrega vive en el
-// circuito de depósito: OrdenesDeposito.OrdEstadoActual = Entregado, con
-// OrdFechaEstadoActual como fecha de entrega. El OrdenID devuelto prioriza la
+// Órdenes del cliente ENTREGADAS (OrdenesDeposito.OrdEstadoActual = 9) cuyo AVISO fue hace 21 días o
+// menos (22/10, pedido de Santiago: "tiene que estar entregado pero el tiempo límite es 21 días de
+// avisado"; antes: entregadas en los últimos 30 días). El aviso es OrdenesDeposito.OrdFechaAvisoWsp, que
+// escriben el aviso por WhatsApp (wspAvisos.job) y el "marcar avisado" manual (omitirWsp). Una orden
+// entregada sin aviso (se retiró enseguida, ~2 % de las entregadas) cuenta desde la entrega
+// (OrdFechaEstadoActual). El OrdenID devuelto prioriza la
 // orden de producción (Ordenes) para que Tickets.OrdIdOrden apunte a la misma
 // tabla que resuelve getTickets; el id de depósito queda para pedidos de
 // mostrador que no existen en Ordenes.
@@ -97,9 +104,9 @@ exports.getOrdenesRecientes = async (req, res) => {
                     COALESCE(prod.OrdenID, od.OrdIdOrden) AS OrdenID,
                     LTRIM(RTRIM(od.OrdCodigoOrden))       AS CodigoOrden,
                     LTRIM(RTRIM(ISNULL(od.OrdNombreTrabajo, ''))) AS Trabajo,
-                    od.OrdFechaEstadoActual               AS FechaEntrega
+                    av.FechaAviso                         AS FechaAviso
                 FROM OrdenesDeposito od WITH(NOLOCK)
-                INNER JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = od.OrdEstadoActual
+                CROSS APPLY (SELECT COALESCE(od.OrdFechaAvisoWsp, od.OrdFechaEstadoActual) AS FechaAviso) av
                 OUTER APPLY (
                     SELECT TOP 1 o2.OrdenID
                     FROM Ordenes o2 WITH(NOLOCK)
@@ -108,10 +115,10 @@ exports.getOrdenesRecientes = async (req, res) => {
                     ORDER BY o2.OrdenID ASC
                 ) prod
                 WHERE od.CliIdCliente = @cliId
-                  AND UPPER(LTRIM(RTRIM(e.EOrNombreEstado))) LIKE 'ENTREGADO%'
-                  AND od.OrdFechaEstadoActual >= DATEADD(DAY, -30, GETDATE())
+                  AND od.OrdEstadoActual = 9                                  -- Entregado
+                  AND av.FechaAviso >= DATEADD(DAY, -21, GETDATE())           -- avisada hace 21 días o menos
                   AND od.OrdCodigoOrden NOT LIKE '%-F%'   -- las fallas (-F) son internas
-                ORDER BY od.OrdFechaEstadoActual DESC
+                ORDER BY av.FechaAviso DESC
             `);
 
         res.json({ success: true, data: result.recordset });
@@ -121,6 +128,20 @@ exports.getOrdenesRecientes = async (req, res) => {
     }
 };
 
+// ¿El departamento pide foto obligatoria? Los de CALIDAD / PRODUCCIÓN (por el nombre, igual que
+// RequiereFoto en getCategorias). Sin la tabla, el fallback de getCategorias usa el ID 1.
+async function departamentoPideFoto(pool, departamentoId) {
+    const id = parseInt(departamentoId, 10);
+    try {
+        const r = await pool.request().input('Id', sql.Int, id)
+            .query('SELECT DepNombre FROM Tickets_Departamentos WITH (NOLOCK) WHERE DepIdDepartamento = @Id');
+        return /calidad/i.test(String(r.recordset[0]?.DepNombre || ''));
+    } catch (e) {
+        logger.warn(`[Tickets] no se pudo leer el departamento ${id} para la foto obligatoria: ${e.message}`);
+        return id === 1;
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // CREACIÓN DE UN NUEVO TICKET
 // ─────────────────────────────────────────────────────────────────────────────
@@ -128,15 +149,25 @@ exports.createTicket = async (req, res) => {
     try {
         const { asunto, departamentoId, prioridad, descripcion, ordenId } = req.body;
         const isClient = req.user && req.user.role === 'WEB_CLIENT';
-        
+
         const cliIdCliente = isClient ? req.user.id : null;
         const usrIdCreador = !isClient ? req.user.id : null; // Asumiendo que admins tienen id en req.user
-        
+
         if (!asunto || !departamentoId || !descripcion) {
             return res.status(400).json({ error: 'El asunto, área y descripción son requeridos.' });
         }
 
         const pool = await getPool();
+
+        // Reclamo de calidad / producción desde el portal: tiene que traer al menos una FOTO (22/10). El
+        // portal ya no deja enviarlo sin, pero acá es donde manda. Los tickets internos no se frenan.
+        const adjuntos = Array.isArray(req.files) ? req.files : [];
+        if (isClient && !adjuntos.some(f => /^image\//i.test(f.mimetype || '')) && await departamentoPideFoto(pool, departamentoId)) {
+            for (const f of adjuntos) {
+                if (f.path) fs.unlink(f.path, (e) => { if (e) logger.warn(`[Tickets] no se pudo borrar el temporal ${f.path}: ${e.message}`); });
+            }
+            return res.status(400).json({ error: 'En un reclamo de calidad / producción tenés que adjuntar al menos una foto del problema.' });
+        }
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
 

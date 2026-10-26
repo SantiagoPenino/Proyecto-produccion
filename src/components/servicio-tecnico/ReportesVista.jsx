@@ -45,8 +45,8 @@ const Totales = ({ t }) => (
         <Tarjeta titulo="Nuevas" valor={t.Nuevas} />
         <Tarjeta titulo="Finalizadas" valor={t.Finalizadas} nota={`${t.Resueltas} resueltas`} />
         <Tarjeta titulo="Abiertas ahora" valor={t.AbiertasAhora} />
-        <Tarjeta titulo="Respuesta" valor={t.RespuestaProm != null ? fmtDuracion(t.RespuestaProm) : '—'} nota="promedio hasta tomarla" />
-        <Tarjeta titulo="Resolución" valor={t.ResolucionProm != null ? fmtDuracion(t.ResolucionProm) : '—'} nota="promedio hasta finalizarla" />
+        <Tarjeta titulo="Respuesta" valor={t.RespuestaProm != null ? fmtDuracion(t.RespuestaProm) : '—'} nota="promedio del pedido hasta tomarla" />
+        <Tarjeta titulo="Resolución" valor={t.ResolucionProm != null ? fmtDuracion(t.ResolucionProm) : '—'} nota="promedio desde que se tomó hasta finalizarla" />
         <Tarjeta titulo="Parada" valor={fmtDuracion(t.MinutosParada) || '0 min'} nota="máquinas reportadas paradas" />
         <Tarjeta titulo="Derivaciones" valor={t.Derivaciones} />
     </div>

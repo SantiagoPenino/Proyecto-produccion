@@ -1,6 +1,9 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const { getPool, sql } = require('../config/db');
+const logger = require('../utils/logger');
+// Tope de memoria para los dos scripts (23/10/2026): si lo pasan, falla solo el script
+const { entornoConTope, describirFallo } = require('../utils/topeMemoriaPython');
 
 const SCRIPT_PATH = process.env.COLOR_SCRIPT_PATH || '/var/www/sistema-produccion/scripts/igualador_color.py';
 const CALIB_SCRIPT_PATH = process.env.COLOR_CALIB_SCRIPT_PATH || SCRIPT_PATH.replace(/igualador_color\.py$/, 'color_calibrate.py');
@@ -20,7 +23,8 @@ const match = async (req, res) => {
     if (salida) args.push('--salida', salida);
 
     const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-    const child = spawn(pythonCmd, [SCRIPT_PATH, ...args]);
+    const env = entornoConTope();
+    const child = spawn(pythonCmd, [SCRIPT_PATH, ...args], { env });
 
     let output = '';
     let errorOutput = '';
@@ -28,8 +32,9 @@ const match = async (req, res) => {
     child.stdout.on('data', d => { output += d.toString(); });
     child.stderr.on('data', d => { errorOutput += d.toString(); });
 
-    child.on('close', code => {
+    child.on('close', (code, signal) => {
         if (code !== 0) {
+            logger.warn(`[Color] igualador_color falló: ${describirFallo({ code, signal }, errorOutput, env)}`);
             return res.status(500).json({
                 success: false,
                 error: errorOutput.trim() || `El script terminó con código ${code}. Verificá que Python y transicc (LittleCMS) estén instalados en el servidor.`
@@ -238,12 +243,14 @@ const calibrate = async (req, res) => {
 
         const payload = JSON.stringify({ patches, sample_rgb: sampleRgb });
         const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-        const child = spawn(pythonCmd, [CALIB_SCRIPT_PATH]);
+        const env = entornoConTope();
+        const child = spawn(pythonCmd, [CALIB_SCRIPT_PATH], { env });
         let output = '', errorOutput = '';
         child.stdout.on('data', d => { output += d.toString(); });
         child.stderr.on('data', d => { errorOutput += d.toString(); });
-        child.on('close', code => {
+        child.on('close', (code, signal) => {
             if (code !== 0) {
+                logger.warn(`[Color] color_calibrate falló: ${describirFallo({ code, signal }, errorOutput, env)}`);
                 return res.status(500).json({ success: false, error: errorOutput.trim() || `El calibrador terminó con código ${code}. Verificá que numpy esté instalado en el server.` });
             }
             try {

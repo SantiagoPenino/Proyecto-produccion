@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ScanLine, CheckCircle2, AlertCircle, Loader2, RefreshCw, Send, Hash, User, FileText, Tag, Package, BarChart2, DollarSign, Edit3, X } from 'lucide-react';
+import { ScanLine, CheckCircle2, AlertCircle, AlertTriangle, Loader2, RefreshCw, Send, Hash, User, FileText, Tag, Package, BarChart2, DollarSign, Edit3, X } from 'lucide-react';
 import api from '../../services/api';
 
 // ─── Definición de los 7 campos del QR ──────────────────────────────────────
@@ -12,6 +12,13 @@ const CAMPOS_QR = [
     { key: 'Cantidad',         label: 'Cantidad',            icon: BarChart2,  pos: 5, desc: 'Cantidad de unidades' },
     { key: 'CostoFinal',       label: 'Costo Final',        icon: DollarSign, pos: 6, desc: 'Costo final del trabajo' },
 ];
+
+// Estética nueva (22/10/2026): encabezado con ícono brand-cyan sin fondo, tarjetas blancas zinc, color solo
+// para el resultado (emerald válido, brand-magenta error, amber editando) y sin emojis ni símbolos.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-5 py-3 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const ROTULO = 'text-[11px] font-black uppercase tracking-widest text-zinc-400';
 
 const VerificarCodigoPage = () => {
     const [rawCode, setRawCode]     = useState('');
@@ -78,8 +85,8 @@ const VerificarCodigoPage = () => {
             if (err.response?.status === 404) {
                 const isCliente = msg.toLowerCase().includes('cliente');
                 const isProducto = msg.toLowerCase().includes('producto');
-                if (isCliente) labelError = `❌ Cliente no encontrado — ${msg}`;
-                else if (isProducto) labelError = `❌ Producto no encontrado — ${msg}`;
+                if (isCliente) labelError = `Cliente no encontrado — ${msg}`;
+                else if (isProducto) labelError = `Producto no encontrado — ${msg}`;
             }
             setResult({ valid: false, error: labelError, rawParts: localParts, raw: code });
             if (localParts) setEditFields({ ...localParts });
@@ -113,8 +120,8 @@ const VerificarCodigoPage = () => {
             let msg = 'Error inesperado al ingresar.';
             if (status === 400) msg = 'La orden ya fue ingresada previamente en depósito.';
             if (status === 403) msg = 'El campo cliente está vacío en la etiqueta.';
-            if (status === 404) msg = `❌ Cliente no encontrado — ID QR "${editFields.CodigoClienteQR}" no existe en el sistema local. Revisá y editá el campo "ID Cliente (QR)".`;
-            if (status === 405) msg = `❌ Producto no encontrado — ID QR "${editFields.IdProductoQR}" no existe en el sistema local. Revisá y editá el campo "ID Producto (QR)".`;
+            if (status === 404) msg = `Cliente no encontrado — ID QR "${editFields.CodigoClienteQR}" no existe en el sistema local. Revisá y editá el campo "ID Cliente (QR)".`;
+            if (status === 405) msg = `Producto no encontrado — ID QR "${editFields.IdProductoQR}" no existe en el sistema local. Revisá y editá el campo "ID Producto (QR)".`;
             if (status === 500) msg = 'Falla interna del servidor.';
             setIngresadoMsg({ ok: false, text: msg });
         } finally {
@@ -132,7 +139,9 @@ const VerificarCodigoPage = () => {
     };
 
     // ─── Campo individual ────────────────────────────────────────────────────
-    const CampoQR = ({ campo, validado }) => {
+    // Se llama como función ({campoQR(...)}), no como <CampoQR />: al estar definido adentro del componente,
+    // como elemento se volvía a montar en cada tecla y el campo en edición perdía el foco.
+    const campoQR = ({ campo, validado }) => {
         const Icon = campo.icon;
         const rawVal   = result?.rawParts?.[campo.key] ?? '—';
         const validVal = validado?.[campo.key] ?? null;
@@ -143,76 +152,80 @@ const VerificarCodigoPage = () => {
         const isMissing = !result?.rawParts; // no se pudo parsear la estructura
 
         return (
-            <div className={`rounded-xl border-2 p-3 transition-all ${
+            <div key={campo.key} className={`rounded-xl border px-3.5 py-3 transition-colors ${
                 isEmpty || isMissing
-                    ? 'border-red-200 bg-red-50'
-                    : 'border-slate-200 bg-white hover:border-blue-200'
+                    ? 'border-brand-magenta/20 bg-brand-magenta/5'
+                    : 'border-zinc-200 bg-white hover:border-zinc-300'
             }`}>
                 <div className="flex items-center gap-2 mb-1">
-                    <Icon size={13} className={isEmpty ? 'text-red-400' : 'text-blue-400'} />
-                    <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">{campo.label}</span>
-                    <span className="text-[10px] text-slate-300 ml-auto">Campo {campo.pos + 1}/7</span>
+                    <Icon size={13} className={isEmpty ? 'text-brand-magenta' : 'text-brand-cyan'} />
+                    <span className="text-[10px] font-black uppercase tracking-wider text-zinc-400">{campo.label}</span>
+                    <span className="text-[10px] font-bold text-zinc-300 ml-auto tabular-nums">{campo.pos + 1}/7</span>
                 </div>
 
                 {editando ? (
                     <input
-                        className="w-full text-sm font-bold border border-blue-300 rounded-lg px-2 py-1 focus:outline-none focus:border-blue-500 bg-blue-50"
+                        className="w-full text-sm font-bold text-zinc-800 border border-zinc-200 rounded-lg px-2.5 py-1.5 bg-white outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
                         value={editFields[campo.key] ?? ''}
                         onChange={e => setEditFields(prev => ({ ...prev, [campo.key]: e.target.value }))}
                     />
-                ) : (
-                    <p className={`text-sm font-bold truncate ${isEmpty ? 'text-red-500' : 'text-slate-800'}`}>
-                        {isEmpty ? '⚠ VACÍO' : String(displayVal)}
+                ) : isEmpty ? (
+                    <p className="text-sm font-bold text-brand-magenta inline-flex items-center gap-1.5">
+                        <AlertTriangle size={14} /> Vacío
                     </p>
+                ) : (
+                    <p className="text-sm font-bold truncate text-zinc-800">{String(displayVal)}</p>
                 )}
 
-                <p className="text-[10px] text-slate-400 mt-0.5 leading-tight">{campo.desc}</p>
+                <p className="text-[11px] text-zinc-400 mt-0.5 leading-tight">{campo.desc}</p>
             </div>
         );
     };
 
     // ─── Datos enriquecidos del servidor ─────────────────────────────────────
     const DatoServidor = ({ label, value, icon: Icon }) => (
-        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-            <Icon size={13} className="text-emerald-500 shrink-0" />
-            <div>
-                <p className="text-[10px] font-bold text-emerald-600 uppercase">{label}</p>
-                <p className="text-sm font-bold text-slate-800">{value}</p>
+        <div className="flex items-start gap-2.5 bg-zinc-50 rounded-xl px-3.5 py-2.5 min-w-0">
+            <Icon size={14} className="text-brand-cyan shrink-0 mt-0.5" />
+            <div className="min-w-0">
+                <p className="text-[10px] font-black text-zinc-400 uppercase tracking-wider">{label}</p>
+                <p className="text-sm font-bold text-zinc-800 break-words">{value}</p>
             </div>
         </div>
     );
 
     return (
-        <div className="min-h-full flex flex-col gap-5 p-4 lg:p-8 font-sans bg-[#f6f8fb]">
+        <div className="min-h-full flex flex-col gap-4 px-3 sm:px-6 py-5 text-zinc-700">
             {/* Header */}
             <div className="flex items-center gap-3">
-                <div className="bg-blue-600 text-white p-2.5 rounded-xl">
-                    <ScanLine size={22} />
-                </div>
-                <div>
-                    <h1 className="text-2xl font-black text-slate-800">Verificar Código de Barras</h1>
-                    <p className="text-sm text-slate-400">Escanea o pegá un código QR para desglosar y validar sus 7 campos</p>
+                <ScanLine size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-0">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Verificar código de barras</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Escaneá o pegá un código QR para desglosar y validar sus 7 campos</p>
                 </div>
             </div>
 
             {/* Input de escaneo */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-                <label className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2 block">Código de barras / QR</label>
-                <div className="flex gap-2">
-                    <input
-                        ref={inputRef}
-                        type="text"
-                        value={rawCode}
-                        onChange={e => setRawCode(e.target.value)}
-                        onKeyDown={e => e.key === 'Enter' && handleValidar()}
-                        placeholder="Escaneá aquí o pegá el código..."
-                        className="flex-1 bg-slate-50 border-2 border-slate-200 rounded-xl px-4 py-3 text-slate-800 font-mono text-sm outline-none focus:border-blue-500 transition-colors"
-                        autoComplete="off"
-                    />
+            <div className={`${CARD} p-5`}>
+                <label htmlFor="verificar-codigo" className={`${ROTULO} mb-1.5 block`}>Código de barras / QR</label>
+                <div className="flex flex-wrap sm:flex-nowrap gap-2">
+                    <div className="relative w-full sm:w-auto sm:flex-1 min-w-0">
+                        <ScanLine size={20} className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-cyan pointer-events-none" />
+                        <input
+                            id="verificar-codigo"
+                            ref={inputRef}
+                            type="text"
+                            value={rawCode}
+                            onChange={e => setRawCode(e.target.value)}
+                            onKeyDown={e => e.key === 'Enter' && handleValidar()}
+                            placeholder="Escaneá aquí o pegá el código..."
+                            className="w-full pl-12 pr-4 py-3 bg-white border border-zinc-200 rounded-xl font-mono text-sm font-bold text-zinc-800 outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/10 placeholder:text-zinc-300 placeholder:font-normal"
+                            autoComplete="off"
+                        />
+                    </div>
                     <button
                         onClick={() => handleValidar()}
                         disabled={loading || !rawCode.trim()}
-                        className="bg-blue-600 hover:bg-blue-700 text-white font-bold px-6 py-3 rounded-xl flex items-center gap-2 transition-all disabled:opacity-40 whitespace-nowrap"
+                        className={`${BTN_PRINCIPAL} whitespace-nowrap flex-1 sm:flex-none`}
                     >
                         {loading ? <Loader2 size={16} className="animate-spin" /> : <ScanLine size={16} />}
                         Validar
@@ -220,7 +233,7 @@ const VerificarCodigoPage = () => {
                     {(result || rawCode) && (
                         <button
                             onClick={handleLimpiar}
-                            className="bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold px-4 py-3 rounded-xl transition-all"
+                            className="shrink-0 w-12 rounded-xl border border-zinc-200 bg-white text-zinc-400 inline-flex items-center justify-center transition-colors hover:text-zinc-700 hover:bg-zinc-50"
                             title="Limpiar"
                         >
                             <X size={16} />
@@ -229,37 +242,35 @@ const VerificarCodigoPage = () => {
                 </div>
 
                 {/* Estructura esperada */}
-                <p className="text-[11px] text-slate-400 mt-2 font-mono">
-                    Estructura: <span className="text-blue-400">CodOrden</span> $* <span className="text-blue-400">IDCliente</span> $* <span className="text-blue-400">NombreTrabajo</span> $* <span className="text-blue-400">Modo</span> $* <span className="text-blue-400">IDProducto</span> $* <span className="text-blue-400">Cantidad</span> $* <span className="text-blue-400">Costo</span>
+                <p className="text-[11px] text-zinc-400 mt-2.5 font-mono break-words">
+                    Estructura: <span className="text-brand-cyan">CodOrden</span> $* <span className="text-brand-cyan">IDCliente</span> $* <span className="text-brand-cyan">NombreTrabajo</span> $* <span className="text-brand-cyan">Modo</span> $* <span className="text-brand-cyan">IDProducto</span> $* <span className="text-brand-cyan">Cantidad</span> $* <span className="text-brand-cyan">Costo</span>
                 </p>
             </div>
 
             {/* Resultado */}
             {result && (
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
 
                     {/* Panel izquierdo: 7 campos */}
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col gap-3">
-                        <div className="flex items-center justify-between mb-1">
-                            <h3 className="text-sm font-black text-slate-700 uppercase tracking-wider">Desglose de los 7 Campos</h3>
+                    <div className={`${CARD} p-5 flex flex-col gap-2.5`}>
+                        <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+                            <h3 className="text-sm font-black text-zinc-800 uppercase tracking-wide">Desglose de los 7 campos</h3>
                             {result.rawParts ? (
-                                <span className="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">7 campos detectados</span>
+                                <span className="text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-full">7 campos detectados</span>
                             ) : (
-                                <span className="text-[10px] font-bold text-red-600 bg-red-50 border border-red-200 px-2 py-0.5 rounded-full">
+                                <span className="text-[11px] font-bold text-brand-magenta bg-brand-magenta/10 border border-brand-magenta/20 px-2.5 py-1 rounded-full">
                                     {rawCode.split('$*').length} campos — se esperan 7
                                 </span>
                             )}
                         </div>
 
                         {result.rawParts ? (
-                            CAMPOS_QR.map(c => (
-                                <CampoQR key={c.key} campo={c} validado={result.valid ? result.data : null} />
-                            ))
+                            CAMPOS_QR.map(c => campoQR({ campo: c, validado: result.valid ? result.data : null }))
                         ) : (
-                            <div className="bg-red-50 border-2 border-red-200 rounded-xl p-4 text-center">
-                                <AlertCircle size={32} className="text-red-400 mx-auto mb-2" />
-                                <p className="text-sm font-bold text-red-700">Código malformado</p>
-                                <p className="text-xs text-red-500 mt-1">No se encontraron 7 partes separadas por <code>$*</code>. El código tiene {rawCode.split('$*').length} partes.</p>
+                            <div className="bg-brand-magenta/5 border border-brand-magenta/20 rounded-xl p-5 text-center">
+                                <AlertCircle size={32} className="text-brand-magenta mx-auto mb-2" />
+                                <p className="text-sm font-bold text-brand-magenta">Código malformado</p>
+                                <p className="text-xs text-zinc-500 mt-1">No se encontraron 7 partes separadas por <code className="font-mono font-bold text-zinc-700">$*</code>. El código tiene {rawCode.split('$*').length} partes.</p>
                             </div>
                         )}
 
@@ -267,13 +278,13 @@ const VerificarCodigoPage = () => {
                         {result.rawParts && (
                             <button
                                 onClick={() => setEditando(v => !v)}
-                                className={`flex items-center justify-center gap-2 py-2 rounded-xl border-2 font-bold text-sm transition-all mt-1 ${
+                                className={`flex items-center justify-center gap-2 py-2.5 rounded-xl border font-bold text-sm transition-colors mt-1 ${
                                     editando
-                                        ? 'border-amber-300 bg-amber-50 text-amber-700'
-                                        : 'border-slate-200 bg-white text-slate-600 hover:border-blue-300 hover:text-blue-600'
+                                        ? 'border-amber-200 bg-amber-50 text-amber-700'
+                                        : 'border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50'
                                 }`}
                             >
-                                <Edit3 size={14} />
+                                <Edit3 size={14} className={editando ? '' : 'text-brand-cyan'} />
                                 {editando ? 'Editando campos...' : 'Editar campos manualmente'}
                             </button>
                         )}
@@ -283,18 +294,18 @@ const VerificarCodigoPage = () => {
                     <div className="flex flex-col gap-4">
 
                         {/* Estado de validación */}
-                        <div className={`rounded-2xl border-2 p-4 ${result.valid ? 'border-emerald-200 bg-emerald-50' : 'border-red-200 bg-red-50'}`}>
+                        <div className={`rounded-2xl border p-4 ${result.valid ? 'border-emerald-200 bg-emerald-50' : 'border-brand-magenta/20 bg-brand-magenta/5'}`}>
                             <div className="flex items-start gap-3">
                                 {result.valid
-                                    ? <CheckCircle2 size={28} className="text-emerald-500 shrink-0 mt-0.5" />
-                                    : <AlertCircle size={28} className="text-red-500 shrink-0 mt-0.5" />
+                                    ? <CheckCircle2 size={26} className="text-emerald-600 shrink-0" />
+                                    : <AlertCircle size={26} className="text-brand-magenta shrink-0" />
                                 }
-                                <div>
-                                    <p className={`font-black text-base ${result.valid ? 'text-emerald-700' : 'text-red-700'}`}>
-                                        {result.valid ? '✓ Código válido' : '✗ Error de validación'}
+                                <div className="min-w-0">
+                                    <p className={`font-black text-base ${result.valid ? 'text-emerald-700' : 'text-brand-magenta'}`}>
+                                        {result.valid ? 'Código válido' : 'Error de validación'}
                                     </p>
                                     {result.error && (
-                                        <p className="text-sm text-red-600 mt-1">{result.error}</p>
+                                        <p className="text-sm text-zinc-600 mt-1 break-words">{result.error}</p>
                                     )}
                                 </div>
                             </div>
@@ -302,8 +313,8 @@ const VerificarCodigoPage = () => {
 
                         {/* Datos resueltos del servidor */}
                         {result.valid && result.data && (
-                            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
-                                <h3 className="text-xs font-black text-slate-500 uppercase tracking-wider mb-3">Datos resueltos por el servidor</h3>
+                            <div className={`${CARD} p-5`}>
+                                <h3 className={`${ROTULO} mb-3`}>Datos resueltos por el servidor</h3>
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                     <DatoServidor label="Código Orden" value={result.data.CodigoOrden}       icon={Hash} />
                                     <DatoServidor label="Cliente"      value={result.data.CodigoCliente}     icon={User} />
@@ -318,8 +329,8 @@ const VerificarCodigoPage = () => {
                         )}
 
                         {/* Acción: re-validar o ingresar */}
-                        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 flex flex-col gap-3">
-                            <h3 className="text-xs font-black text-slate-500 uppercase tracking-wider">Acciones</h3>
+                        <div className={`${CARD} p-5 flex flex-col gap-2.5`}>
+                            <h3 className={ROTULO}>Acciones</h3>
 
                             {editando && (
                                 <button
@@ -329,25 +340,25 @@ const VerificarCodigoPage = () => {
                                         setRawCode(newCode);
                                         handleValidar(newCode);
                                     }}
-                                    className="flex items-center justify-center gap-2 bg-amber-500 hover:bg-amber-600 text-white font-bold py-2.5 px-4 rounded-xl text-sm transition-all"
+                                    className={BTN_SECUNDARIO}
                                 >
-                                    <RefreshCw size={15} /> Re-validar con campos editados
+                                    <RefreshCw size={15} className="text-brand-cyan" /> Re-validar con campos editados
                                 </button>
                             )}
 
                             <button
                                 onClick={handleIngresar}
                                 disabled={ingresando || !editFields.CodigoOrden}
-                                className="flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-2.5 px-4 rounded-xl text-sm transition-all disabled:opacity-40"
+                                className={`${BTN_PRINCIPAL} py-2.5`}
                             >
                                 {ingresando ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                                 Ingresar al depósito
                             </button>
 
                             {ingresadoMsg && (
-                                <div className={`rounded-xl p-3 text-sm font-bold flex items-center gap-2 ${ingresadoMsg.ok ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' : 'bg-red-50 border border-red-200 text-red-700'}`}>
-                                    {ingresadoMsg.ok ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
-                                    {ingresadoMsg.text}
+                                <div className={`rounded-xl px-3.5 py-3 text-sm font-bold flex items-start gap-2 ${ingresadoMsg.ok ? 'bg-emerald-50 border border-emerald-200 text-emerald-700' : 'bg-brand-magenta/5 border border-brand-magenta/20 text-brand-magenta'}`}>
+                                    {ingresadoMsg.ok ? <CheckCircle2 size={16} className="shrink-0 mt-0.5" /> : <AlertCircle size={16} className="shrink-0 mt-0.5" />}
+                                    <span className="min-w-0 break-words">{ingresadoMsg.text}</span>
                                 </div>
                             )}
                         </div>

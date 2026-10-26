@@ -10,8 +10,15 @@ los parches de la chart (rgb medido en la foto vs lab medido con espectro), y la
 aplica a la muestra. Devuelve el LAB calibrado + el error medio del ajuste (dE2000),
 que sirve como indicador de calidad de la foto.
 """
-import sys, json, math
+import sys, json, math, os
 import numpy as np
+
+# Tope de memoria (23/10/2026): python/_tope_memoria.py, al lado de esta carpeta; sin el módulo corre sin tope
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "python"))
+try:
+    import _tope_memoria
+except ImportError:
+    _tope_memoria = None
 
 
 def poly_features(r, g, b):
@@ -86,4 +93,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # PY_MAX_MEM_MB lo pone colorController: si lo pasa, falla solo este script (stderr + código 1)
+    if _tope_memoria:
+        _tope_memoria.aplicar()
+    try:
+        main()
+    except MemoryError as e:
+        print(f"sin memoria suficiente para procesarlo ({str(e) or 'MemoryError'})", file=sys.stderr)
+        sys.exit(1)

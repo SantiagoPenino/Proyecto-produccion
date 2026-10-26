@@ -1,90 +1,99 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api';
 import {
-    Package, RefreshCcw, TrendingUp, Clock, CheckCircle2,
-    ShoppingBag, AlertTriangle, Users, DollarSign, ArrowDown, ArrowUp,
-    Boxes, Loader2
+    Package, RefreshCcw, TrendingUp, ShoppingBag, AlertTriangle, Users, DollarSign, ArrowDown, ArrowUp,
+    Boxes, Warehouse,
 } from 'lucide-react';
+
+// Estética nueva (22/10/2026, como Reportes y Logística): tarjetas blancas con borde, íconos de Lucide en brand-cyan sin
+// fondo y el color solo para lo que es estado. Antes cada estado tenía su color (azul, índigo, violeta, celeste…):
+// ahora son cinco tonos con significado — gris (ingresado), brand-cyan (en curso), ámbar (esperando algo),
+// verde (listo / pagado) y rojo (problema). Los tipos de cliente no son estados: van todos en brand-cyan.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const TONOS = {
+    neutro: { chip: 'bg-zinc-100 text-zinc-600 border-zinc-200',       bar: '#a1a1aa' },
+    curso:  { chip: 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20', bar: '#006E97' },
+    aviso:  { chip: 'bg-amber-50 text-amber-700 border-amber-200',     bar: '#f59e0b' },
+    ok:     { chip: 'bg-emerald-50 text-emerald-700 border-emerald-200', bar: '#10b981' },
+    alerta: { chip: 'bg-rose-50 text-rose-700 border-rose-200',        bar: '#f43f5e' },
+};
+const estado = (tono, label) => ({ ...TONOS[tono], label });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 const ESTADO_COLORS = {
-    1:  { bg: 'bg-slate-100',   text: 'text-slate-700',   border: 'border-slate-200',   bar: '#64748b', label: 'Ingresado' },
-    2:  { bg: 'bg-blue-100',    text: 'text-blue-700',    border: 'border-blue-200',    bar: '#3b82f6', label: 'Para imprimir' },
-    3:  { bg: 'bg-indigo-100',  text: 'text-indigo-700',  border: 'border-indigo-200',  bar: '#6366f1', label: 'Impreso' },
-    4:  { bg: 'bg-violet-100',  text: 'text-violet-700',  border: 'border-violet-200',  bar: '#8b5cf6', label: 'Pronto' },
-    5:  { bg: 'bg-amber-100',   text: 'text-amber-700',   border: 'border-amber-200',   bar: '#f59e0b', label: 'Para avisar' },
-    6:  { bg: 'bg-orange-100',  text: 'text-orange-700',  border: 'border-orange-200',  bar: '#f97316', label: 'Avisado' },
-    7:  { bg: 'bg-emerald-100', text: 'text-emerald-700', border: 'border-emerald-200', bar: '#10b981', label: 'Pronto p/ entregar' },
-    8:  { bg: 'bg-sky-100',     text: 'text-sky-700',     border: 'border-sky-200',     bar: '#0ea5e9', label: 'En camino' },
-    12: { bg: 'bg-rose-100',    text: 'text-rose-700',    border: 'border-rose-200',    bar: '#f43f5e', label: 'Avisar nuevamente' },
+    1:  estado('neutro', 'Ingresado'),
+    2:  estado('curso',  'Para imprimir'),
+    3:  estado('curso',  'Impreso'),
+    4:  estado('curso',  'Pronto'),
+    5:  estado('aviso',  'Para avisar'),
+    6:  estado('aviso',  'Avisado'),
+    7:  estado('ok',     'Pronto p/ entregar'),
+    8:  estado('curso',  'En camino'),
+    12: estado('alerta', 'Avisar nuevamente'),
 };
 const RETIRO_ESTADO_COLORS = {
-    1:  { bg: 'bg-blue-100',    text: 'text-blue-700',    bar: '#3b82f6', label: 'Ingresado' },
-    2:  { bg: 'bg-rose-100',    text: 'text-rose-700',    bar: '#f43f5e', label: 'Pasar por caja' },
-    3:  { bg: 'bg-violet-100',  text: 'text-violet-700',  bar: '#8b5cf6', label: 'Abonado' },
-    4:  { bg: 'bg-indigo-100',  text: 'text-indigo-700',  bar: '#6366f1', label: 'Abonado antemano' },
-    7:  { bg: 'bg-amber-100',   text: 'text-amber-700',   bar: '#f59e0b', label: 'Empaq. sin abonar' },
-    8:  { bg: 'bg-emerald-100', text: 'text-emerald-700', bar: '#10b981', label: 'Empaq. y abonado' },
-    9:  { bg: 'bg-sky-100',     text: 'text-sky-700',     bar: '#0ea5e9', label: 'Autorizado' },
-    10: { bg: 'bg-orange-100',  text: 'text-orange-700',  bar: '#f97316', label: 'En viaje' },
+    1:  estado('neutro', 'Ingresado'),
+    2:  estado('alerta', 'Pasar por caja'),
+    3:  estado('curso',  'Abonado'),
+    4:  estado('curso',  'Abonado antemano'),
+    7:  estado('aviso',  'Empaq. sin abonar'),
+    8:  estado('ok',     'Empaq. y abonado'),
+    9:  estado('curso',  'Autorizado'),
+    10: estado('curso',  'En viaje'),
 };
-const TIPO_PALETTE = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#f43f5e', '#8b5cf6', '#ec4899'];
+const BAR_CATEGORIA = '#006E97';
 
-const MetricCard = ({ icon: Icon, label, value, sub, color = 'blue', loading }) => {
-    const colors = {
-        blue: { bg: 'from-blue-500 to-blue-600', light: 'bg-blue-50', text: 'text-blue-600' },
-        indigo: { bg: 'from-indigo-500 to-indigo-600', light: 'bg-indigo-50', text: 'text-indigo-600' },
-        emerald: { bg: 'from-emerald-500 to-emerald-600', light: 'bg-emerald-50', text: 'text-emerald-600' },
-        amber: { bg: 'from-amber-500 to-amber-600', light: 'bg-amber-50', text: 'text-amber-600' },
-        rose: { bg: 'from-rose-500 to-rose-600', light: 'bg-rose-50', text: 'text-rose-600' },
-        violet: { bg: 'from-violet-500 to-violet-600', light: 'bg-violet-50', text: 'text-violet-600' },
-    };
-    const c = colors[color] || colors.blue;
-    return (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col gap-3 hover:shadow-md transition-shadow">
-            <div className="flex items-center justify-between">
-                <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{label}</span>
-                <div className={`w-9 h-9 rounded-xl bg-gradient-to-br ${c.bg} flex items-center justify-center shadow-sm`}>
-                    <Icon size={18} className="text-white" />
-                </div>
-            </div>
-            {loading
-                ? <div className="h-9 bg-slate-100 rounded-lg animate-pulse w-20" />
-                : <div className={`text-4xl font-black ${c.text} leading-none`}>{value}</div>
-            }
-            {sub && <div className="text-xs text-slate-400 font-medium">{sub}</div>}
+const MetricCard = ({ icon: Icon, label, value, sub, valorCls = 'text-zinc-800', loading }) => (
+    <div className={`${CARD} px-4 py-3 min-w-0`}>
+        <div className="flex items-center justify-between gap-2">
+            <span className="text-[11px] font-black text-zinc-400 uppercase tracking-wide truncate">{label}</span>
+            <Icon size={16} className="shrink-0 text-brand-cyan" />
         </div>
-    );
-};
+        {loading
+            ? <div className="h-8 mt-1 bg-zinc-100 rounded-lg animate-pulse w-20" />
+            : <div className={`mt-1 text-2xl md:text-3xl font-black tabular-nums leading-tight ${valorCls}`}>{value}</div>
+        }
+        {sub && <div className="text-xs text-zinc-400 mt-0.5">{sub}</div>}
+    </div>
+);
 
-const BarChart = ({ data, labelKey = 'nombre', valueKey = 'total', colorMap, title, loading }) => {
+const TituloTarjeta = ({ icon: Icon, children, extra }) => (
+    <div className="flex items-center justify-between gap-2 mb-4">
+        <h3 className="text-sm font-black text-zinc-800 flex items-center gap-2">
+            <Icon size={16} className="text-brand-cyan shrink-0" /> {children}
+        </h3>
+        {extra}
+    </div>
+);
+
+const BarChart = ({ data, labelKey = 'nombre', valueKey = 'total', colorMap, title, icon, loading }) => {
     const max = Math.max(1, ...data.map(d => d[valueKey] || 0));
     return (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            <h3 className="text-sm font-black text-slate-700 uppercase tracking-wide mb-4">{title}</h3>
+        <div className={`${CARD} p-4 md:p-5`}>
+            <TituloTarjeta icon={icon}>{title}</TituloTarjeta>
             {loading
-                ? <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-8 bg-slate-100 rounded-lg animate-pulse" />)}</div>
+                ? <div className="space-y-3">{[...Array(4)].map((_, i) => <div key={i} className="h-6 bg-zinc-100 rounded-lg animate-pulse" />)}</div>
                 : data.length === 0
-                    ? <p className="text-slate-400 text-sm text-center py-6">Sin datos</p>
+                    ? <p className="text-zinc-400 text-sm text-center py-6">Sin datos</p>
                     : <div className="space-y-2.5">
                         {data.map((item, i) => {
                             const estadoKey = item.estado;
                             const cfg = colorMap?.[estadoKey];
-                            const barColor = cfg?.bar || TIPO_PALETTE[i % TIPO_PALETTE.length];
+                            // Estado sin configurar (ej. «Esperando Bultos»): gris, como su etiqueta en la tabla de abajo
+                            const barColor = cfg?.bar || (colorMap ? TONOS.neutro.bar : BAR_CATEGORIA);
                             const pct = Math.max(2, Math.round((item[valueKey] / max) * 100));
                             return (
                                 <div key={i} className="flex items-center gap-3">
-                                    <span className="text-xs font-bold text-slate-600 w-32 truncate shrink-0">
+                                    <span className="text-xs font-bold text-zinc-600 w-28 sm:w-32 truncate shrink-0">
                                         {cfg?.label || item[labelKey] || '–'}
                                     </span>
-                                    <div className="flex-1 bg-slate-100 rounded-full h-5 overflow-hidden">
+                                    <div className="flex-1 bg-zinc-100 rounded-full h-2.5 overflow-hidden">
                                         <div
-                                            className="h-full rounded-full flex items-center justify-end pr-2 transition-all duration-700"
+                                            className="h-full rounded-full transition-all duration-700"
                                             style={{ width: `${pct}%`, backgroundColor: barColor }}
-                                        >
-                                            <span className="text-[10px] font-black text-white">{item[valueKey]}</span>
-                                        </div>
+                                        />
                                     </div>
+                                    <span className="text-xs font-black text-zinc-800 w-10 text-right tabular-nums">{item[valueKey]}</span>
                                 </div>
                             );
                         })}
@@ -97,11 +106,12 @@ const BarChart = ({ data, labelKey = 'nombre', valueKey = 'total', colorMap, tit
 const DonutChart = ({ parts, loading }) => {
     // parts: [{label, value, color}]
     const total = parts.reduce((s, p) => s + (p.value || 0), 0);
-    if (loading) return <div className="h-32 bg-slate-100 rounded-2xl animate-pulse" />;
+    if (loading) return <div className="h-28 bg-zinc-100 rounded-2xl animate-pulse" />;
     return (
         <div className="flex items-center gap-6">
             <div className="relative w-28 h-28 shrink-0">
                 <svg viewBox="0 0 36 36" className="w-full h-full -rotate-90">
+                    <circle cx="18" cy="18" r="15.9155" fill="none" stroke="#f4f4f5" strokeWidth="3.8" />
                     {(() => {
                         let offset = 0;
                         return parts.map((p, i) => {
@@ -119,15 +129,15 @@ const DonutChart = ({ parts, loading }) => {
                     })()}
                 </svg>
                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                    <span className="text-2xl font-black text-slate-800">{total}</span>
+                    <span className="text-2xl font-black text-zinc-800 tabular-nums">{total}</span>
                 </div>
             </div>
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-1.5 min-w-0">
                 {parts.map((p, i) => (
                     <div key={i} className="flex items-center gap-2">
-                        <div className="w-3 h-3 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
-                        <span className="text-xs text-slate-600 font-medium">{p.label}</span>
-                        <span className="text-xs font-black text-slate-800 ml-auto pl-3">{p.value}</span>
+                        <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: p.color }} />
+                        <span className="text-xs text-zinc-600 font-medium">{p.label}</span>
+                        <span className="text-xs font-black text-zinc-800 ml-auto pl-3 tabular-nums">{p.value}</span>
                     </div>
                 ))}
             </div>
@@ -162,59 +172,57 @@ const DepositoDashboard = () => {
 
     const d = data || {};
 
-    const tiposData = (d.porTipoCliente || []).map((t, i) => ({
-        ...t,
-        estado: t.tipo,
-        nombre: t.tipo,
-        total: t.total,
-        bar: TIPO_PALETTE[i % TIPO_PALETTE.length]
-    }));
-
     const pagoParts = [
-        { label: 'Pagadas', value: +(d.pagas || 0), color: '#10b981' },
-        { label: 'Pend. de pago', value: +(d.pendientesPago || 0), color: '#f43f5e' },
+        { label: 'Pagadas', value: +(d.pagas || 0), color: TONOS.ok.bar },
+        { label: 'Pend. de pago', value: +(d.pendientesPago || 0), color: TONOS.alerta.bar },
     ];
 
     const retirosParts = [
-        { label: 'Por empaquetar', value: +(d.retirosPorEmpaquetar || 0), color: '#f59e0b' },
-        { label: 'Por levantar', value: +(d.retirosPorLevantar || 0), color: '#10b981' },
+        { label: 'Por empaquetar', value: +(d.retirosPorEmpaquetar || 0), color: TONOS.aviso.bar },
+        { label: 'Por levantar', value: +(d.retirosPorLevantar || 0), color: TONOS.ok.bar },
     ];
 
     return (
-        <div className="p-6 max-w-[1400px] mx-auto flex flex-col gap-6 animate-in fade-in duration-300">
+        <div className="p-3 md:p-6 bg-slate-50 min-h-full flex flex-col gap-4 font-sans text-zinc-800">
 
             {/* ── Header ──────────────────────────────────────────────────── */}
-            <div className="flex items-center justify-between">
-                <div>
-                    <h2 className="text-2xl font-black text-slate-800 tracking-tight">Dashboard · Depósito</h2>
-                    <p className="text-sm text-slate-400 mt-0.5">
-                        {lastUpdate ? `Actualizado: ${lastUpdate.toLocaleTimeString('es-UY')}` : 'Cargando...'}
-                        <span className="ml-2 text-slate-300">· Auto-refresca cada 60 s</span>
-                    </p>
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                    <Warehouse size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <h1 className="text-2xl font-black text-zinc-800 uppercase tracking-tight">Dashboard depósito</h1>
+                        <p className="text-sm text-zinc-400">
+                            {lastUpdate ? `Actualizado: ${lastUpdate.toLocaleTimeString('es-UY')}` : 'Cargando...'}
+                            <span className="ml-1 text-zinc-300">· se actualiza solo cada 60 s</span>
+                        </p>
+                    </div>
                 </div>
                 <button
+                    type="button"
                     onClick={load}
                     disabled={loading}
-                    className="flex items-center gap-2 px-4 py-2 bg-slate-100 hover:bg-slate-200 rounded-xl text-slate-600 font-bold text-sm transition-colors disabled:opacity-50"
+                    className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50"
+                    title="Actualizar"
+                    aria-label="Actualizar"
                 >
                     <RefreshCcw size={15} className={loading ? 'animate-spin' : ''} />
-                    Actualizar
                 </button>
             </div>
 
             {/* ── KPI Cards ───────────────────────────────────────────────── */}
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4">
-                <MetricCard icon={Boxes} label="Activas en depósito" value={d.totalActivas ?? '–'} color="blue" loading={loading} sub="órdenes activas" />
-                <MetricCard icon={ArrowDown} label="Entraron hoy" value={d.entraronHoy ?? '–'} color="indigo" loading={loading} sub="nuevas hoy" />
-                <MetricCard icon={ArrowUp} label="Despachadas hoy" value={d.despachadasHoy ?? '–'} color="emerald" loading={loading} sub="estado Entregado hoy" />
-                <MetricCard icon={Package} label="Retiros activos" value={d.retirosActivos ?? '–'} color="violet" loading={loading} sub="órdenes de retiro" />
-                <MetricCard icon={AlertTriangle} label="Sin pago" value={d.pendientesPago ?? '–'} color="rose" loading={loading} sub="pendientes de cobro" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                <MetricCard icon={Boxes} label="Activas en depósito" value={d.totalActivas ?? '–'} loading={loading} sub="órdenes activas" />
+                <MetricCard icon={ArrowDown} label="Entraron hoy" value={d.entraronHoy ?? '–'} loading={loading} sub="nuevas hoy" />
+                <MetricCard icon={ArrowUp} label="Despachadas hoy" value={d.despachadasHoy ?? '–'} loading={loading} sub="estado Entregado hoy" />
+                <MetricCard icon={Package} label="Retiros activos" value={d.retirosActivos ?? '–'} loading={loading} sub="órdenes de retiro" />
+                <MetricCard icon={AlertTriangle} label="Sin pago" value={d.pendientesPago ?? '–'} valorCls={d.pendientesPago > 0 ? 'text-rose-600' : 'text-zinc-800'} loading={loading} sub="pendientes de cobro" />
             </div>
 
             {/* ── Fila 2: Bar charts ──────────────────────────────────────── */}
-            <div className="grid lg:grid-cols-2 gap-4">
+            <div className="grid lg:grid-cols-2 gap-3">
                 <BarChart
-                    title="Órdenes de Depósito por Estado"
+                    title="Órdenes de depósito por estado"
+                    icon={Boxes}
                     data={d.ordenesPorEstado || []}
                     labelKey="nombre"
                     valueKey="total"
@@ -222,7 +230,8 @@ const DepositoDashboard = () => {
                     loading={loading}
                 />
                 <BarChart
-                    title="Órdenes de Retiro por Estado"
+                    title="Órdenes de retiro por estado"
+                    icon={Package}
                     data={d.retirosPorEstado || []}
                     labelKey="nombre"
                     valueKey="total"
@@ -232,58 +241,51 @@ const DepositoDashboard = () => {
             </div>
 
             {/* ── Fila 3: Donuts + tipo cliente ───────────────────────────── */}
-            <div className="grid lg:grid-cols-3 gap-4">
+            <div className="grid lg:grid-cols-3 gap-3">
                 {/* Pago */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-wide mb-4 flex items-center gap-2">
-                        <DollarSign size={14} className="text-emerald-500" /> Estado de Pago
-                    </h3>
+                <div className={`${CARD} p-4 md:p-5`}>
+                    <TituloTarjeta icon={DollarSign}>Estado de pago</TituloTarjeta>
                     <DonutChart parts={pagoParts} loading={loading} />
                 </div>
 
                 {/* Retiros empaquetar/levantar */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-wide mb-4 flex items-center gap-2">
-                        <ShoppingBag size={14} className="text-amber-500" /> Retiros Pendientes
-                    </h3>
+                <div className={`${CARD} p-4 md:p-5`}>
+                    <TituloTarjeta icon={ShoppingBag}>Retiros pendientes</TituloTarjeta>
                     <DonutChart parts={retirosParts} loading={loading} />
                     {/* Mini summary */}
                     <div className="mt-4 grid grid-cols-2 gap-2">
-                        <div className="bg-amber-50 rounded-xl p-3 text-center">
-                            <div className="text-2xl font-black text-amber-600">{d.retirosPorEmpaquetar ?? '–'}</div>
-                            <div className="text-[10px] font-bold text-amber-500 uppercase">Por empaquetar</div>
+                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-center">
+                            <div className="text-2xl font-black text-amber-600 tabular-nums">{d.retirosPorEmpaquetar ?? '–'}</div>
+                            <div className="text-[10px] font-black text-amber-700 uppercase tracking-wide">Por empaquetar</div>
                         </div>
-                        <div className="bg-emerald-50 rounded-xl p-3 text-center">
-                            <div className="text-2xl font-black text-emerald-600">{d.retirosPorLevantar ?? '–'}</div>
-                            <div className="text-[10px] font-bold text-emerald-500 uppercase">Por levantar</div>
+                        <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3 text-center">
+                            <div className="text-2xl font-black text-emerald-600 tabular-nums">{d.retirosPorLevantar ?? '–'}</div>
+                            <div className="text-[10px] font-black text-emerald-700 uppercase tracking-wide">Por levantar</div>
                         </div>
                     </div>
                 </div>
 
                 {/* Tipo cliente bar */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                    <h3 className="text-sm font-black text-slate-700 uppercase tracking-wide mb-4 flex items-center gap-2">
-                        <Users size={14} className="text-indigo-500" /> Por Tipo de Cliente
-                    </h3>
+                <div className={`${CARD} p-4 md:p-5`}>
+                    <TituloTarjeta icon={Users}>Por tipo de cliente</TituloTarjeta>
                     {loading
-                        ? <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-7 bg-slate-100 rounded-lg animate-pulse" />)}</div>
+                        ? <div className="space-y-3">{[...Array(3)].map((_, i) => <div key={i} className="h-6 bg-zinc-100 rounded-lg animate-pulse" />)}</div>
                         : (d.porTipoCliente || []).length === 0
-                            ? <p className="text-slate-400 text-sm text-center py-4">Sin datos</p>
+                            ? <p className="text-zinc-400 text-sm text-center py-4">Sin datos</p>
                             : (() => {
                                 const maxT = Math.max(1, ...(d.porTipoCliente || []).map(t => t.total));
                                 return (
                                     <div className="space-y-2.5">
                                         {(d.porTipoCliente || []).map((t, i) => (
-                                            <div key={i} className="flex items-center gap-2">
-                                                <div className="w-2.5 h-2.5 rounded-full shrink-0" style={{ backgroundColor: TIPO_PALETTE[i % TIPO_PALETTE.length] }} />
-                                                <span className="text-xs text-slate-600 font-medium w-24 truncate shrink-0">{t.tipo || '–'}</span>
-                                                <div className="flex-1 bg-slate-100 rounded-full h-4 overflow-hidden">
+                                            <div key={i} className="flex items-center gap-3">
+                                                <span className="text-xs text-zinc-600 font-bold w-28 truncate shrink-0" title={t.tipo}>{t.tipo || '–'}</span>
+                                                <div className="flex-1 bg-zinc-100 rounded-full h-2.5 overflow-hidden">
                                                     <div
                                                         className="h-full rounded-full transition-all duration-700"
-                                                        style={{ width: `${Math.max(2, Math.round((t.total / maxT) * 100))}%`, backgroundColor: TIPO_PALETTE[i % TIPO_PALETTE.length] }}
+                                                        style={{ width: `${Math.max(2, Math.round((t.total / maxT) * 100))}%`, backgroundColor: BAR_CATEGORIA }}
                                                     />
                                                 </div>
-                                                <span className="text-xs font-black text-slate-700 w-7 text-right">{t.total}</span>
+                                                <span className="text-xs font-black text-zinc-800 w-10 text-right tabular-nums">{t.total}</span>
                                             </div>
                                         ))}
                                     </div>
@@ -294,42 +296,42 @@ const DepositoDashboard = () => {
             </div>
 
             {/* ── Fila 4: Tabla detalle por estado ─────────────────────────── */}
-            <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
-                    <h3 className="font-black text-slate-700 text-sm uppercase tracking-wide flex items-center gap-2">
-                        <TrendingUp size={14} className="text-blue-500" /> Detalle de Órdenes Activas por Estado
+            <div className={`${CARD} overflow-hidden`}>
+                <div className="px-4 md:px-5 py-3 border-b border-zinc-200 flex items-center justify-between gap-2">
+                    <h3 className="font-black text-zinc-800 text-sm flex items-center gap-2">
+                        <TrendingUp size={16} className="text-brand-cyan shrink-0" /> Detalle de órdenes activas por estado
                     </h3>
-                    {!loading && <span className="text-xs font-bold text-slate-400">{d.totalActivas} total</span>}
+                    {!loading && <span className="text-xs text-zinc-400 tabular-nums">{d.totalActivas} total</span>}
                 </div>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>
-                            <tr className="bg-slate-50">
-                                <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Estado</th>
-                                <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">Cantidad</th>
-                                <th className="px-6 py-3 text-right text-xs font-bold text-slate-500 uppercase tracking-wider">% del total</th>
-                                <th className="px-6 py-3 text-left text-xs font-bold text-slate-500 uppercase tracking-wider">Distribución</th>
+                            <tr className="bg-zinc-50 border-b border-zinc-200 text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                <th className="px-4 md:px-5 py-2.5 text-left">Estado</th>
+                                <th className="px-4 md:px-5 py-2.5 text-right">Cantidad</th>
+                                <th className="px-4 md:px-5 py-2.5 text-right">% del total</th>
+                                <th className="px-4 md:px-5 py-2.5 text-left hidden sm:table-cell">Distribución</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-slate-100">
+                        <tbody className="divide-y divide-zinc-100">
                             {loading
                                 ? [...Array(4)].map((_, i) => (
-                                    <tr key={i}><td colSpan={4} className="px-6 py-3"><div className="h-5 bg-slate-100 rounded animate-pulse" /></td></tr>
+                                    <tr key={i}><td colSpan={4} className="px-5 py-3"><div className="h-5 bg-zinc-100 rounded animate-pulse" /></td></tr>
                                 ))
                                 : (d.ordenesPorEstado || []).map((row) => {
-                                    const cfg = ESTADO_COLORS[row.estado] || { bg: 'bg-slate-100', text: 'text-slate-700', bar: '#94a3b8', label: row.nombre };
+                                    const cfg = ESTADO_COLORS[row.estado] || { ...TONOS.neutro, label: row.nombre };
                                     const pct = d.totalActivas > 0 ? Math.round((row.total / d.totalActivas) * 100) : 0;
                                     return (
-                                        <tr key={row.estado} className="hover:bg-slate-50 transition-colors">
-                                            <td className="px-6 py-3">
-                                                <span className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${cfg.bg} ${cfg.text}`}>
+                                        <tr key={row.estado} className="hover:bg-zinc-50 transition-colors">
+                                            <td className="px-4 md:px-5 py-2.5">
+                                                <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full border text-[11px] font-bold whitespace-nowrap ${cfg.chip}`}>
                                                     {cfg.label || row.nombre || `Estado ${row.estado}`}
                                                 </span>
                                             </td>
-                                            <td className="px-6 py-3 text-right font-black text-slate-800 text-lg">{row.total}</td>
-                                            <td className="px-6 py-3 text-right font-bold text-slate-500">{pct}%</td>
-                                            <td className="px-6 py-3 w-48">
-                                                <div className="bg-slate-100 rounded-full h-2 w-full overflow-hidden">
+                                            <td className="px-4 md:px-5 py-2.5 text-right font-black text-zinc-800 text-base tabular-nums">{row.total}</td>
+                                            <td className="px-4 md:px-5 py-2.5 text-right font-bold text-zinc-500 tabular-nums">{pct}%</td>
+                                            <td className="px-4 md:px-5 py-2.5 w-48 hidden sm:table-cell">
+                                                <div className="bg-zinc-100 rounded-full h-2 w-full overflow-hidden">
                                                     <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: cfg.bar }} />
                                                 </div>
                                             </td>

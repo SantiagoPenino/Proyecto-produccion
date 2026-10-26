@@ -1,0 +1,5 @@
+# La clave de Resend/Callbell y el estado son de cada PC: no van al repo
+config.json
+estado.json
+*.log
+*.log.1

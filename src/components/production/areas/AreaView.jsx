@@ -5,7 +5,10 @@ import { CirclePile, AlertTriangle } from "lucide-react";
 import { LayoutGrid, CalendarCheck, ScanLine, Truck, ListChecks, CalendarClock } from "lucide-react";
 import Tippy from '@tippyjs/react';
 import 'tippy.js/dist/tippy.css';
-import './areaProOscura.css'; // [SOLICITUDES] área PRO en oscuro (solo aplica con la clase area-pro-oscura)
+// SIN USO (22/10): la planilla de PRO ya no va en oscuro, va clara como las demás áreas (Santiago: «está todo azul
+// feo»), así que acá nadie pone la clase area-pro-oscura. La hoja la sigue usando PedidoTiendaView, que la importa
+// por su cuenta. Se dejó por si Yoania quiere volver al oscuro: confirmar con ella si se usa o se borra.
+import './areaProOscura.css';
 import Swal from 'sweetalert2';
 import { toast } from 'react-toastify';
 // Componentes de Vistas
@@ -26,6 +29,8 @@ import RollAssignmentModal from "../../modals/RollAssignmentModal";
 // [PRO] Herramientas propias del área Producción (prendas): rutas de producción,
 // cotizaciones del área y ficha de productos terminados.
 import ProBandeja from "../ProBandeja";
+import Selector from "../../ui/Selector";
+import useConfirmar from "../../ui/useConfirmar";
 import QuotationView from "../../logistics/QuotationView";
 
 import { ordersService, rollsService, areasService } from '../../../services/api';
@@ -34,38 +39,44 @@ import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
 import { useAuth } from '../../../context/AuthContext';
 
 // --- SUBCOMPONENT: MAGIC BUTTON ---
+// Avisos y confirmación con el estilo del sistema (22/10: antes alert / window.confirm, la ventana gris del navegador)
 const MagicButton = ({ areaKey, onSuccess }) => {
     const [loading, setLoading] = useState(false);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     const handleMagic = async () => {
         // Áreas que tienen el procedimiento implementado
         const supportedAreas = ['ECOUV', 'DTF'];
 
         if (!supportedAreas.includes(areaKey)) {
-            alert("🚧 Proceso en construcción para esta área. \n\nLa lógica de armado mágico es diferente para cada sector.");
+            toast.info("Armado mágico todavía en construcción para esta área: la lógica es diferente para cada sector.");
             return;
         }
 
-        if (!window.confirm("🪄 ¿Ejecutar Armado Mágico?\n\nEsto agrupará TODAS las órdenes pendientes por Variante y Material, creando lotes individuales automáticamente.")) return;
+        if (!(await confirmar({
+            titulo: "¿Ejecutar el armado mágico?",
+            texto: "Agrupa TODAS las órdenes pendientes por variante y material, y crea los lotes automáticamente.",
+            confirmar: "Armar lotes",
+        }))) return;
 
         setLoading(true);
         try {
             const res = await rollsService.magicAssignment(areaKey);
             if (res.success) {
-                alert(res.message); // "¡Mágia completada!..."
+                toast.success(res.message); // "¡Mágia completada!..."
                 if (onSuccess) onSuccess();
             } else {
-                alert("Error: " + (res.message || "Desconocido"));
+                toast.error("Error: " + (res.message || "Desconocido"));
             }
         } catch (error) {
             console.error(error);
-            alert("Error ejecutando magia: " + error.message);
+            toast.error("Error ejecutando el armado mágico: " + error.message);
         } finally {
             setLoading(false);
         }
     };
 
-    return (
+    return (<>
         <button
             onClick={handleMagic}
             disabled={loading}
@@ -75,7 +86,8 @@ const MagicButton = ({ areaKey, onSuccess }) => {
             {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> : <i className="fa-solid fa-wand-magic-sparkles"></i>}
             <span className="hidden md:inline">Armado Mágico</span>
         </button>
-    );
+        {ventanaConfirmar}
+    </>);
 };
 
 // [FINALIZADAS PAGINADAS 19/10/2026] Canceladas y prontas se piden por página al servidor: antes
@@ -687,14 +699,15 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                     <div className="flex items-center gap-1.5">
                         <i className="fa-solid fa-eye text-zinc-400 text-xs"></i>
                         <label className="text-[10px] font-black uppercase tracking-wider text-zinc-400 shrink-0">Ver área:</label>
-                        <select
+                        {/* Selector propio (antes un <select> nativo): se resalta cuando no es PRO */}
+                        <Selector
+                            filtro
                             value={proAreaVista}
                             onChange={e => cambiarAreaVista(e.target.value)}
-                            className={`text-xs font-bold border rounded-lg px-2 py-1.5 h-[30px] focus:outline-none focus:border-brand-cyan shadow-sm ${
-                                proAreaVista !== 'PRO'
-                                    ? 'bg-brand-cyan text-white border-brand-cyan'
-                                    : 'bg-white text-zinc-700 border-zinc-200'
-                            }`}
+                            className="h-[30px] !py-0 !text-xs !rounded-lg"
+                            anchoLista={320}
+                            altoMax={640}
+                            aria-label="Ver área"
                             title="Elegí qué área ver en la planilla (solo cambia qué órdenes se muestran)"
                         >
                             <option value="PRO">Producción (PRO)</option>
@@ -703,7 +716,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
                                 .map(a => (
                                     <option key={a.code} value={a.code}>{a.name} ({a.code})</option>
                                 ))}
-                        </select>
+                        </Selector>
                         {proAreaVista !== 'PRO' && (
                             <span className="text-[10px] font-bold text-brand-cyan whitespace-nowrap">
                                 Viendo órdenes de {proAreaVista}
@@ -1115,7 +1128,7 @@ export default function AreaView({ areaKey: rawAreaKey, areaConfig, onSwitchTab 
     );
 
     return (
-        <div className={`absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10${isPro ? ' area-pro-oscura' : ''}`}>
+        <div className="absolute inset-0 flex flex-col bg-zinc-50 overflow-hidden font-sans text-zinc-800 z-10">
             <StockRequestModal isOpen={isStockOpen} onClose={() => setIsStockOpen(false)} areaName={areaConfig.name} areaCode={areaKey} />
             {/* "Reportar falla" → solicitud a Servicio Técnico (máquina del área ya elegible + historial del área) */}
             <NuevaSolicitudModal abierta={isFailureOpen} onCerrar={() => setIsFailureOpen(false)} areaInicial={areaKey} categoriaInicial="MAQUINA" conHistorialArea />

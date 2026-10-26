@@ -1,19 +1,24 @@
 import { useEffect, useState } from 'react';
+import { ChartColumn } from 'lucide-react';
 import api from '../../services/apiClient';
 
 const mlin = v => Number(v || 0).toLocaleString('es-UY', { maximumFractionDigits: 1 });
 const pct  = (a, b) => b > 0 ? ((a / b) * 100).toFixed(0) + '%' : '—';
 
-// Barra SVG apilada T1/T2
-function BarraApilada({ t1, t2, maxVal, height = 90 }) {
+// Colores de los dos turnos (22/10/2026, estética nueva): T1 brand-cyan, T2 cian claro.
+const COLOR_T1 = 'bg-brand-cyan';
+const COLOR_T2 = 'bg-cyan-300';
+
+// Barra apilada T1/T2 (alto en % del contenedor: el máximo del período llena la columna)
+function BarraApilada({ t1, t2, maxVal, unidad }) {
     const total = t1 + t2;
-    if (total === 0) return <div style={{ height }} className="flex items-end justify-center"><div className="w-full bg-slate-100 rounded-t" style={{ height: 4 }} /></div>;
-    const h1 = Math.round((t1 / maxVal) * height);
-    const h2 = Math.round((t2 / maxVal) * height);
+    if (total === 0) return <div className="flex items-end w-full h-full"><div className="w-full bg-zinc-100 rounded-sm" style={{ height: 3 }} /></div>;
+    const h1 = (t1 / maxVal) * 100;
+    const h2 = (t2 / maxVal) * 100;
     return (
-        <div className="flex flex-col items-center justify-end w-full" style={{ height }}>
-            <div className="w-full rounded-t-sm bg-blue-400" style={{ height: h2 }} title={`T2: ${mlin(t2)}`} />
-            <div className="w-full bg-amber-400" style={{ height: h1 }} title={`T1: ${mlin(t1)}`} />
+        <div className="flex flex-col items-center justify-end w-full h-full" title={`T1: ${mlin(t1)} · T2: ${mlin(t2)} ${unidad}`}>
+            <div className={`w-full rounded-t-sm ${COLOR_T2}`} style={{ height: `${h2}%` }} />
+            <div className={`w-full ${COLOR_T1} ${h2 ? '' : 'rounded-t-sm'}`} style={{ height: `${h1}%` }} />
         </div>
     );
 }
@@ -31,12 +36,12 @@ export default function ProduccionDiariaChart() {
             params: { fechaDesde: fmtDate(desde), fechaHasta: fmtDate(new Date()) }
         })
         .then(r => setRows((r.data.data || []).slice().reverse())) // cronológico
-        .catch(() => {})
+        .catch((e) => console.warn('[Panel de Control] producción por turno:', e?.message))
         .finally(() => setLoading(false));
     }, []);
 
     if (loading) return (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 animate-pulse h-56" />
+        <div className="bg-white rounded-2xl border border-zinc-200 p-4 md:p-5 animate-pulse h-56" />
     );
     if (!rows.length) return null;
 
@@ -53,49 +58,58 @@ export default function ProduccionDiariaChart() {
     const totMet   = totT1Met + totT2Met;
 
     return (
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-                <div>
-                    <p className="font-bold text-slate-800 text-sm">Producción por Turno</p>
-                    <p className="text-[11px] text-slate-400">Últimos 30 días · Control de Calidad</p>
+        <div className="bg-white rounded-2xl border border-zinc-200 p-4 md:p-5">
+            {/* Encabezado */}
+            <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-2 min-w-0">
+                    <ChartColumn size={20} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <p className="font-black text-zinc-800 text-base leading-tight">Producción por turno</p>
+                        <p className="text-xs text-zinc-400">Últimos 30 días · Control de Calidad</p>
+                    </div>
                 </div>
-                <div className="flex rounded-lg border border-slate-200 overflow-hidden text-[11px] font-medium">
-                    {[['ordenes','Órdenes'],['metros','Metros']].map(([v,l]) => (
-                        <button key={v} onClick={() => setTab(v)}
-                            className={`px-3 py-1.5 transition-all ${tab === v ? 'bg-slate-800 text-white' : 'bg-white text-slate-500 hover:bg-slate-50'}`}>
+                <div className="flex gap-1 p-1 rounded-xl bg-zinc-100 text-xs font-bold" role="tablist">
+                    {[['ordenes', 'Órdenes'], ['metros', 'Metros']].map(([v, l]) => (
+                        <button key={v} type="button" role="tab" aria-selected={tab === v} onClick={() => setTab(v)}
+                            className={`px-3 py-1.5 rounded-lg transition-colors ${tab === v ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`}>
                             {l}
                         </button>
                     ))}
                 </div>
             </div>
 
-            {/* KPIs rápidos */}
-            <div className="grid grid-cols-4 gap-3 mb-4">
+            {/* Totales del período */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 md:gap-3 mb-4">
                 {[
-                    { label:'T1 Órd.', value: totT1Ord, sub: pct(totT1Ord, totOrd), cls:'text-amber-600' },
-                    { label:'T2 Órd.', value: totT2Ord, sub: pct(totT2Ord, totOrd), cls:'text-blue-600'  },
-                    { label:'T1 m lin.', value: mlin(totT1Met), sub: pct(totT1Met, totMet), cls:'text-amber-600' },
-                    { label:'T2 m lin.', value: mlin(totT2Met), sub: pct(totT2Met, totMet), cls:'text-blue-600'  },
+                    { label: 'T1 · órdenes', value: totT1Ord.toLocaleString('es-UY'), sub: pct(totT1Ord, totOrd), color: COLOR_T1 },
+                    { label: 'T2 · órdenes', value: totT2Ord.toLocaleString('es-UY'), sub: pct(totT2Ord, totOrd), color: COLOR_T2 },
+                    { label: 'T1 · m lineales', value: mlin(totT1Met), sub: pct(totT1Met, totMet), color: COLOR_T1 },
+                    { label: 'T2 · m lineales', value: mlin(totT2Met), sub: pct(totT2Met, totMet), color: COLOR_T2 },
                 ].map(k => (
-                    <div key={k.label} className="bg-slate-50 rounded-xl px-3 py-2.5">
-                        <p className="text-[10px] text-slate-400 font-medium">{k.label}</p>
-                        <p className={`text-base font-bold ${k.cls}`}>{k.value}</p>
-                        <p className="text-[10px] text-slate-400">{k.sub} del total</p>
+                    <div key={k.label} className="rounded-xl border border-zinc-200 px-3 py-2.5">
+                        <p className="flex items-center gap-1.5 text-[10px] font-black text-zinc-400 uppercase tracking-wide">
+                            <span className={`w-2 h-2 rounded-sm ${k.color}`} aria-hidden="true" /> {k.label}
+                        </p>
+                        <p className="mt-0.5 text-xl font-black text-zinc-800 tabular-nums leading-tight">{k.value}</p>
+                        <p className="text-[11px] text-zinc-400">{k.sub} del total</p>
                     </div>
                 ))}
             </div>
 
-            {/* Gráfico de barras apiladas */}
-            <div className="flex items-end gap-1 px-1 pt-2 border-t border-slate-100">
+            {/* Barras apiladas: últimos 14 días */}
+            <div className="flex items-end gap-1 md:gap-1.5 pt-3 border-t border-zinc-100">
                 {display.map((r, i) => {
-                    const t1 = tab === 'ordenes' ? Number(r.T1_Ordenes||0) : Number(r.T1_Metros||0);
-                    const t2 = tab === 'ordenes' ? Number(r.T2_Ordenes||0) : Number(r.T2_Metros||0);
+                    const t1 = tab === 'ordenes' ? Number(r.T1_Ordenes || 0) : Number(r.T1_Metros || 0);
+                    const t2 = tab === 'ordenes' ? Number(r.T2_Ordenes || 0) : Number(r.T2_Metros || 0);
                     return (
                         <div key={i} className="flex-1 flex flex-col items-center gap-1 min-w-0">
-                            <BarraApilada t1={t1} t2={t2} maxVal={maxVal} height={80} />
-                            <span className="text-[8px] text-slate-400 truncate w-full text-center">
-                                {r.Dia?.slice(0,5)}
+                            <div className="w-full h-24 md:h-32 flex items-end">
+                                <BarraApilada t1={t1} t2={t2} maxVal={maxVal} unidad={tab === 'ordenes' ? 'órdenes' : 'm'} />
+                            </div>
+                            {/* En el celular no entra dd/mm debajo de cada barra: solo el día */}
+                            <span className="text-[10px] text-zinc-400 truncate w-full text-center tabular-nums">
+                                <span className="md:hidden">{r.Dia?.slice(0, 2)}</span>
+                                <span className="hidden md:inline">{r.Dia?.slice(0, 5)}</span>
                             </span>
                         </div>
                     );
@@ -103,9 +117,9 @@ export default function ProduccionDiariaChart() {
             </div>
 
             {/* Leyenda */}
-            <div className="flex items-center justify-center gap-5 mt-3 text-[10px] text-slate-500">
-                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-amber-400 inline-block" />T1 · 00-14 h</span>
-                <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-blue-400 inline-block" />T2 · 14-24 h</span>
+            <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 mt-3 text-[11px] text-zinc-500">
+                <span className="flex items-center gap-1.5"><span className={`w-3 h-3 rounded-sm inline-block ${COLOR_T1}`} />T1 · 00 a 14 h</span>
+                <span className="flex items-center gap-1.5"><span className={`w-3 h-3 rounded-sm inline-block ${COLOR_T2}`} />T2 · 14 a 24 h</span>
             </div>
         </div>
     );

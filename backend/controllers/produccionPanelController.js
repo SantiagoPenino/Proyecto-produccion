@@ -874,7 +874,8 @@ exports.getPanelConfig = async (req, res) => {
             safe(() => cargarSectores(pool), { sectores: [], codigoASector: {}, codigoANombre: {}, nombreACodigo: {}, areas: [] }, 'sectores'),
             leerMeta(pool),
             leerCapacidades(pool),
-            safe(() => pool.request().query(`SELECT FallaID, AreaID, Titulo, EsFrecuente FROM dbo.TiposFallas WITH(NOLOCK) ORDER BY AreaID, EsFrecuente DESC, Titulo`), { recordset: [] }, 'tiposFalla'),
+            // Solo los activos que se ofrecen en producción (las razones de reposición no van acá)
+            safe(() => pool.request().query(`SELECT FallaID, AreaID, Titulo, EsFrecuente FROM dbo.TiposFallas WITH(NOLOCK) WHERE Activo = 1 AND EnProduccion = 1 ORDER BY AreaID, EsFrecuente DESC, Titulo`), { recordset: [] }, 'tiposFalla'),
             safe(() => pool.request().query(`SELECT ConfigID, AreaID, Prioridad, Horas, Dias, Texto FROM dbo.ConfiguracionTiemposEntrega WITH(NOLOCK) ORDER BY AreaID, Prioridad`), { recordset: [] }, 'entrega'),
         ]);
         const nombreArea = cod => mapa.codigoANombre[String(cod || '').trim()] || String(cod || '').trim();

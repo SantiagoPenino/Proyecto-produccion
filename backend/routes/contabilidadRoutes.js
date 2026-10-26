@@ -56,9 +56,7 @@ router.patch('/clientes/:CliIdCliente/dgi', ctrl.actualizarClienteDGI);
 router.get('/cuentas/:CueIdCuenta/movimientos', ctrl.getMovimientos);
 router.get('/cuentas/:CueIdCuenta/saldo-libro', ctrl.getSaldoLibroCuenta);   // saldo real (libro sin ORDEN) para la pre-factura
 router.post('/movimientos/ajuste', ctrl.registrarAjusteManual);
-router.post('/movimientos/pago-anticipado', ctrl.registrarPagoAnticipado);
 router.post('/movimientos/saldo-inicial', ctrl.registrarSaldoInicial);
-router.post('/movimientos/pago-cruzado', ctrl.registrarPagoCruzado);
 router.get('/movimientos/:MovIdMovimiento/recibo', ctrl.getReciboMovimiento); // datos del recibo A4 (lo dibuja el front)
 router.post('/movimientos/:MovIdMovimiento/anular-orden', ctrl.anularOrdenPendiente);
 router.post('/movimientos/:MovIdMovimiento/consumir-recurso-adelantado', ctrl.consumirRecursoAdelantado);
@@ -81,13 +79,7 @@ router.post('/clientes/:CliIdCliente/billetera-portal',          ctrl.setBillete
 // Caja: cubrir TODO un retiro con el saldo prepago de la billetera (consumo, sin documento)
 router.post('/retiros/:OReIdOrdenRetiro/cubrir-con-billetera',   ctrl.cubrirRetiroConBilletera);
 
-router.get('/cuentas/:CueIdCuenta/deudas', ctrl.getDeudas);
 router.get('/ciclos/:CliIdCliente', ctrl.getCiclosCliente);
-router.get('/ciclos/:CicIdCiclo/movimientos', ctrl.getCicloMovimientos);
-router.post('/ciclos', ctrl.abrirCiclo);
-router.post('/ciclos/cerrar-vencidos', ctrl.cerrarCiclosVencidos);
-router.post('/ciclos/:CicIdCiclo/cerrar', ctrl.cerrarCiclo);
-router.post('/ciclos/:CicIdCiclo/guardar-precios', ctrl.guardarPreciosCiclo);
 router.post('/guardar-precios', ctrl.guardarPrecios); // General: sin ciclo requerido
 router.get('/clientes/:CliIdCliente/ordenes-anticipo', ctrl.getOrdenesAnticipo);
 router.post('/clientes/:CliIdCliente/emitir-factura-anticipo', ctrl.emitirFacturaAnticipo);
@@ -229,7 +221,6 @@ router.post('/caja/nota-debito',       caja.generarNotaDebito);       // Nota de
 router.post('/caja/reversar-doc',      conReintentoDeadlock(caja.reversarDocumento));       // Reverso: contado→egreso/crédito→NC
 router.post('/caja/pago-anticipo',     conReintentoDeadlock(caja.registrarPagoAnticipo));   // Anticipo directo a cuenta (nuevo dinero)
 router.get('/caja/anticipo/deudas',     caja.deudasParaAnticipo);                            // Vista previa: deudas abiertas que pagaría el anticipo
-router.post('/caja/anular-factura',    conReintentoDeadlock(caja.anularFactura));           // Anular factura no enviada a DGI → reabre ciclo
 router.post('/caja/imputar-anticipo-deuda', caja.imputarAnticipoADeuda); // Imputar saldo existente a una deuda específica
 // ¿La factura fue una compra de recurso (rollo por adelantado)? Se consulta antes de
 // emitir una NC o anular, para avisar que además de la plata hay metros en juego.

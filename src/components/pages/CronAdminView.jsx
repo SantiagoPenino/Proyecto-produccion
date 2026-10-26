@@ -11,6 +11,13 @@ import {
 } from 'lucide-react';
 import { toast } from 'sonner';
 
+// Estética nueva (22/10/2026, como Reportes y Logística): página clara, tarjetas blancas con borde, íconos de Lucide
+// en brand-cyan sin fondo; el color queda para el estado del job (OK emerald, error magenta, corriendo brand-cyan,
+// esperando zinc). «Ejecutar» es botón secundario para que la lista de jobs no quede llena de botones de color.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const ROTULO = 'text-[10px] font-black uppercase tracking-widest text-zinc-400';
+
 const API = import.meta.env.VITE_API_URL || '';
 const tok = () => { try { return JSON.parse(localStorage.getItem('user'))?.token || ''; } catch { return ''; } };
 
@@ -44,16 +51,16 @@ const msHasta = (f) => {
 
 // ── Badge de estado ────────────────────────────────────────────────────────────
 const ESTADO_CONFIG = {
-  ESPERANDO: { cls: 'bg-slate-700 text-slate-300 border-slate-600',         icon: <Clock size={12} />,        label: 'Esperando' },
-  CORRIENDO: { cls: 'bg-blue-500/20 text-blue-300 border-blue-500/40',      icon: <Loader2 size={12} className="animate-spin" />, label: 'Corriendo' },
-  OK:        { cls: 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30', icon: <CheckCircle2 size={12} />, label: 'OK' },
-  ERROR:     { cls: 'bg-rose-500/15 text-rose-400 border-rose-500/30',      icon: <XCircle size={12} />,      label: 'Error' },
+  ESPERANDO: { cls: 'bg-zinc-100 text-zinc-600 border-zinc-200',                         icon: <Clock size={12} />,        label: 'Esperando' },
+  CORRIENDO: { cls: 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20',             icon: <Loader2 size={12} className="animate-spin" />, label: 'Corriendo' },
+  OK:        { cls: 'bg-emerald-50 text-emerald-700 border-emerald-200',                 icon: <CheckCircle2 size={12} />, label: 'OK' },
+  ERROR:     { cls: 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20',    icon: <XCircle size={12} />,      label: 'Error' },
 };
 
 const EstadoBadge = ({ estado }) => {
   const cfg = ESTADO_CONFIG[estado] || ESTADO_CONFIG.ESPERANDO;
   return (
-    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-black uppercase tracking-wider ${cfg.cls}`}>
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[11px] font-bold uppercase tracking-wide whitespace-nowrap shrink-0 ${cfg.cls}`}>
       {cfg.icon} {cfg.label}
     </span>
   );
@@ -64,18 +71,26 @@ const EstadoBadge = ({ estado }) => {
 // cuentas fuera del modelo, cargos ≠ total, documentos sin cargo, ajustes a mano,
 // cobros dobles, y el histórico de los últimos 30 días para ver la tendencia.
 const fmtNum = (n) => (n == null || n === '' ? '—' : Number(n).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+// Fecha de día (columna Fecha del histórico) en formato uruguayo: se toma la parte AAAA-MM-DD tal cual viene,
+// sin pasar por zona horaria (así no corre de día).
+const fmtDia = (v) => {
+  const s = String(v ?? '');
+  return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(0, 10).split('-').reverse().join('/') : (v ?? '—');
+};
 
 const TablaDetalle = ({ titulo, filas, cols, vacio = 'Nada para mostrar.' }) => (
-  <div className="bg-slate-800/40 rounded-xl p-4">
-    <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-2">{titulo} <span className="text-slate-600">({filas?.length || 0})</span></p>
-    {!filas?.length ? <p className="text-xs text-slate-500">{vacio}</p> : (
+  <div className="rounded-xl border border-zinc-200 overflow-hidden">
+    <p className={`${ROTULO} px-4 py-2.5 border-b border-zinc-100 m-0`}>{titulo} <span className="text-zinc-300">({filas?.length || 0})</span></p>
+    {!filas?.length ? <p className="text-xs text-zinc-400 px-4 py-3 m-0">{vacio}</p> : (
       <div className="overflow-x-auto">
         <table className="w-full text-xs">
-          <thead><tr className="text-slate-500 text-left">{cols.map(c => <th key={c.k} className={`py-1 pr-3 font-bold ${c.num ? 'text-right' : ''}`}>{c.t}</th>)}</tr></thead>
-          <tbody>
+          <thead className="bg-zinc-50 border-b border-zinc-200">
+            <tr className="text-left">{cols.map(c => <th key={c.k} className={`px-3 py-2 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap ${c.num ? 'text-right' : ''}`}>{c.t}</th>)}</tr>
+          </thead>
+          <tbody className="divide-y divide-zinc-100">
             {filas.map((f, i) => (
-              <tr key={i} className="border-t border-slate-800 text-slate-300">
-                {cols.map(c => <td key={c.k} className={`py-1 pr-3 ${c.num ? 'text-right font-mono' : ''}`}>{c.num ? fmtNum(f[c.k]) : (f[c.k] ?? '—')}</td>)}
+              <tr key={i} className="text-zinc-700 hover:bg-zinc-50 transition-colors">
+                {cols.map(c => <td key={c.k} className={`px-3 py-1.5 ${c.num ? 'text-right font-mono tabular-nums' : ''} ${c.fecha ? 'whitespace-nowrap tabular-nums' : ''}`}>{c.num ? fmtNum(f[c.k]) : c.fecha ? fmtDia(f[c.k]) : (f[c.k] ?? '—')}</td>)}
               </tr>
             ))}
           </tbody>
@@ -103,14 +118,14 @@ const DetalleCuadre = () => {
 
   const botonActualizar = (
     <button onClick={cargarDetalle} disabled={cargando}
-      className="self-start flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 disabled:opacity-40"
+      className="self-start inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-white hover:bg-zinc-50 text-zinc-700 border border-zinc-200 transition-colors disabled:opacity-40"
       title="Volver a leer la última foto (después de Ejecutar)">
-      <RefreshCw size={12} className={cargando ? 'animate-spin' : ''} /> Actualizar
+      <RefreshCw size={12} className={`text-brand-cyan ${cargando ? 'animate-spin' : ''}`} /> Actualizar
     </button>
   );
 
-  if (cargando) return <p className="text-xs text-slate-400 flex items-center gap-2"><Loader2 size={13} className="animate-spin" /> Cargando detalle…</p>;
-  if (!data)    return <div className="flex flex-col gap-2"><p className="text-xs text-slate-400">{msg || 'Sin datos.'}</p>{botonActualizar}</div>;
+  if (cargando) return <p className="text-xs text-zinc-500 flex items-center gap-2 border-t border-zinc-100 pt-4 m-0"><Loader2 size={14} className="animate-spin text-brand-cyan" /> Cargando detalle…</p>;
+  if (!data)    return <div className="flex flex-col gap-2 border-t border-zinc-100 pt-4"><p className="text-xs text-zinc-500 m-0">{msg || 'Sin datos.'}</p>{botonActualizar}</div>;
 
   const c = data.contadores || {};
   const d = data.detalle || {};
@@ -120,11 +135,11 @@ const DetalleCuadre = () => {
   const Contador = ({ k, label }) => {
     const dv = delta(k);
     return (
-      <div className="bg-slate-800/60 rounded-xl px-3 py-2 flex flex-col">
-        <span className="text-[10px] uppercase tracking-widest text-slate-500 font-black">{label}</span>
-        <span className="text-lg font-black text-white">{c[k] ?? '—'}
+      <div className="bg-zinc-50 rounded-xl px-3 py-2 flex flex-col min-w-0">
+        <span className={`${ROTULO} leading-tight break-words`}>{label}</span>
+        <span className="text-lg font-black text-zinc-900 tabular-nums">{c[k] ?? '—'}
           {dv != null && dv !== 0 && (
-            <span className={`ml-2 text-xs font-bold ${dv > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>{dv > 0 ? `+${dv}` : dv}</span>
+            <span className={`ml-2 text-xs font-bold ${dv > 0 ? 'text-brand-magenta' : 'text-emerald-600'}`}>{dv > 0 ? `+${dv}` : dv}</span>
           )}
         </span>
       </div>
@@ -132,11 +147,11 @@ const DetalleCuadre = () => {
   };
 
   return (
-    <div className="flex flex-col gap-4 border-t border-slate-800 pt-4">
+    <div className="flex flex-col gap-4 border-t border-zinc-100 pt-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <p className="text-xs text-slate-400 m-0">
-          Foto del <b className="text-slate-200">{fmtFecha(c.Corrida)}</b>
-        {ayer ? <> — variación contra la corrida anterior ({fmtFecha(ayer.Corrida)}) en <span className="text-rose-400">rojo</span> si empeoró.</> : ' — primera corrida, sin comparación.'}
+        <p className="text-xs text-zinc-500 m-0">
+          Foto del <b className="text-zinc-800">{fmtFecha(c.Corrida)}</b>
+        {ayer ? <> — variación contra la corrida anterior ({fmtFecha(ayer.Corrida)}) en <span className="font-bold text-brand-magenta">magenta</span> si empeoró.</> : ' — primera corrida, sin comparación.'}
         </p>
         {botonActualizar}
       </div>
@@ -167,7 +182,7 @@ const DetalleCuadre = () => {
         cols={[{k:'Cliente',t:'Cliente'},{k:'Doc',t:'Documento'},{k:'CfeEstado',t:'CFE'},{k:'Moneda',t:'Mon.'},{k:'DocTotal',t:'Total',num:true}]} />
 
       <TablaDetalle titulo="Histórico (últimas corridas)" filas={h}
-        cols={[{k:'Fecha',t:'Fecha'},{k:'CuentasFueraDelModelo',t:'Fuera'},{k:'DebeNoCuadra',t:'No cuadra'},{k:'DebeSinDocumento',t:'Sin doc'},{k:'AFavor',t:'A favor'},{k:'CargoDistintoTotal',t:'Cargo≠tot'},{k:'DocsSinCargo',t:'Sin cargo'},{k:'ColumnaMal',t:'Col. mal'},{k:'FalsosPositivos',t:'Falsos+'},{k:'AjustesManuales24h',t:'Ajustes'},{k:'DobleCobro',t:'Doble'}]}
+        cols={[{k:'Fecha',t:'Fecha',fecha:true},{k:'CuentasFueraDelModelo',t:'Fuera'},{k:'DebeNoCuadra',t:'No cuadra'},{k:'DebeSinDocumento',t:'Sin doc'},{k:'AFavor',t:'A favor'},{k:'CargoDistintoTotal',t:'Cargo≠tot'},{k:'DocsSinCargo',t:'Sin cargo'},{k:'ColumnaMal',t:'Col. mal'},{k:'FalsosPositivos',t:'Falsos+'},{k:'AjustesManuales24h',t:'Ajustes'},{k:'DobleCobro',t:'Doble'}]}
         vacio="Sin corridas todavía." />
     </div>
   );
@@ -181,89 +196,90 @@ const JobCard = ({ job, onEjecutar, ejecutandoId }) => {
   const [verDetalle, setVerDetalle] = useState(false);
 
   return (
-    <div className={`rounded-2xl border p-6 flex flex-col gap-5 transition-all ${
-      job.estado === 'CORRIENDO' ? 'bg-blue-900/10 border-blue-500/30 shadow-[0_0_20px_rgba(59,130,246,0.08)]'
-      : job.estado === 'ERROR'   ? 'bg-rose-900/10 border-rose-500/30'
-      : job.estado === 'OK'      ? 'bg-emerald-900/5 border-emerald-500/20'
-      : 'bg-slate-900 border-slate-800'
+    <div className={`bg-white rounded-2xl border p-4 sm:p-5 flex flex-col gap-4 transition-colors ${
+      job.estado === 'CORRIENDO' ? 'border-brand-cyan/40'
+      : job.estado === 'ERROR'   ? 'border-brand-magenta/30'
+      : 'border-zinc-200'
     }`}>
 
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div className="flex-1">
-          <div className="flex items-center gap-3 mb-1.5">
-            <EstadoBadge estado={job.estado} />
-            <span className="text-[10px] font-mono text-slate-600 border border-slate-800 px-2 py-0.5 rounded bg-slate-900">{job.id}</span>
+      {/* Header: nombre y clave a la izquierda, estado a la derecha */}
+      <div>
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0 flex flex-wrap items-center gap-x-2.5 gap-y-1">
+            <h3 className="text-base sm:text-lg font-black text-zinc-900 leading-tight m-0">{job.nombre}</h3>
+            <span className="text-[11px] font-mono text-zinc-500 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-md">{job.id}</span>
           </div>
-          <h3 className="text-lg font-black text-white">{job.nombre}</h3>
-          <p className="text-sm text-slate-400 mt-0.5">{job.descripcion}</p>
+          <EstadoBadge estado={job.estado} />
         </div>
-        <button
-          onClick={() => onEjecutar(job.id)}
-          disabled={ejecutando || job.estado === 'CORRIENDO'}
-          title="Ejecutar ahora"
-          className="flex items-center gap-2 px-5 py-2.5 rounded-xl font-black text-sm transition-all shrink-0 disabled:opacity-40 disabled:cursor-not-allowed
-            bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/20"
-        >
-          {ejecutando || job.estado === 'CORRIENDO'
-            ? <><Activity size={15} className="animate-pulse" /> Corriendo</>
-            : <><Play size={15} /> Ejecutar</>}
-        </button>
+        <p className="text-sm text-zinc-500 mt-1.5 mb-0">{job.descripcion}</p>
       </div>
 
-      {tieneDetalle && (
-        <button
-          onClick={() => setVerDetalle(v => !v)}
-          className="self-start flex items-center gap-2 px-4 py-2 rounded-xl font-bold text-xs transition-all
-            bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700"
-          title="Ver las listas de la última corrida: cuentas, documentos, ajustes y cobros dobles"
-        >
-          <ListChecks size={14} />
-          {verDetalle ? 'Ocultar detalle' : 'Ver detalle (listas de la última corrida)'}
-          {verDetalle ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-        </button>
-      )}
+      {/* Datos de programación (en escritorio, Ejecutar queda al final del mismo renglón) */}
+      <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] gap-2 sm:gap-3">
 
-      {/* Datos de programación */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-
-        <div className="bg-slate-800/60 rounded-xl px-4 py-3 flex flex-col gap-1">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
-            <CalendarClock size={11} /> Programación
+        <div className="bg-zinc-50 rounded-xl px-4 py-3 flex flex-col gap-1 min-w-0">
+          <span className={`${ROTULO} flex items-center gap-1.5`}>
+            <CalendarClock size={12} className="text-brand-cyan" /> Programación
           </span>
-          <span className="text-sm font-bold text-slate-200">{job.schedule}</span>
+          <span className="text-sm font-bold text-zinc-800">{job.schedule}</span>
         </div>
 
-        <div className="bg-slate-800/60 rounded-xl px-4 py-3 flex flex-col gap-1">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
-            <Clock size={11} /> Próxima ejecución
+        <div className="bg-zinc-50 rounded-xl px-4 py-3 flex flex-col gap-1 min-w-0">
+          <span className={`${ROTULO} flex items-center gap-1.5`}>
+            <Clock size={12} className="text-brand-cyan" /> Próxima ejecución
           </span>
-          <span className="text-sm font-bold text-slate-200">{fmtFecha(job.proximaEjecucion)}</span>
+          <span className="text-sm font-bold text-zinc-800 tabular-nums">{fmtFecha(job.proximaEjecucion)}</span>
           {job.proximaEjecucion && (
-            <span className="text-[11px] text-indigo-400 font-bold">en {msHasta(job.proximaEjecucion)}</span>
+            <span className="text-[11px] text-brand-cyan font-bold">en {msHasta(job.proximaEjecucion)}</span>
           )}
         </div>
 
-        <div className="bg-slate-800/60 rounded-xl px-4 py-3 flex flex-col gap-1">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 flex items-center gap-1.5">
-            <CheckCircle2 size={11} /> Última ejecución
+        <div className="bg-zinc-50 rounded-xl px-4 py-3 flex flex-col gap-1 min-w-0">
+          <span className={`${ROTULO} flex items-center gap-1.5`}>
+            <CheckCircle2 size={12} className="text-brand-cyan" /> Última ejecución
           </span>
-          <span className="text-sm font-bold text-slate-200">{fmtFecha(job.ultimaEjecucion)}</span>
+          <span className="text-sm font-bold text-zinc-800 tabular-nums">{fmtFecha(job.ultimaEjecucion)}</span>
           {job.ultimoResultado && (
-            <span className="text-[11px] text-emerald-400 font-bold">{job.ultimoResultado}</span>
+            <span className="text-[11px] text-emerald-700 font-bold">{job.ultimoResultado}</span>
           )}
+        </div>
+
+        <div className="flex items-center justify-end">
+          <button
+            onClick={() => onEjecutar(job.id)}
+            disabled={ejecutando || job.estado === 'CORRIENDO'}
+            title="Ejecutar ahora"
+            className={`${BTN_SECUNDARIO} w-full sm:w-auto shrink-0 disabled:cursor-not-allowed`}
+          >
+            {ejecutando || job.estado === 'CORRIENDO'
+              ? <><Activity size={15} className="animate-pulse text-brand-cyan" /> Corriendo</>
+              : <><Play size={15} className="text-brand-cyan" /> Ejecutar</>}
+          </button>
         </div>
       </div>
 
       {/* Error si existe */}
       {job.ultimoError && (
-        <div className="flex items-start gap-3 bg-rose-900/20 border border-rose-500/20 rounded-xl px-4 py-3">
-          <AlertTriangle size={16} className="text-rose-400 shrink-0 mt-0.5" />
-          <div>
-            <p className="text-[10px] font-black uppercase text-rose-500 tracking-widest mb-1">Último Error</p>
-            <p className="text-xs font-mono text-rose-300">{job.ultimoError}</p>
+        <div className="flex items-start gap-3 bg-brand-magenta/5 border border-brand-magenta/20 rounded-xl px-4 py-3">
+          <AlertTriangle size={16} className="text-brand-magenta shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p className="text-[10px] font-black uppercase text-brand-magenta tracking-widest mb-1">Último Error</p>
+            <p className="text-xs font-mono text-zinc-700 break-words m-0">{job.ultimoError}</p>
           </div>
         </div>
+      )}
+
+      {tieneDetalle && (
+        <button
+          onClick={() => setVerDetalle(v => !v)}
+          className="self-start inline-flex items-center gap-2 px-3 py-2 rounded-xl font-bold text-xs transition-colors
+            bg-white hover:bg-zinc-50 text-zinc-700 border border-zinc-200"
+          title="Ver las listas de la última corrida: cuentas, documentos, ajustes y cobros dobles"
+        >
+          <ListChecks size={14} className="text-brand-cyan" />
+          {verDetalle ? 'Ocultar detalle' : 'Ver detalle (listas de la última corrida)'}
+          {verDetalle ? <ChevronUp size={14} className="text-zinc-400" /> : <ChevronDown size={14} className="text-zinc-400" />}
+        </button>
       )}
 
       {/* Detalle del cuadre de saldos (listas de la última corrida) */}
@@ -301,7 +317,7 @@ export default function CronAdminView() {
     setEjecutandoId(jobId);
     try {
       await req(`/api/sysadmin/cron/${jobId}/ejecutar`, { method: 'POST' });
-      toast.success('✅ Job iniciado en background. El estado se actualizará en segundos.');
+      toast.success('Job iniciado en background. El estado se actualizará en segundos.');
       setTimeout(cargar, 2500);
     } catch (e) {
       toast.error(e.message);
@@ -315,73 +331,70 @@ export default function CronAdminView() {
   const ok        = jobs.filter(j => j.estado === 'OK').length;
 
   return (
-    <div className="h-full bg-[#0f1117] p-4 sm:p-8 overflow-y-auto text-slate-200 font-sans custom-scrollbar">
-      <div className="max-w-[1100px] mx-auto flex flex-col gap-6">
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 font-sans">
 
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row justify-between sm:items-start gap-4">
-          <div>
-            <h1 className="text-3xl sm:text-4xl font-black text-white flex items-center gap-3">
-              <Zap className="text-yellow-400" size={36} />
-              Administrador de Jobs
-            </h1>
-            <p className="text-slate-400 text-sm mt-2">
-              Estado en tiempo real de todos los procesos automáticos del servidor. Actualiza cada 15 segundos.
-            </p>
-          </div>
-          <button
-            onClick={cargar}
-            disabled={loading}
-            className="flex items-center gap-2 px-5 py-2.5 text-sm border border-slate-700 bg-slate-800 hover:bg-slate-700 rounded-xl transition-all shadow-lg text-slate-300 disabled:opacity-50 font-bold shrink-0"
-          >
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-            Refrescar
-          </button>
+      {/* Encabezado */}
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <Zap size={30} className="text-brand-cyan shrink-0" />
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none m-0">Administrador de Jobs</h1>
+          <p className="text-sm text-zinc-500 mt-1 mb-0">
+            Estado en tiempo real de todos los procesos automáticos del servidor. Actualiza cada 15 segundos.
+          </p>
         </div>
-
-        {/* KPIs rápidos */}
-        <div className="grid grid-cols-3 gap-4">
-          {[
-            { label: 'En ejecución', value: corriendo, color: 'blue',    icon: <Activity size={22} className="text-blue-400" /> },
-            { label: 'Completados OK', value: ok,      color: 'emerald', icon: <CheckCircle2 size={22} className="text-emerald-400" /> },
-            { label: 'Con errores',  value: errores,   color: 'rose',    icon: <ServerCrash size={22} className="text-rose-400" /> },
-          ].map(k => (
-            <div key={k.label} className={`rounded-2xl border p-5 flex items-center gap-4 bg-slate-900 border-slate-800 ${k.value > 0 && k.color !== 'emerald' ? `border-${k.color}-500/30 bg-${k.color}-900/5` : ''}`}>
-              <div className={`p-3 rounded-xl bg-${k.color}-500/10`}>{k.icon}</div>
-              <div>
-                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">{k.label}</p>
-                <p className={`text-3xl font-black text-${k.color}-300`}>{k.value}</p>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        {/* Lista de jobs */}
-        {loading && jobs.length === 0 ? (
-          <div className="flex justify-center py-24">
-            <div className="animate-spin h-10 w-10 border-4 border-yellow-500 border-t-transparent rounded-full" />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4">
-            {jobs.map(job => (
-              <JobCard
-                key={job.id}
-                job={job}
-                onEjecutar={ejecutar}
-                ejecutandoId={ejecutandoId}
-              />
-            ))}
-            {jobs.length === 0 && (
-              <div className="text-center py-20 text-slate-500">
-                <Zap size={44} className="mx-auto mb-4 text-slate-700" />
-                <p className="text-lg font-bold text-slate-400">No hay jobs registrados</p>
-                <p className="text-sm mt-1">El scheduler debe estar reiniciando.</p>
-              </div>
-            )}
-          </div>
-        )}
-
+        <button
+          onClick={cargar}
+          disabled={loading}
+          className={`${BTN_SECUNDARIO} w-full sm:w-auto shrink-0`}
+        >
+          <RefreshCw size={15} className={`text-brand-cyan ${loading ? 'animate-spin' : ''}`} />
+          Refrescar
+        </button>
       </div>
+
+      {/* KPIs rápidos */}
+      <div className="grid grid-cols-3 gap-2 sm:gap-3 mb-4">
+        {[
+          { label: 'En ejecución',   value: corriendo, Icono: Activity,     tono: 'text-brand-cyan',    borde: 'border-brand-cyan/40' },
+          { label: 'Completados OK', value: ok,        Icono: CheckCircle2, tono: 'text-emerald-600',   borde: '' },
+          { label: 'Con errores',    value: errores,   Icono: ServerCrash,  tono: 'text-brand-magenta', borde: 'border-brand-magenta/30' },
+        ].map(({ label, value, Icono, tono, borde }) => (
+          <div key={label} className={`bg-white rounded-2xl border p-3 sm:p-4 flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 min-w-0 ${value > 0 && borde ? borde : 'border-zinc-200'}`}>
+            <Icono size={26} className="text-brand-cyan shrink-0" />
+            <div className="min-w-0">
+              <p className="text-[10px] sm:text-[11px] font-black uppercase tracking-wide text-zinc-400 leading-tight m-0">{label}</p>
+              <p className={`text-2xl sm:text-3xl font-black tabular-nums leading-tight m-0 ${value > 0 ? tono : 'text-zinc-900'}`}>{value}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Lista de jobs */}
+      {loading && jobs.length === 0 ? (
+        <div className={`${CARD} flex flex-col items-center justify-center py-20 gap-3`}>
+          <Loader2 size={30} className="animate-spin text-brand-cyan" />
+          <p className="text-sm text-zinc-400 m-0">Cargando jobs…</p>
+        </div>
+      ) : (
+        <div className="flex flex-col gap-3">
+          {jobs.map(job => (
+            <JobCard
+              key={job.id}
+              job={job}
+              onEjecutar={ejecutar}
+              ejecutandoId={ejecutandoId}
+            />
+          ))}
+          {jobs.length === 0 && (
+            <div className={`${CARD} flex flex-col items-center justify-center text-center py-16 px-4`}>
+              <Zap size={40} className="mb-3 text-brand-cyan" />
+              <p className="text-sm font-bold text-zinc-700 m-0">No hay jobs registrados</p>
+              <p className="text-xs text-zinc-400 mt-1 mb-0">El scheduler debe estar reiniciando.</p>
+            </div>
+          )}
+        </div>
+      )}
+
     </div>
   );
 }

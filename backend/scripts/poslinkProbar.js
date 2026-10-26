@@ -5,7 +5,9 @@
  *
  * Uso (desde la carpeta del backend):
  *   node scripts/poslinkProbar.js terminales
- *   node scripts/poslinkProbar.js alta <ETIQUETA> <POSID> <TOTEM|CAJA> ["descripción"]
+ *   node scripts/poslinkProbar.js alta <ETIQUETA> <POSID> <TOTEM|CAJA> ["descripción"] [--app N] [--branch N]
+ *        --app: el ClientAppId que Resonet le asignó a ESE POS (en producción cada POS trae el suyo:
+ *        Caja1 = 1, Caja2 = 2…). Sin --app / --branch se usan POSLINK_CLIENT_APP_ID / POSLINK_BRANCH del .env.
  *   node scripts/poslinkProbar.js prueba <ETIQUETA> <monto> [USD]
  *        Venta de prueba (la terminal puede estar inactiva). Polea cada 2,5 s y muestra el
  *        estado hasta que termine. Ctrl+C la cancela si el POS todavía no la tomó.
@@ -62,14 +64,19 @@ async function main() {
             const r = await (await getPool()).request().query('SELECT * FROM dbo.PosTerminales ORDER BY PteIdTerminal');
             if (!r.recordset.length) console.log('No hay terminales dadas de alta.');
             for (const t of r.recordset) {
-                console.log(`${t.PteEtiqueta}  PosID ${t.PtePosID}  ${t.PteTipo}  ${t.PteActivo ? 'ACTIVA' : 'inactiva'}  ${t.PteDescripcion || ''}`);
+                console.log(`${t.PteEtiqueta}  PosID ${t.PtePosID}  ClientAppId ${t.PteClientAppId}  Branch ${t.PteBranch}  ${t.PteTipo}  ${t.PteActivo ? 'ACTIVA' : 'inactiva'}  ${t.PteDescripcion || ''}`);
             }
             break;
         }
         case 'alta': {
-            const [etiqueta, posId, tipo, descripcion] = args;
-            const t = await svc.altaTerminal({ etiqueta, posId, tipo: String(tipo || '').toUpperCase(), descripcion });
-            console.log(`Alta: ${t.PteEtiqueta} (PosID ${t.PtePosID}), INACTIVA. Siguiente paso: venta de prueba.`);
+            const opt = (n) => { const i = args.indexOf(n); return i >= 0 ? args[i + 1] : null; };
+            const sueltos = args.filter((a, i) => !a.startsWith('--') && !(i > 0 && args[i - 1].startsWith('--')));
+            const [etiqueta, posId, tipo, descripcion] = sueltos;
+            const t = await svc.altaTerminal({
+                etiqueta, posId, tipo: String(tipo || '').toUpperCase(), descripcion,
+                clientAppId: opt('--app'), branch: opt('--branch'),
+            });
+            console.log(`Alta: ${t.PteEtiqueta} (PosID ${t.PtePosID}, ClientAppId ${t.PteClientAppId}, Branch ${t.PteBranch}), INACTIVA. Siguiente paso: venta de prueba.`);
             break;
         }
         case 'activar':

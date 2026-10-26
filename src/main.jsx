@@ -37,7 +37,7 @@ import { BrowserRouter } from 'react-router-dom';      // 👈 Importamos el enr
 import { QueryClientProvider } from '@tanstack/react-query';
 import { queryClient } from './queryClient';
 import './utils/errorReporter'; // Global frontend error reporter → /api/client-error
-import { applyDeviceClass, enableTabletWakeLock } from './utils/device';
+import { applyDeviceClass, enableTabletWakeLock, soltarZoomRestaurado } from './utils/device';
 import { registerServiceWorker, initInstallPromptCapture } from './utils/pwa';
 
 // Capturar beforeinstallprompt LO ANTES POSIBLE (el navegador lo dispara una sola vez);
@@ -48,6 +48,8 @@ initInstallPromptCapture();
 applyDeviceClass();
 // En tablets: la pantalla no se apaga mientras la app está visible
 enableTabletWakeLock();
+// Celular: si Chrome repone un zoom que quedó trabado en esta pestaña, vuelve a 100% (el pellizco sigue andando)
+soltarZoomRestaurado();
 
 // FORCE REFRESH TIMESTAMP
 console.log(`🚀 APP VERSION REFRESH: ${new Date().toLocaleString()}`);

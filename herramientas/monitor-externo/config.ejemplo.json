@@ -1,0 +1,23 @@
+{
+  "nombre": "user.com.uy",
+  "url": "https://user.com.uy/api/health",
+  "fallasParaAvisar": 2,
+  "recordarCadaMin": 30,
+  "latido": {
+    "url": "https://user.com.uy/api/sysadmin/monitor/latido-externo",
+    "token": ""
+  },
+  "resend": {
+    "apiKey": "",
+    "desde": "User <notificaciones@user.com.uy>",
+    "para": [
+      ""
+    ]
+  },
+  "callbell": {
+    "apiKey": "",
+    "channelUuid": "",
+    "templateUuid": "",
+    "para": []
+  }
+}

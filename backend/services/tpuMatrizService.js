@@ -32,6 +32,7 @@ const crypto = require('crypto');
 const { execFile } = require('child_process');
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
+const { entornoConTope, describirFallo, anotarTope } = require('../utils/topeMemoriaPython');
 
 const SCRIPT = path.join(__dirname, '..', 'python', 'tpu_matriz.py');
 const DIR_FUENTES = require('../utils/rutasUploads').rutaUploads('tpu-matriz'); // UPLOADS_PATH
@@ -99,18 +100,24 @@ function resolverPython() {
 }
 
 function correrPython(args, timeoutMs) {
+    // Tope de memoria (23/10/2026, utils/topeMemoriaPython): el script no puede pasar de la memoria
+    // libre del momento; si la necesita, falla solo él («sin memoria suficiente…» en su JSON).
+    const env = entornoConTope();
     return new Promise((resolve, reject) => {
         execFile(resolverPython(), [SCRIPT, ...args], {
             timeout: timeoutMs,
             maxBuffer: 64 * 1024 * 1024,      // el análisis devuelve los trazados del arte
             windowsHide: true,
+            env,
         }, (err, stdout, stderr) => {
             // El script imprime SIEMPRE una línea JSON al final, incluso al fallar (exit 1).
             const linea = String(stdout || '').trim().split('\n').pop();
             let json = null;
             try { json = JSON.parse(linea); } catch (_) { }
             if (json && json.ok) return resolve(json);
-            reject(new Error((json && json.error) || (err && err.message) || String(stderr).slice(0, 300) || 'fallo desconocido'));
+            if (json && json.error) return reject(new Error(anotarTope(json.error, env)));
+            // Murió sin su línea JSON: en una línea, si fue memoria, si lo cortaron y lo último del traceback
+            reject(new Error(describirFallo(err, stderr, env)));
         });
     });
 }
@@ -316,8 +323,14 @@ function encolarGeneracion({ ordenId, codCliente, matriz, cantidad, io }) {
     try {
         if (!habilitado() || !ordenId || !matriz) return;
         pendientes++;
+        const monitor = require('./colaProcesos');   // cola de procesos pesados del monitor
+        monitor.encolado('tpu-matriz');
         cola = cola
-            .then(() => procesarOrden({ ordenId, codCliente, matriz, cantidad, io }))
+            .then(async () => {
+                monitor.empezo('tpu-matriz', `orden ${ordenId}`);
+                try { await procesarOrden({ ordenId, codCliente, matriz, cantidad, io }); monitor.termino('tpu-matriz', true); }
+                catch (e) { monitor.termino('tpu-matriz', false); throw e; }
+            })
             .catch(e => logger.error(`[TPU-Matriz] orden ${ordenId}: ${e.message}`))
             .finally(() => { pendientes--; });
     } catch (e) {
@@ -427,18 +440,20 @@ async function procesarOrden({ ordenId, codCliente, matriz, cantidad, io }) {
         await guardarTexturasOrden(pool, ordenId, elecciones, 'CLIENTE');
 
         // 4. El cliente aprobó su propio diseño al enviarlo → la orden queda lista para fabricar.
-        //    Si el arte vino en RGB con negro, o el parche sale de otra medida que la pedida, el aviso
-        //    al operario va como línea propia de la nota (una por aviso).
+        //    Si el arte vino en RGB con negro, si el parche sale de otra medida que la pedida, o si el corte
+        //    hay que revisarlo (piezas chicas que no se pudieron unir, 22/10), el aviso al operario va
+        //    como línea propia de la nota (una por aviso).
         const notaColor = textoColorArte(res.color_arte);
         const notaMedida = textoMedidaGenerada(res, matriz.medida);
-        const notaAdd = [notaMedida, notaColor].filter(Boolean).map(t => ` || ${t}`).join('');
+        const notaCorte = res.aviso_corte ? `[MATRIZ PROPIA] ${res.aviso_corte}` : '';
+        const notaAdd = [notaMedida, notaColor, notaCorte].filter(Boolean).map(t => ` || ${t}`).join('');
         await pool.request()
             .input('OID', sql.Int, ordenId)
             .input('NotaAdd', sql.NVarChar(sql.MAX), notaAdd)
             .query(`UPDATE Ordenes SET FechaAprobacionCliente = GETDATE(), TexturasElige = 'CLIENTE',
                            Nota = CASE WHEN @NotaAdd = '' THEN Nota ELSE ISNULL(Nota, '') + @NotaAdd END
                     WHERE OrdenID = @OID`);
-        for (const t of [notaMedida, notaColor]) if (t) logger.info(`[TPU-Matriz] ${cod}: ${t}`);
+        for (const t of [notaMedida, notaColor, notaCorte]) if (t) logger.info(`[TPU-Matriz] ${cod}: ${t}`);
 
         const { changeOrderState } = require('./stateManagerService');
         const tx = new sql.Transaction(pool);

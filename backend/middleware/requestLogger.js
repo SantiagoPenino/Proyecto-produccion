@@ -27,6 +27,8 @@ const httpLogger = winston.createLogger({
 });
 
 const mainLogger = require('../utils/logger');
+// Contadores de pedidos y errores por minuto para el monitor del servidor (/admin/monitor)
+const monitor = require('../services/monitorService');
 
 /**
  * Express middleware — loguea cada HTTP request.
@@ -49,6 +51,11 @@ module.exports = (req, res, next) => {
         const isNoisy = noisyPaths.some(p => url.startsWith(p) || url === p);
 
         const duration = Date.now() - start;
+        monitor.registrarHttp(res.statusCode, duration, url, {
+            ip: req.ip, build: req.headers['x-front-build'], usuario: req.user?.id,
+            // En los logins, solo el usuario que se intentó (nunca la contraseña), para los fallidos del monitor
+            loginUsuario: /^\/api\/(web-)?auth\/login/.test(url) ? (req.body?.username || req.body?.email || req.body?.usuario) : undefined,
+        });
         const userId = req.user?.id || '-';
         const line = `[HTTP] ${req.method} ${url} ${res.statusCode} ${duration}ms — user:${userId}`;
 

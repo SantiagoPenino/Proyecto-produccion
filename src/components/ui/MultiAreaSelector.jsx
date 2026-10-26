@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 
+// Estética nueva (22/10/2026): mismo aspecto que el Selector propio (borde zinc, foco brand-cyan, lista redondeada).
 export const MultiAreaSelector = ({ areas, selected, onChange, placeholder = 'Seleccionar Áreas', disabled = false }) => {
     const [isOpen, setIsOpen] = useState(false);
     const wrapperRef = useRef(null);
@@ -38,7 +39,7 @@ export const MultiAreaSelector = ({ areas, selected, onChange, placeholder = 'Se
         <div className="relative inline-block text-left z-30 w-full" ref={wrapperRef}>
             <button
                 onClick={() => !disabled && setIsOpen(!isOpen)}
-                className={`bg-white border text-slate-700 border-slate-300 rounded p-2 w-full text-sm font-medium flex justify-between items-center shadow-sm transition-colors ${disabled ? 'opacity-70 cursor-not-allowed' : 'hover:border-blue-400'}`}
+                className={`w-full flex items-center justify-between gap-2 rounded-xl border bg-white px-3 py-2.5 text-sm font-semibold text-zinc-800 text-left outline-none transition-colors ${isOpen ? 'border-brand-cyan ring-2 ring-brand-cyan/15' : 'border-zinc-200'} ${disabled ? 'bg-zinc-50 text-zinc-500 cursor-not-allowed' : 'hover:border-zinc-300'}`}
                 type="button"
                 disabled={disabled}
             >
@@ -49,35 +50,35 @@ export const MultiAreaSelector = ({ areas, selected, onChange, placeholder = 'Se
                             selected.length === areas.length ? 'Todas las Áreas' :
                                 `${selected.length} Seleccionadas`}
                 </span>
-                {!disabled && <ChevronDown className={`w-4 h-4 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`} />}
+                {!disabled && <ChevronDown className={`w-4 h-4 shrink-0 transition-transform ${isOpen ? 'rotate-180 text-brand-cyan' : 'text-zinc-400'}`} />}
             </button>
 
             {isOpen && (
-                <div className="absolute right-0 mt-1 w-full min-w-[200px] bg-white border border-slate-200 rounded-lg shadow-xl p-2 max-h-60 overflow-y-auto z-50 animate-in fade-in zoom-in-95 duration-100">
-                    <div className="p-2 border-b border-slate-100 mb-1">
+                <div className="absolute right-0 mt-1 w-full min-w-[200px] bg-white border border-zinc-200 rounded-xl shadow-xl shadow-zinc-900/10 p-1 max-h-72 overflow-y-auto z-50">
+                    <div className="p-2 border-b border-zinc-100 mb-1">
                         <label className="flex items-center gap-2 cursor-pointer select-none">
                             <input
                                 type="checkbox"
                                 checked={selected.length === areas.length && areas.length > 0}
                                 onChange={handleToggleAll}
-                                className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                                className="w-4 h-4 rounded accent-brand-cyan"
                             />
-                            <span className="text-sm font-semibold text-slate-700">Seleccionar Todas</span>
+                            <span className="text-sm font-bold text-zinc-700">Seleccionar todas</span>
                         </label>
                     </div>
                     <div className="space-y-1">
                         {areas.map(area => {
                             const id = getAreaId(area);
                             return (
-                                <label key={id} className="flex items-center gap-2 p-2 hover:bg-blue-50 rounded cursor-pointer select-none transition-colors">
+                                <label key={id} className="flex items-center gap-2 px-2 py-2 hover:bg-zinc-50 rounded-lg cursor-pointer select-none transition-colors">
                                     <input
                                         type="checkbox"
                                         checked={selected.includes(id)}
                                         onChange={() => handleToggle(id)}
-                                        className="w-4 h-4 text-blue-600 rounded border-slate-300 focus:ring-blue-500"
+                                        className="w-4 h-4 rounded accent-brand-cyan"
                                     />
-                                    <span className="text-sm text-slate-600 truncate">{area.Nombre || area.name}</span>
-                                    {(area.Categoria || area.category) && <span className="text-[10px] bg-slate-100 text-slate-400 px-1 rounded ml-auto">{area.Categoria || area.category}</span>}
+                                    <span className="text-sm text-zinc-700 truncate">{area.Nombre || area.name}</span>
+                                    {(area.Categoria || area.category) && <span className="text-[10px] bg-zinc-100 text-zinc-500 px-1.5 rounded ml-auto">{area.Categoria || area.category}</span>}
                                 </label>
                             );
                         })}

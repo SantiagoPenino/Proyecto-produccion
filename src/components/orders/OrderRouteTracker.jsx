@@ -1,21 +1,21 @@
-import React, { useEffect, useMemo, useRef, useState, useLayoutEffect, useCallback } from 'react';
+import React, { useId, useMemo, useRef, useState, useEffect, useLayoutEffect, useCallback } from 'react';
+import { Ban, CircleCheck, CircleDashed, Cog, Pause, Route, Truck } from 'lucide-react';
 
 /**
- * OrderRouteTracker Component - DEBUG VERSION & DATA FIX
+ * OrderRouteTracker — hoja de ruta del pedido (qué áreas recorre y en qué estado está cada una).
  *
- * [PRENDAS] Modo grafo: cuando el pedido tiene ramas reales (ej. Sublimación y DTF
- * arrancando en paralelo, o Estampado que depende de DTF Y de la prenda armada), se
- * arma como grafo por capas en vez de una fila derecha. Si NO hay ramas (el 99% de las
- * órdenes: una sola cadena lineal), se sigue viendo EXACTO a como se veía siempre — la
- * fila simple de abajo no se tocó.
- *
- * PRO (cuando existe) es un caso especial: no es un paso físico real — es el "pilar" que
- * agrupa el pedido (ver [PRENDAS] Fabricar a Medida con Producto Terminado). Por eso sus
- * hijos en el grafo NO salen de su propio ProximoServicio (que puede ser un valor sin
- * sentido físico, ej. 'DEPOSITO'), sino que se DERIVAN: es raíz de todo lo que no tenga
- * ningún otro paso apuntándole. En "Comprar y personalizar" (donde PRO sí es un paso
- * físico real) esto da el mismo resultado que seguir su ProximoServicio, así que no hay
- * caso especial que mantener aparte.
+ * Rediseño 23/10/2026 (estética nueva). Antes, en los pedidos con ramas (DTF y TPU que van a
+ * Estampado mientras la prenda pasa por Sublimación → Corte → Costura → Bordado) las ramas se
+ * dibujaban en la primera columna y sus flechas cruzaban toda la pantalla, y en los combos
+ * Producción aparecía dos veces (al principio y al final). Ahora:
+ *  - FILA PRINCIPAL: el camino más largo del pedido, en una línea recta.
+ *  - RAMAS: en filas arriba y abajo, en la columna justo antes del paso al que llegan (DTF y
+ *    TPU quedan al lado de Estampado), así las flechas son cortas y no cruzan nada.
+ *  - Cada área aparece UNA vez, en el lugar que le da el ProximoServicio real de sus órdenes.
+ *  - Sin datos de flujo (respuestas sin nextAreas) o con un ciclo: una fila en el orden que
+ *    mandó el backend, unida paso a paso, como siempre.
+ * Lo usan la Búsqueda integral, el detalle de la orden (OrderDetailModal) y la bandeja de PRO.
+ * Respaldo del diseño anterior: scratchpad de la sesión, integral/OrderRouteTracker.antes.jsx.
  */
 
 // [PRENDAS] El backend manda el código de área (TWC, TWT...) tal cual, sin nombre legible —
@@ -35,412 +35,380 @@ export const AREA_NAMES = {
     DEPOSITO: 'Depósito',
 };
 
-// HELPER: Extraer nombre de cualquier campo posible
 const getAreaName = (s) => {
     if (!s) return '???';
     const raw = s.Nombre || s.nombre || s.AreaNombre || s.AreaID || s.area || s.id || '???';
     return AREA_NAMES[raw.toString().trim().toUpperCase()] || raw;
 };
-
-// HELPER: Extraer estado
-const getStatus = (s) => {
-    if (!s) return 'Pendiente';
-    return s.Estado || s.estado || s.status || 'Pendiente';
-};
-
-// HELPER: Extraer Detalle
+const getStatus = (s) => (s && (s.Estado || s.estado || s.status)) || 'Pendiente';
 const getDetail = (s) => s.EstadoenArea || s.estadoenArea || s.estadoArea || '-';
 
-const stepVisual = (step) => {
-    const areaName = getAreaName(step).toUpperCase();
-    const statusRaw = getStatus(step);
-    const status = statusRaw.toUpperCase();
-    const detail = getDetail(step);
-    const logistic = step.EstadoLogistica || step.estadoLogistica || '-';
-    // [PRENDAS] Cuántas órdenes de falla/reposición (código "-F#"/"-R#") hay detrás del
-    // estado mostrado en este paso — sin esto, una reposición encadenada quedaba invisible:
-    // el paso solo mostraba "la orden más atrasada" entre todas sus hermanas de esa área.
-    // fallaCantidad viene de Reposiciones.Cantidad; fallaPendiente marca si todavía hay
-    // alguna sin cerrar (rojo) o si ya cerraron todas (verde).
-    const fallaCount = Number(step.fallaCount) || 0;
-    const fallaCantidad = step.fallaCantidad != null ? Number(step.fallaCantidad) : null;
-    const fallaPendiente = !!step.fallaPendiente;
-
-    let type = 'PENDING';
-    // [PRENDAS] "Recibido en Destino"/"Ingresado"/"Avisado": la orden ya se entregó del todo
-    // en esta área (su bulto se confirmó en la siguiente, o el cliente ya fue avisado de que
-    // está lista) — cuenta como terminada acá, igual que Pronto/Finalizado. "En tránsito"
-    // queda afuera a propósito: todavía está viajando.
-    if (status.includes('PRONTO') || status.includes('FINALIZADO') || status.includes('COMPLETADO') || status.includes('RECIBIDO EN DESTINO') || status.includes('INGRESADO') || status.includes('ENTREGADO') || status.includes('AVISADO')) type = 'FINISHED';
-    else if (status.includes('CANCEL')) type = 'CANCELLED';
-    else if (status.startsWith('PENDIENTE') || status === '') type = 'PENDING';
-    else type = 'ACTIVE';
-
-    let circleClass = "bg-white border-2 border-slate-200 text-slate-300";
-    let icon = "fa-circle";
-    let textClass = "text-slate-400";
-    let borderClass = "border-slate-100";
-    let connectorClass = "bg-slate-200";
-
-    if (type === 'FINISHED') {
-        circleClass = "bg-teal-500 border-teal-500 text-white shadow-sm";
-        icon = "fa-check";
-        textClass = "text-teal-700 font-bold";
-        borderClass = "border-teal-100 bg-teal-50";
-        connectorClass = "bg-teal-400";
-    } else if (type === 'ACTIVE') {
-        circleClass = "bg-white border-4 border-amber-400 text-amber-500 font-bold scale-110 shadow-lg z-10";
-        icon = "fa-gear fa-spin";
-        textClass = "text-amber-700 font-black";
-        borderClass = "border-amber-200 bg-amber-50";
-        connectorClass = "bg-slate-200";
-    } else if (type === 'CANCELLED') {
-        circleClass = "bg-red-500 text-white border-red-500";
-        icon = "fa-ban";
-        textClass = "text-red-600 font-bold";
-        borderClass = "border-red-100 bg-red-50";
-    }
-
-    return { areaName, statusRaw, detail, logistic, fallaCount, fallaCantidad, fallaPendiente, type, circleClass, icon, textClass, borderClass, connectorClass };
+// "PENDIENTE A RECIBIR" / "En transito" → "Pendiente a recibir" / "En transito": todos igual.
+const comoFrase = (t) => {
+    const s = String(t || '').trim().toLowerCase();
+    return s ? s[0].toUpperCase() + s.slice(1) : s;
 };
 
-// [PRENDAS] Badge de falla/reposición: se posiciona sobre la esquina del círculo del paso.
-// "F" + la cantidad repuesta en esta área (Reposiciones.Cantidad) — rojo mientras la
-// reposición sigue pendiente, verde cuando ya cerró (Reposiciones.Estado = CERRADA).
-const FallaBadge = ({ count, cantidad, pendiente }) => {
+// Tono de un estado (de un paso o de una orden). Exportado para que la Búsqueda integral pinte
+// los estados de sus órdenes con los mismos colores que la hoja de ruta.
+// [PRENDAS] "Recibido en Destino"/"Ingresado"/"Avisado": la orden ya se entregó del todo en esa
+// área (su bulto se confirmó en la siguiente, o el cliente ya fue avisado) — cuenta como lista.
+// "En tránsito" queda afuera a propósito: todavía está viajando.
+export const tonoDeEstado = (estado) => {
+    const st = String(estado || '').toUpperCase();
+    if (['PRONTO', 'FINALIZAD', 'COMPLETADO', 'TERMINADO', 'RECIBIDO EN DESTINO', 'INGRESADO', 'ENTREGAD', 'AVISADO'].some(k => st.includes(k))) return 'listo';
+    if (st.includes('CANCEL')) return 'cancelado';
+    if (st === '' || st.startsWith('PENDIENTE')) return 'pendiente';
+    if (st.includes('RETEN')) return 'retenido';
+    if (st.includes('TRANSITO') || st.includes('TRÁNSITO')) return 'transito';
+    return 'activo';
+};
+
+// El color va en lo que significa algo: listo (verde), en curso (brand-cyan), retenido (ámbar),
+// cancelado (magenta). Pendiente queda neutro.
+const ESTILO = {
+    listo: { Icono: CircleCheck, card: 'border-emerald-200', icono: 'text-emerald-600', texto: 'text-emerald-700' },
+    activo: { Icono: Cog, card: 'border-brand-cyan ring-2 ring-brand-cyan/10', icono: 'text-brand-cyan', texto: 'text-brand-cyan' },
+    transito: { Icono: Truck, card: 'border-brand-cyan ring-2 ring-brand-cyan/10', icono: 'text-brand-cyan', texto: 'text-brand-cyan' },
+    retenido: { Icono: Pause, card: 'border-amber-300 ring-2 ring-amber-100', icono: 'text-amber-600', texto: 'text-amber-700' },
+    cancelado: { Icono: Ban, card: 'border-brand-magenta/30', icono: 'text-brand-magenta', texto: 'text-brand-magenta' },
+    pendiente: { Icono: CircleDashed, card: 'border-zinc-200', icono: 'text-zinc-300', texto: 'text-zinc-500' },
+};
+
+// Chips de estado para listas (órdenes del pedido): mismos tonos que los pasos.
+export const CHIP_TONO = {
+    listo: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    activo: 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20',
+    transito: 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20',
+    retenido: 'bg-amber-50 text-amber-700 border-amber-200',
+    cancelado: 'bg-brand-magenta/5 text-brand-magenta border-brand-magenta/20',
+    pendiente: 'bg-zinc-50 text-zinc-500 border-zinc-200',
+};
+
+const pasoVisual = (step) => ({
+    areaName: getAreaName(step),
+    status: comoFrase(getStatus(step)),
+    tono: tonoDeEstado(getStatus(step)),
+    detail: getDetail(step),
+    logistic: step.EstadoLogistica || step.estadoLogistica || '-',
+    count: Number(step.count) || 0,
+    // [PRENDAS] Órdenes de falla/reposición ("-F#"/"-R#") detrás del estado del paso: sin esto una
+    // reposición encadenada quedaba invisible. fallaCantidad = Reposiciones.Cantidad;
+    // fallaPendiente = alguna sigue abierta (magenta) o ya cerraron todas (verde).
+    fallaCount: Number(step.fallaCount) || 0,
+    fallaCantidad: step.fallaCantidad != null ? Number(step.fallaCantidad) : null,
+    fallaPendiente: !!step.fallaPendiente,
+});
+
+const numeroCorto = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''));
+
+const FallaChip = ({ count, cantidad, pendiente }) => {
     if (!count) return null;
-    const numero = cantidad != null
-        ? (Number.isInteger(cantidad) ? cantidad : cantidad.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''))
-        : `×${count}`;
-    const colorClass = pendiente ? 'bg-red-500' : 'bg-emerald-500';
-    const titulo = `${count} orden(es) de falla/reposición en este paso · ${pendiente ? 'pendiente' : 'finalizada'}`;
+    const texto = `${count} ${count === 1 ? 'falla' : 'fallas'}${cantidad != null ? ` · ${numeroCorto(cantidad)}` : ''}`;
     return (
-        <div className={`absolute -top-1 -right-1 min-w-[20px] h-[18px] px-1 rounded-full ${colorClass} text-white text-[9px] font-black flex items-center justify-center border-2 border-white z-10`} title={titulo}>
-            F{numero}
-        </div>
+        <span
+            title={`${count} orden(es) de falla/reposición en este paso · ${pendiente ? 'pendiente' : 'cerrada'}`}
+            className={`mt-1.5 self-start text-[10px] font-bold px-2 py-0.5 rounded-full border ${pendiente
+                ? 'bg-brand-magenta/5 text-brand-magenta border-brand-magenta/20'
+                : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}
+        >
+            {texto} · {pendiente ? 'pendiente' : 'cerrada'}
+        </span>
     );
 };
 
-// Componente de módulo (no se redefine en cada render) — necesario para que los refs
-// del modo grafo sean estables entre renders y el efecto de medición no entre en loop.
-const StepCircle = React.forwardRef(({ step }, ref) => {
-    const v = stepVisual(step);
+// Componente de módulo (no se redefine en cada render): los refs para medir las flechas quedan
+// estables entre renders y el efecto de medición no entra en loop.
+const PasoCard = React.forwardRef(({ step, style }, ref) => {
+    const v = pasoVisual(step);
+    const e = ESTILO[v.tono];
+    const Icono = e.Icono;
     return (
-        // bg-white de fondo propio: sin esto, la línea del grafo pasa "por detrás" pero pegada
-        // al borde de la tarjeta y da la sensación de que los pasos se tocan/unen entre sí.
-        <div ref={ref} className="flex flex-col items-center relative w-[150px] bg-white rounded-xl py-2">
-            <div className={`relative w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
-                <i className={`fa-solid ${v.icon} ${v.type === 'PENDING' ? 'text-[8px]' : ''}`}></i>
-                <FallaBadge count={v.fallaCount} cantidad={v.fallaCantidad} pendiente={v.fallaPendiente} />
+        // justify-center: en el grafo todas las tarjetas tienen el alto de la más alta, y el contenido
+        // va centrado, igual que las flechas, que entran y salen por la mitad de la tarjeta.
+        <div ref={ref} style={style}
+            className={`relative z-[1] w-[168px] flex flex-col justify-center rounded-xl border bg-white px-3 py-2.5 ${e.card}`}>
+            <div className="flex items-center gap-1.5 min-w-0">
+                <span className="shrink-0 inline-flex"><Icono size={15} className={e.icono} aria-hidden="true" /></span>
+                <span className="text-[11px] font-black uppercase tracking-tight text-zinc-800 truncate" title={v.areaName}>{v.areaName}</span>
+                {v.count > 1 && (
+                    <span className="ml-auto shrink-0 text-[10px] font-bold text-zinc-400 tabular-nums" title={`${v.count} órdenes en esta área`}>×{v.count}</span>
+                )}
             </div>
-            <div className="mt-3 flex flex-col items-center gap-1 w-full px-1 text-center">
-                <div className={`text-xs uppercase tracking-tight leading-tight mb-1 h-6 flex items-end ${v.textClass}`}>{v.areaName}</div>
-                <div className={`w-full rounded border p-1 shadow-sm ${v.borderClass}`}>
-                    <div className="text-[10px] font-bold uppercase truncate">{v.statusRaw}</div>
-                    {v.detail !== '-' && <div className="text-[9px] text-slate-500 truncate border-t border-black/5 mt-0.5 pt-0.5">{v.detail}</div>}
-                    {v.logistic !== '-' && <div className="text-[9px] text-blue-600 font-bold truncate pt-0.5"><i className="fa-solid fa-truck text-[8px] mr-1"></i>{v.logistic}</div>}
+            <div className={`mt-1 text-[11px] font-bold truncate ${e.texto}`} title={v.status}>{v.status}</div>
+            {v.detail !== '-' && <div className="text-[10px] text-zinc-500 truncate" title={v.detail}>{v.detail}</div>}
+            {v.logistic !== '-' && (
+                <div className="text-[10px] font-bold text-brand-cyan truncate inline-flex items-center gap-1" title={v.logistic}>
+                    <Truck size={10} className="shrink-0" aria-hidden="true" />{v.logistic}
                 </div>
-            </div>
+            )}
+            <FallaChip count={v.fallaCount} cantidad={v.fallaCantidad} pendiente={v.fallaPendiente} />
         </div>
     );
 });
 
-// [PRENDAS] Marcador de "Inicio": puramente visual, sin estado ni datos reales detrás — solo
-// para que el flujo no arranque "de la nada" en el primer paso (Sublimación en un pedido de
-// tela, o Producción en un "Comprar y personalizar" sin tela detrás). No participa del cálculo
-// de aristas/capas: se agrega solo al renderizar, cuando hay más de un paso real que mostrar.
-const InicioMarker = () => (
-    <div className="flex flex-col items-center relative w-14 shrink-0">
-        <div className="w-14 h-14 rounded-full flex items-center justify-center bg-slate-50 border-2 border-dashed border-slate-200 text-slate-300">
-            <i className="fa-solid fa-flag text-sm"></i>
-        </div>
-        <div className="mt-3 text-[10px] uppercase tracking-tight font-bold text-slate-400 h-6 flex items-end">Inicio</div>
-    </div>
-);
+// Códigos de área del pedido en el orden del recorrido (columna, y dentro de la columna de arriba a
+// abajo; el mismo orden que la lista del celular). Lo usa el filtro por área de la Búsqueda integral.
+export const ordenRecorrido = (steps) => {
+    const pasos = Array.isArray(steps) ? steps : [];
+    const d = armarDisposicion(pasos);
+    const filaIndex = new Map(d.filas.map((f, k) => [f, k]));
+    return [...d.nodos]
+        .sort((x, y) => x.col - y.col || filaIndex.get(x.fila) - filaIndex.get(y.fila))
+        .map(x => (pasos[x.i].id || pasos[x.i].AreaID || '').toString().trim().toUpperCase());
+};
 
-const OrderRouteTracker = ({ steps = [], title = "Hoja de Ruta (Flujo de Áreas)" }) => {
+// Disposición: { nodos: [{ i, col, fila }], aristas: [[i, j]], columnas, filas: [valores de fila en orden] }.
+function armarDisposicion(pasos) {
+    const n = pasos.length;
+    const enFila = (orden) => ({
+        nodos: orden.map((i, c) => ({ i, col: c, fila: 0 })),
+        aristas: orden.slice(1).map((j, k) => [orden[k], j]),
+        columnas: orden.length,
+        filas: [0],
+    });
+    if (n === 0) return enFila([]);
 
-    // DEBUG: Ver qué datos llegan realmente
+    const ids = pasos.map(s => (s.id || s.AreaID || getAreaName(s) || '').toString().trim().toUpperCase());
+    const indice = new Map(ids.map((u, i) => [u, i]));
+    const suc = pasos.map(() => []);
+    const pre = pasos.map(() => []);
+    const aristas = [];
+    pasos.forEach((s, i) => {
+        const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
+        nexts.forEach(nx => {
+            const j = indice.get((nx || '').toString().trim().toUpperCase());
+            if (j !== undefined && j !== i && !suc[i].includes(j)) { suc[i].push(j); pre[j].push(i); aristas.push([i, j]); }
+        });
+    });
+
+    // Orden topológico; las raíces en el orden en que las mandó el backend.
+    const grado = pre.map(p => p.length);
+    const cola = [];
+    grado.forEach((g, i) => { if (g === 0) cola.push(i); });
+    const topo = [];
+    while (cola.length) {
+        const i = cola.shift();
+        topo.push(i);
+        suc[i].forEach(j => { if (--grado[j] === 0) cola.push(j); });
+    }
+    // Sin datos de flujo, o un ciclo (datos inconsistentes): una fila en el orden crudo.
+    if (aristas.length === 0 || topo.length < n) return enFila(pasos.map((_, i) => i));
+    const posTopo = new Map(topo.map((i, k) => [i, k]));
+
+    // Fila principal = el camino más largo (en cantidad de pasos). Empate: el que llegó primero.
+    const largo = new Array(n).fill(1);
+    const siguiente = new Array(n).fill(-1);
+    for (let k = topo.length - 1; k >= 0; k--) {
+        const i = topo[k];
+        suc[i].forEach(j => { if (largo[j] + 1 > largo[i]) { largo[i] = largo[j] + 1; siguiente[i] = j; } });
+    }
+    let inicio = -1;
+    topo.forEach(i => { if (pre[i].length === 0 && (inicio === -1 || largo[i] > largo[inicio])) inicio = i; });
+    const principal = [];
+    for (let i = inicio; i !== -1; i = siguiente[i]) principal.push(i);
+    const enPrincipal = new Set(principal);
+
+    // Columnas: la principal, una por paso. Las ramas, lo más tarde posible: justo antes del primer
+    // paso al que llegan. Una rama sin sucesor va donde la deja su camino desde el inicio.
+    const col = new Array(n).fill(-1);
+    principal.forEach((i, c) => { col[i] = c; });
+    const temprano = new Array(n).fill(0);
+    topo.forEach(i => suc[i].forEach(j => { temprano[j] = Math.max(temprano[j], temprano[i] + 1); }));
+    for (let k = topo.length - 1; k >= 0; k--) {
+        const i = topo[k];
+        if (enPrincipal.has(i)) continue;
+        const cs = suc[i].map(j => col[j]).filter(c => c >= 0);
+        col[i] = cs.length ? Math.min(...cs) - 1 : temprano[i];
+    }
+    const minCol = Math.min(...col);
+    if (minCol < 0) for (let i = 0; i < n; i++) col[i] -= minCol;
+
+    // Filas: cada rama (una cadena de pasos seguidos fuera de la principal) va en su propia fila,
+    // alternando arriba y abajo de la principal. Solo un antecesor hereda la fila de su sucesor,
+    // así dos ramas que llegan al mismo paso no se pisan.
+    const cadena = new Array(n).fill(-1);
+    const heredado = new Set();
+    let nCadenas = 0;
+    for (let k = topo.length - 1; k >= 0; k--) {
+        const i = topo[k];
+        if (enPrincipal.has(i)) continue;
+        const s = suc[i].find(j => !enPrincipal.has(j) && !heredado.has(j) && col[j] === col[i] + 1);
+        if (s !== undefined) { cadena[i] = cadena[s]; heredado.add(s); } else cadena[i] = nCadenas++;
+    }
+    const arranque = new Array(nCadenas).fill(Infinity);
+    for (let i = 0; i < n; i++) if (cadena[i] >= 0) arranque[cadena[i]] = Math.min(arranque[cadena[i]], posTopo.get(i));
+    const filaDeCadena = new Array(nCadenas);
+    [...Array(nCadenas).keys()].sort((a, b) => arranque[a] - arranque[b])
+        .forEach((c, k) => { filaDeCadena[c] = k % 2 === 0 ? -(k / 2 + 1) : (k + 1) / 2; });
+
+    const nodos = pasos.map((_, i) => ({ i, col: col[i], fila: enPrincipal.has(i) ? 0 : filaDeCadena[cadena[i]] }));
+    const filas = [...new Set(nodos.map(x => x.fila))].sort((a, b) => a - b);
+    return { nodos, aristas, columnas: Math.max(...col) + 1, filas };
+}
+
+// Distancia del punto donde se juntan (o se abren) las flechas al borde de la tarjeta.
+const UNION = 16;
+
+// En el celular el grafo no entra: las ramas quedaban fuera de la pantalla y dejaban huecos.
+const MQ_ANGOSTO = '(max-width: 639px)';
+const useAngosto = () => {
+    const [angosto, setAngosto] = useState(() => typeof window !== 'undefined' && window.matchMedia(MQ_ANGOSTO).matches);
     useEffect(() => {
-        if (steps && steps.length > 0) {
-            console.log("OrderRouteTracker received steps:", steps);
-        }
-    }, [steps]);
+        const mq = window.matchMedia(MQ_ANGOSTO);
+        const alCambiar = () => setAngosto(mq.matches);
+        mq.addEventListener('change', alCambiar);
+        return () => mq.removeEventListener('change', alCambiar);
+    }, []);
+    return angosto;
+};
 
-    // 1. DATA PREPARATION & MAPPING ROBUSTNESS
-    // Memoizado sobre el prop `steps`: si no, `[...steps]` arma un array nuevo en CADA
-    // render, el grafo de abajo se recalcula siempre, dispara setLines, eso re-renderiza,
-    // y vuelve a arrancar — loop infinito (se cuelga la pantalla) apenas hay ramas.
-    const rawSteps = useMemo(() => (Array.isArray(steps) ? [...steps] : []), [steps]);
-    // Solo tiene sentido un "Inicio" cuando hay un flujo real de varios pasos que mostrar —
-    // con un único paso no hay nada que preceder.
-    const mostrarInicio = rawSteps.length > 1;
+const OrderRouteTracker = ({ steps = [], title = 'Hoja de ruta' }) => {
+    // Memoizado sobre `steps`: un array nuevo en cada render recalcularía la disposición, eso
+    // volvería a medir las flechas, re-renderizaría y entraría en loop.
+    const pasos = useMemo(() => (Array.isArray(steps) ? [...steps] : []), [steps]);
+    const disp = useMemo(() => armarDisposicion(pasos), [pasos]);
+    const marcador = `ort-${useId().replace(/:/g, '')}`;
+    const angosto = useAngosto();
 
-    // 2. ARMAR EL GRAFO (edges + capas). Puramente derivado de rawSteps — si no viene
-    // "nextAreas" (respuestas viejas del backend, u otras pantallas que reusen este
-    // componente sin ese campo), da 0 aristas y cae directo al modo lineal de siempre.
-    const graph = useMemo(() => {
-        const idsUpper = rawSteps.map(s => (s.id || getAreaName(s) || '').toString().trim().toUpperCase());
-        const indexByUpperId = new Map(idsUpper.map((u, i) => [u, i]));
-        const proIdx = idsUpper.indexOf('PRO');
+    const listos = pasos.filter(s => tonoDeEstado(getStatus(s)) === 'listo').length;
 
-        // Aristas "reales" tratando TODOS los pasos por igual (PRO incluido): el caso
-        // normal, sin combos — una sola cadena que sigue el ProximoServicio real de cada
-        // orden tal cual llega del backend.
-        const baseEdges = []; // [fromIdx, toIdx]
-        rawSteps.forEach((s, i) => {
-            const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
-            nexts.forEach(n => {
-                const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
-                if (j !== undefined && j !== i) baseEdges.push([i, j]);
-            });
+    // Las flechas se miden en el DOM (no se adivinan coordenadas). Salen y entran por la mitad de
+    // cada tarjeta. Cuando a un paso le llegan varias (DTF, Bordado y TPU a Estampado), se juntan en
+    // un punto un poco antes y entra UNA sola flecha; lo mismo al salir de un paso hacia varios.
+    const gridRef = useRef(null);
+    const nodoRefs = useRef(new Map());
+    const [trazos, setTrazos] = useState([]);
+
+    const medir = useCallback(() => {
+        const grid = gridRef.current;
+        if (!grid) { setTrazos(t => (t.length ? [] : t)); return; }
+        const g = grid.getBoundingClientRect();
+        const caja = new Map();
+        nodoRefs.current.forEach((el, i) => {
+            const r = el.getBoundingClientRect();
+            caja.set(i, { l: r.left - g.left, r: r.right - g.left, y: r.top - g.top + r.height / 2 });
         });
-        const baseInDegree = new Array(rawSteps.length).fill(0);
-        baseEdges.forEach(([, j]) => { baseInDegree[j]++; });
-
-        // [PRENDAS] FASE 5/6: con combos, PRO puede ser TANTO origen (de donde nacen los
-        // componentes sueltos, ej. Bordado/DTF) COMO destino (donde convergen antes de
-        // Depósito, porque cada componente "muere" en PRO). La señal real de que ESTO es
-        // un combo (y no un pedido común que simplemente pasa por PRO) es que hay 2 o más
-        // pasos sin ningún otro paso apuntándoles — arranques genuinamente independientes.
-        // Con 0 o 1 raíz "suelta" no hay nada que combinar: tratar a PRO como pivote
-        // rompía pedidos comunes, porque "adoptaba" como hijo suyo al paso que en realidad
-        // es el INICIO real de toda la cadena (ej. Sublimación) solo porque nadie más le
-        // apunta — así el grafo entero quedaba desordenado (Bordado, Corte, Costura,
-        // Producción, Sublimación... en vez de Sublimación→Corte→Costura→Bordado→Producción).
-        const otrosRoots = proIdx === -1 ? [] : rawSteps.map((_, i) => i).filter(i => i !== proIdx && baseInDegree[i] === 0);
-        const esCombo = proIdx !== -1 && otrosRoots.length > 1;
-
-        let workingSteps, edges;
-        if (esCombo) {
-            const proOrigenIdx = proIdx;
-            workingSteps = [...rawSteps, rawSteps[proIdx]];
-            const proDestinoIdx = workingSteps.length - 1;
-
-            // Aristas "reales": ProximoServicio de cada paso, solo si el destino también es
-            // un paso visible acá. Las que apuntan a PRO van al nodo "destino", no al de
-            // "origen" — así la flecha entra a la convergencia, no al punto de partida.
-            const realEdges = [];
-            workingSteps.forEach((s, i) => {
-                if (i === proOrigenIdx || i === proDestinoIdx) return; // PRO: sus aristas se resuelven aparte
-                const nexts = Array.isArray(s.nextAreas) ? s.nextAreas : (s.nextArea ? [s.nextArea] : []);
-                nexts.forEach(n => {
-                    const target = (n || '').toString().trim().toUpperCase();
-                    const j = target === 'PRO' ? proDestinoIdx : indexByUpperId.get(target);
-                    if (j !== undefined && j !== i) realEdges.push([i, j]);
-                });
-            });
-            // PRO-destino sale hacia el ProximoServicio real de la orden PRO (ej. DEPOSITO).
-            const proStep = rawSteps[proIdx];
-            const nextsPro = Array.isArray(proStep.nextAreas) ? proStep.nextAreas : (proStep.nextArea ? [proStep.nextArea] : []);
-            nextsPro.forEach(n => {
-                const j = indexByUpperId.get((n || '').toString().trim().toUpperCase());
-                if (j !== undefined && j !== proDestinoIdx) realEdges.push([proDestinoIdx, j]);
-            });
-
-            // Raíces derivadas: todo paso (que no sea PRO-origen ni PRO-destino) sin ninguna
-            // arista real entrante nace de PRO-origen — los componentes independientes del combo.
-            const inDegree = new Array(workingSteps.length).fill(0);
-            realEdges.forEach(([, j]) => { inDegree[j]++; });
-            edges = [...realEdges];
-            workingSteps.forEach((s, i) => {
-                if (i !== proOrigenIdx && i !== proDestinoIdx && inDegree[i] === 0) edges.push([proOrigenIdx, i]);
-            });
-        } else {
-            // Sin combo: PRO es un paso más, sigue su propio ProximoServicio como cualquier
-            // otro — mismo resultado de siempre para "Comprar y personalizar" y para el
-            // 99% de los pedidos de una sola cadena.
-            workingSteps = rawSteps;
-            edges = baseEdges;
-        }
-
-        // Sin ninguna arista real: no hay grafo que armar (ej. un solo paso, o datos viejos
-        // sin nextAreas) — modo lineal con el orden crudo, como toda la vida.
-        if (edges.length === 0) return { hasBranching: false };
-
-        // Capas por camino más largo desde cualquier raíz (0 aristas entrantes en el set
-        // final `edges`) — así un nodo con 2 padres (ej. Estampado, que depende de DTF Y
-        // de la prenda armada; o PRO-destino, que depende de TODOS los componentes) queda
-        // DESPUÉS de todos ellos, nunca antes.
-        const inDegreeFinal = new Array(workingSteps.length).fill(0);
-        edges.forEach(([, j]) => { inDegreeFinal[j]++; });
-        const depth = new Array(workingSteps.length).fill(-1);
-        const roots = workingSteps.map((_, i) => i).filter(i => inDegreeFinal[i] === 0);
-        if (roots.length === 0) return { hasBranching: false }; // ciclo raro / datos inconsistentes — no arriesgar
-
-        // BFS por niveles, relajando profundidad como "camino más largo conocido hasta ahora".
-        const queue = [...roots];
-        roots.forEach(r => { depth[r] = 0; });
-        let iterations = 0;
-        const maxIterations = workingSteps.length * workingSteps.length + 10; // guard anti-loop
-        while (queue.length > 0 && iterations < maxIterations) {
-            iterations++;
-            const cur = queue.shift();
-            edges.filter(([from]) => from === cur).forEach(([, to]) => {
-                const candidate = depth[cur] + 1;
-                if (candidate > depth[to]) {
-                    depth[to] = candidate;
-                    queue.push(to);
-                }
-            });
-        }
-        // Nodos nunca alcanzados (aislados, sin arista alguna): quedan en su propia capa al final.
-        let maxDepth = Math.max(0, ...depth.filter(d => d >= 0));
-        workingSteps.forEach((_, i) => { if (depth[i] === -1) { maxDepth += 1; depth[i] = maxDepth; } });
-
-        const numLayers = Math.max(...depth) + 1;
-        const hasBranching = numLayers < workingSteps.length; // menos capas que pasos = alguna capa tiene 2+
-
-        if (!hasBranching) {
-            // Cadena única (sin ramas): igual se calculó el orden real vía ProximoServicio.
-            // Se usa para el modo lineal — antes se mostraban los pasos en el orden crudo en
-            // que los mandó el backend, que no tiene por qué respetar la secuencia real.
-            const linearSteps = workingSteps.map((_, i) => i).sort((a, b) => depth[a] - depth[b]).map(i => workingSteps[i]);
-            return { hasBranching: false, linearSteps };
-        }
-
-        const columns = Array.from({ length: numLayers }, () => []);
-        workingSteps.forEach((s, i) => columns[depth[i]].push(i));
-
-        return { hasBranching: true, columns, edges, depth, workingSteps };
-    }, [rawSteps]);
-
-    // --- Grafo: medimos posiciones reales en el DOM para trazar las líneas, en vez de
-    // adivinar coordenadas — así queda prolijo sin importar cuánto texto tenga cada tarjeta.
-    const graphContainerRef = useRef(null);
-    const nodeRefs = useRef(new Map());
-    const [lines, setLines] = useState([]);
-
-    const recomputeLines = useCallback(() => {
-        if (!graph.hasBranching || !graphContainerRef.current) return;
-        const containerRect = graphContainerRef.current.getBoundingClientRect();
-        const next = [];
-        graph.edges.forEach(([from, to]) => {
-            const fromEl = nodeRefs.current.get(from);
-            const toEl = nodeRefs.current.get(to);
-            if (!fromEl || !toEl) return;
-            const fromCircle = fromEl.querySelector('.rounded-full')?.getBoundingClientRect();
-            const toCircle = toEl.querySelector('.rounded-full')?.getBoundingClientRect();
-            if (!fromCircle || !toCircle) return;
-            const x1 = fromCircle.right - containerRect.left + graphContainerRef.current.scrollLeft;
-            const y1 = fromCircle.top + fromCircle.height / 2 - containerRect.top + graphContainerRef.current.scrollTop;
-            const x2 = toCircle.left - containerRect.left + graphContainerRef.current.scrollLeft;
-            const y2 = toCircle.top + toCircle.height / 2 - containerRect.top + graphContainerRef.current.scrollTop;
-            next.push({ x1, y1, x2, y2, key: `${from}-${to}` });
+        const entran = new Map();
+        const salen = new Map();
+        disp.aristas.forEach(([a, b]) => {
+            entran.set(b, (entran.get(b) || 0) + 1);
+            salen.set(a, (salen.get(a) || 0) + 1);
         });
-        setLines(next);
-    }, [graph]);
+        const listo = (i) => tonoDeEstado(getStatus(pasos[i])) === 'listo';
+        const tramo = (x1, y1, x2, y2) => {
+            if (Math.abs(y1 - y2) < 1) return `M ${x1} ${y1} L ${x2} ${y2}`;
+            const dx = (x2 - x1) / 2;
+            return `M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}`;
+        };
+        const lineas = [];
+        const flechas = [];
+        disp.aristas.forEach(([a, b]) => {
+            const A = caja.get(a);
+            const B = caja.get(b);
+            if (!A || !B) return;
+            const x1 = salen.get(a) > 1 ? A.r + UNION : A.r;
+            const junta = entran.get(b) > 1;
+            const d = tramo(x1, A.y, junta ? B.l - UNION : B.l - 2, B.y);
+            (junta ? lineas : flechas).push({ key: `${a}-${b}`, d, listo: listo(a), flecha: !junta });
+        });
+        salen.forEach((n, a) => {
+            const A = caja.get(a);
+            if (n > 1 && A) lineas.push({ key: `s${a}`, d: `M ${A.r} ${A.y} L ${A.r + UNION} ${A.y}`, listo: listo(a), flecha: false });
+        });
+        entran.forEach((n, b) => {
+            const B = caja.get(b);
+            if (n < 2 || !B) return;
+            const todasListas = disp.aristas.filter(([, y]) => y === b).every(([x]) => listo(x));
+            flechas.push({ key: `e${b}`, d: `M ${B.l - UNION} ${B.y} L ${B.l - 2} ${B.y}`, listo: todasListas, flecha: true });
+        });
+        setTrazos([...lineas, ...flechas]); // las flechas al final: quedan arriba de las líneas
+    }, [disp, pasos]);
 
     useLayoutEffect(() => {
-        recomputeLines();
-        if (!graph.hasBranching || !graphContainerRef.current) return;
-        const ro = new ResizeObserver(() => recomputeLines());
-        ro.observe(graphContainerRef.current);
-        window.addEventListener('resize', recomputeLines);
-        return () => {
-            ro.disconnect();
-            window.removeEventListener('resize', recomputeLines);
-        };
-    }, [graph, recomputeLines]);
+        medir();
+        if (!gridRef.current) return;
+        const ro = new ResizeObserver(() => medir());
+        ro.observe(gridRef.current);
+        return () => ro.disconnect();
+    }, [medir, angosto]);
+
+    const filaIndex = new Map(disp.filas.map((f, k) => [f, k]));
+
+    // Celular: lista vertical en el orden del recorrido (columna, y dentro de la columna de arriba
+    // a abajo). Las ramas dicen a qué paso llegan, porque ahí no hay flechas que lo muestren.
+    const enLista = useMemo(() => {
+        if (!angosto) return [];
+        const sucesores = new Map();
+        disp.aristas.forEach(([a, b]) => { if (!sucesores.has(a)) sucesores.set(a, []); sucesores.get(a).push(b); });
+        return [...disp.nodos]
+            .sort((x, y) => x.col - y.col || filaIndex.get(x.fila) - filaIndex.get(y.fila))
+            .map(x => ({ ...x, llegaA: x.fila !== 0 ? (sucesores.get(x.i) || []).map(j => getAreaName(pasos[j])) : [] }));
+    }, [angosto, disp, pasos]);
 
     return (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 flex flex-col gap-6 w-full">
-
-            <div className="flex justify-between items-center border-b border-slate-100 pb-4">
-                <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                    <i className="fa-solid fa-timeline text-blue-600"></i>
+        <div className="bg-white rounded-2xl border border-zinc-200 p-4 md:p-5 flex flex-col gap-4 w-full">
+            <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-black uppercase tracking-wide text-zinc-800 flex items-center gap-2">
+                    <Route size={18} className="text-brand-cyan" aria-hidden="true" />
                     {title}
                 </h3>
+                {pasos.length > 0 && (
+                    <span className="text-xs font-bold text-zinc-400 tabular-nums">{listos} de {pasos.length} áreas listas</span>
+                )}
             </div>
 
-            {graph.hasBranching ? (
-                // --- MODO GRAFO: columnas por capa, filas dentro de cada columna ---
-                <div ref={graphContainerRef} className="relative overflow-x-auto pb-6 pt-4">
-                    <svg className="absolute top-0 left-0 pointer-events-none" style={{ width: '100%', height: '100%', overflow: 'visible', zIndex: 0 }}>
-                        <defs>
-                            {/* Flecha en la punta: hace inequívoco A QUÉ nodo llega cada línea */}
-                            <marker id="ort-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
-                                <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8" />
-                            </marker>
-                        </defs>
-                        {lines.map(l => {
-                            // Trazado en dos tramos: la línea viaja RECTA a la altura del ORIGEN
-                            // y baja/sube recién en el hueco libre (~120px) pegado al destino.
-                            // Así nunca cruza por DETRÁS de un nodo intermedio de la fila del
-                            // destino (los círculos son blancos, z-index arriba del svg: la
-                            // "cortaban" y un DTF → Estampado parecía terminar en Bordado).
-                            // El remate queda 5px antes del círculo para que la flecha se vea
-                            // entera y no la tape el nodo.
-                            const xEnd = l.x2 - 5;
-                            const span = xEnd - l.x1;
-                            const drop = Math.min(120, Math.max(30, span * 0.4));
-                            const xs = Math.max(l.x1, xEnd - drop); // arranque de la caída
-                            return (
-                                <path key={l.key}
-                                    d={`M ${l.x1} ${l.y1} L ${xs} ${l.y1} C ${xs + (xEnd - xs) * 0.5} ${l.y1}, ${xEnd - (xEnd - xs) * 0.5} ${l.y2}, ${xEnd} ${l.y2}`}
-                                    fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" markerEnd="url(#ort-arrow)" />
-                            );
-                        })}
-                    </svg>
-                    <div className="relative flex items-center justify-center min-w-max px-6 mx-auto gap-20" style={{ zIndex: 1 }}>
-                        {mostrarInicio && (
-                            <div className="flex flex-col gap-12 justify-center">
-                                <InicioMarker />
-                            </div>
-                        )}
-                        {graph.columns.map((colIndices, colIdx) => (
-                            <div key={colIdx} className="flex flex-col gap-12 justify-center">
-                                {colIndices.map(i => (
-                                    <StepCircle key={i} step={(graph.workingSteps || rawSteps)[i]} ref={el => {
-                                        if (el) nodeRefs.current.set(i, el);
-                                        else nodeRefs.current.delete(i);
-                                    }} />
+            {pasos.length === 0 ? (
+                <p className="text-sm text-zinc-400 py-6 text-center">Sin áreas para mostrar.</p>
+            ) : angosto ? (
+                <ol className="flex flex-col gap-2">
+                    {enLista.map(({ i, llegaA }) => (
+                        <li key={i} className="flex flex-col gap-1">
+                            {llegaA.length > 0 && (
+                                <span className="text-[10px] font-bold uppercase tracking-wide text-zinc-400">Rama · llega a {llegaA.join(' y ')}</span>
+                            )}
+                            <PasoCard step={pasos[i]} style={{ width: '100%' }} />
+                        </li>
+                    ))}
+                </ol>
+            ) : (
+                <div className="overflow-x-auto pb-1">
+                    <div
+                        ref={gridRef}
+                        className="relative grid mx-auto w-max py-1"
+                        style={{
+                            gridTemplateColumns: `repeat(${disp.columnas}, 168px)`,
+                            gridAutoRows: '1fr', // todas las filas (y con stretch, todas las tarjetas) del mismo alto
+                            columnGap: 56,
+                            rowGap: 16,
+                            alignItems: 'stretch',
+                        }}
+                    >
+                        <svg className="absolute inset-0 w-full h-full pointer-events-none overflow-visible" style={{ zIndex: 0 }} aria-hidden="true">
+                            <defs>
+                                {/* Punta chica en píxeles reales (userSpaceOnUse): no crece con el grosor de la línea */}
+                                {['gris', 'verde'].map(c => (
+                                    <marker key={c} id={`${marcador}-${c}`} viewBox="0 0 8 8" refX="7.5" refY="4" markerWidth="8" markerHeight="8" markerUnits="userSpaceOnUse" orient="auto">
+                                        <path d="M 0.5 0.75 L 7.5 4 L 0.5 7.25 z" fill={c === 'verde' ? '#34d399' : '#a1a1aa'} />
+                                    </marker>
                                 ))}
-                            </div>
+                            </defs>
+                            {trazos.map(t => (
+                                <path key={t.key} d={t.d} fill="none"
+                                    stroke={t.listo ? '#6ee7b7' : '#d4d4d8'} strokeWidth="1.5" strokeLinecap="round"
+                                    markerEnd={t.flecha ? `url(#${marcador}-${t.listo ? 'verde' : 'gris'})` : undefined} />
+                            ))}
+                        </svg>
+                        {disp.nodos.map(({ i, col, fila }) => (
+                            <PasoCard
+                                key={i}
+                                step={pasos[i]}
+                                style={{ gridColumn: col + 1, gridRow: filaIndex.get(fila) + 1 }}
+                                ref={el => { if (el) nodoRefs.current.set(i, el); else nodoRefs.current.delete(i); }}
+                            />
                         ))}
                     </div>
                 </div>
-            ) : (
-                // --- MODO LINEAL: una sola fila, ordenada por la secuencia real (ProximoServicio) ---
-                (() => {
-                    const linealSteps = graph.linearSteps || rawSteps;
-                    return (
-                <div className="overflow-x-auto pb-6 pt-2">
-                    {/* isolation: la fila arma su propia capa, así las líneas (-z-10) quedan delante del fondo blanco
-                        de la tarjeta (antes quedaban detrás y no se veían) y detrás de los círculos. */}
-                    <div className="flex items-start justify-center min-w-max px-4 mx-auto gap-0" style={{ isolation: 'isolate' }}>
-                        {mostrarInicio && (
-                            <div className="flex flex-col items-center relative shrink-0 pr-6 group">
-                                <div className="absolute top-7 left-14 w-6 h-1 -translate-y-1/2 -z-10 bg-slate-200"></div>
-                                <InicioMarker />
-                            </div>
-                        )}
-                        {linealSteps.map((step, idx) => {
-                            const v = stepVisual(step);
-                            return (
-                                <div key={idx} className="flex flex-col items-center relative flex-1 min-w-[140px] group">
-                                    {idx < linealSteps.length - 1 && (
-                                        <div className={`absolute top-7 left-1/2 w-full h-1 -translate-y-1/2 -z-10 ${v.connectorClass}`}></div>
-                                    )}
-                                    <div className={`relative w-14 h-14 rounded-full flex items-center justify-center text-xl transition-all box-content ${v.circleClass}`}>
-                                        <i className={`fa-solid ${v.icon} ${v.type === 'PENDING' ? 'text-[8px]' : ''}`}></i>
-                                        <FallaBadge count={v.fallaCount} cantidad={v.fallaCantidad} pendiente={v.fallaPendiente} />
-                                    </div>
-                                    <div className="mt-3 flex flex-col items-center gap-1 w-full px-1 text-center">
-                                        <div className={`text-xs uppercase tracking-tight leading-tight mb-1 h-6 flex items-end ${v.textClass}`}>{v.areaName}</div>
-                                        <div className={`w-full rounded border p-1 ${v.borderClass}`}>
-                                            <div className="text-[10px] font-bold uppercase truncate">{v.statusRaw}</div>
-                                            {v.detail !== '-' && <div className="text-[9px] text-slate-500 truncate border-t border-black/5 mt-0.5 pt-0.5">{v.detail}</div>}
-                                            {v.logistic !== '-' && <div className="text-[9px] text-blue-600 font-bold truncate pt-0.5"><i className="fa-solid fa-truck text-[8px] mr-1"></i>{v.logistic}</div>}
-                                        </div>
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                </div>
-                    );
-                })()
             )}
         </div>
     );

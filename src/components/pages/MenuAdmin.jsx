@@ -1,5 +1,9 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Children, isValidElement, Fragment } from 'react';
+import { ListTree, Plus, GripVertical, ChevronDown, ChevronRight, Link2, Pencil, Trash2, Loader2, FolderOpen, X, Save } from 'lucide-react';
+import { toast } from 'sonner';
 import { menuService } from '../../services/api';
+import Selector from '../ui/Selector';
+import useConfirmar from '../ui/useConfirmar';
 
 // Mapeo de FontAwesome para visualización
 const iconMap = {
@@ -27,6 +31,40 @@ const iconMap = {
     'fa-table-columns': 'fa-table-columns'
 };
 
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const ENTRADA = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block mb-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-400';
+
+// Valores de los <option> (también los que vienen de un .map).
+const valoresDe = (hijos) => {
+    const salida = [];
+    Children.forEach(hijos, (h) => {
+        if (!isValidElement(h)) return;
+        if (h.type === Fragment) { salida.push(...valoresDe(h.props.children)); return; }
+        if (h.type === 'option') salida.push(String(h.props.value ?? ''));
+    });
+    return salida;
+};
+
+// <select> del formulario con el Selector propio. El valor viaja en un input con el mismo name, así handleSave lo
+// sigue leyendo con FormData. Como el nativo, si el valor inicial no está entre las opciones vale la primera.
+const SelectorCampo = ({ name, defaultValue, children, ...props }) => {
+    const [valor, setValor] = useState(String(defaultValue ?? ''));
+    const valores = valoresDe(children);
+    const efectivo = valores.includes(valor) ? valor : (valores[0] ?? '');
+    return (
+        <>
+            <Selector value={efectivo} onChange={(e) => setValor(e.target.value)} className="w-full" {...props}>{children}</Selector>
+            <input type="hidden" name={name} value={efectivo} />
+        </>
+    );
+};
+
+// Estética nueva (22/10/2026): fondo claro, tarjetas blancas con borde, íconos de Lucide en brand-cyan sin fondo,
+// Selector propio en el formulario y confirmación/avisos del sistema (antes window.confirm y alert). El ícono de
+// cada ítem sigue siendo el de FontAwesome guardado en el campo Icono (es el dato que se edita acá).
 const MenuAdmin = () => {
     const [modulos, setModulos] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -34,11 +72,12 @@ const MenuAdmin = () => {
     const [nuevoModulo, setNuevoModulo] = useState(null);
     const [expandidos, setExpandidos] = useState(new Set());
     const [draggedItem, setDraggedItem] = useState(null);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     const cargarDatos = useCallback(async () => {
         setLoading(true);
         try {
-            // Usamos el servicio real. Si falla el endpoint (porque no existe en backend aun), 
+            // Usamos el servicio real. Si falla el endpoint (porque no existe en backend aun),
             // usaremos fallback vacío o lo que venga.
             const data = await menuService.getAll();
             setModulos(Array.isArray(data) ? data : []);
@@ -104,17 +143,17 @@ const MenuAdmin = () => {
             setNuevoModulo(null);
             cargarDatos();
         } catch (error) {
-            alert("Error al guardar: " + (error.message || 'Error desconocido'));
+            toast.error("Error al guardar: " + (error.message || 'Error desconocido'));
         }
     };
 
     const handleDelete = async (id) => {
-        if (window.confirm('¿Deseas eliminar este elemento y sus referencias?')) {
+        if (await confirmar({ titulo: '¿Deseas eliminar este elemento y sus referencias?', confirmar: 'Eliminar', peligro: true })) {
             try {
                 await menuService.delete(id);
                 cargarDatos();
             } catch (error) {
-                alert("Error al eliminar: " + (error.message || 'Error desconocido'));
+                toast.error("Error al eliminar: " + (error.message || 'Error desconocido'));
             }
         }
     };
@@ -154,81 +193,87 @@ const MenuAdmin = () => {
         }
     };
 
+    const cerrarModal = () => { setEditando(null); setNuevoModulo(null); };
+
+    // Cada raíz es una tarjeta; sus hijos van adentro, sangrados con una línea punteada por nivel.
     const RenderNodo = ({ item, nivel = 0 }) => {
         const tieneHijos = item.hijos && item.hijos.length > 0;
         const isExpandido = expandidos.has(item.IdModulo);
         const esRaiz = nivel === 0;
 
         return (
-            <div className="mb-2 animate-in fade-in slide-in-from-left-2 duration-300">
+            <div className={esRaiz ? `${CARD} overflow-hidden` : ''}>
                 <div
                     draggable
                     onDragStart={(e) => { setDraggedItem(item); e.target.style.opacity = '0.5'; }}
                     onDragEnd={(e) => { setDraggedItem(null); e.target.style.opacity = '1'; }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => onDrop(e, item)}
-                    className={`
-            group flex items-center p-3 rounded-2xl transition-all duration-200
-            ${esRaiz ? 'bg-white shadow-sm border border-slate-200' : 'bg-slate-50/50 border border-transparent hover:border-indigo-200'}
-            ${draggedItem?.IdModulo === item.IdModulo ? 'ring-2 ring-indigo-400 opacity-50' : ''}
-          `}
-                    style={{ marginLeft: `${nivel * 24}px` }}
+                    data-fila
+                    className={`group flex items-center gap-1.5 sm:gap-2 transition-colors
+                        ${esRaiz ? 'px-2 sm:px-3 py-2.5 hover:bg-zinc-50' : 'px-1.5 sm:px-2 py-1.5 rounded-xl border border-transparent hover:bg-white hover:border-zinc-200'}
+                        ${draggedItem?.IdModulo === item.IdModulo ? 'ring-2 ring-brand-cyan/40 opacity-50' : ''}`}
                 >
-                    <div className="flex items-center gap-2 mr-3">
-                        <i className="fa-solid fa-grip-vertical text-slate-300 cursor-grab hover:text-indigo-400 transition-colors text-sm"></i>
-                        <button
-                            onClick={() => toggleExpandir(item.IdModulo)}
-                            className={`w-6 h-6 flex items-center justify-center rounded-lg hover:bg-slate-200 transition-colors ${!tieneHijos && 'invisible'}`}
-                        >
-                            <i className={`fa-solid fa-chevron-${isExpandido ? 'down' : 'right'} text-slate-500 text-xs`}></i>
-                        </button>
-                    </div>
+                    <GripVertical size={16} className="shrink-0 text-zinc-300 cursor-grab group-hover:text-zinc-400 transition-colors" aria-hidden="true" />
+                    <button
+                        type="button"
+                        onClick={() => toggleExpandir(item.IdModulo)}
+                        title={isExpandido ? 'Contraer' : 'Expandir'}
+                        className={`w-7 h-7 shrink-0 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors ${!tieneHijos ? 'invisible' : ''}`}
+                    >
+                        {isExpandido ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
 
-                    <div className={`
-            w-10 h-10 flex items-center justify-center rounded-xl mr-4 transition-transform group-hover:scale-110 shadow-sm
-            ${esRaiz ? 'bg-indigo-600 text-white shadow-indigo-200' : 'bg-white text-slate-500 border border-slate-100'}
-          `}>
-                        <i className={`fa-solid ${item.Icono || 'fa-layer-group'} text-lg`}></i>
-                    </div>
+                    <span className="w-6 shrink-0 inline-flex items-center justify-center text-brand-cyan" aria-hidden="true">
+                        <i className={`fa-solid ${item.Icono || 'fa-layer-group'} ${esRaiz ? 'text-base' : 'text-sm'}`}></i>
+                    </span>
 
-                    <div className="flex-1 min-w-0">
-                        <div className="flex items-center gap-2">
-                            <span className={`font-bold tracking-tight truncate ${esRaiz ? 'text-slate-800 text-base' : 'text-slate-600 text-sm'}`}>
+                    <div className="flex-1 min-w-0 ml-1">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <span className={`truncate ${esRaiz ? 'text-[15px] font-black text-zinc-900' : 'text-sm font-bold text-zinc-700'}`}>
                                 {item.Titulo || item.Nombre}
                             </span>
                             {item.IdPadre && (
-                                <span className="text-[9px] px-2 py-0.5 bg-indigo-50 text-indigo-500 rounded-full uppercase font-black tracking-widest border border-indigo-100 hidden sm:inline-block">
+                                <span className="hidden sm:inline-block shrink-0 text-[10px] font-bold px-2 py-0.5 rounded-full border border-zinc-200 bg-zinc-50 text-zinc-500 uppercase tracking-wide">
                                     Sub
                                 </span>
                             )}
+                            {esRaiz && tieneHijos && (
+                                <span className="shrink-0 text-[11px] font-bold text-zinc-400 tabular-nums">{item.hijos.length}</span>
+                            )}
                         </div>
                         {item.Ruta && (
-                            <span className="text-[11px] text-slate-400 font-mono flex items-center gap-1 mt-0.5 truncate">
-                                <i className="fa-solid fa-link text-[10px]"></i> {item.Ruta}
+                            <span className="flex items-center gap-1 mt-0.5 text-[11px] font-mono text-zinc-400 min-w-0">
+                                <Link2 size={11} className="shrink-0" aria-hidden="true" />
+                                <span className="truncate">{item.Ruta}</span>
                             </span>
                         )}
                     </div>
 
-                    <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity ml-2">
+                    <div className="flex items-center gap-0.5 shrink-0 md:opacity-0 md:group-hover:opacity-100 md:focus-within:opacity-100 transition-opacity">
                         <button
+                            type="button"
                             onClick={() => setEditando(item)}
-                            className="w-8 h-8 flex items-center justify-center text-indigo-600 hover:bg-indigo-50 rounded-xl transition-all active:scale-95"
+                            className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5 transition-colors"
                             title="Editar"
                         >
-                            <i className="fa-solid fa-pencil"></i>
+                            <Pencil size={15} />
                         </button>
                         <button
+                            type="button"
                             onClick={() => handleDelete(item.IdModulo)}
-                            className="w-8 h-8 flex items-center justify-center text-rose-500 hover:bg-rose-50 rounded-xl transition-all active:scale-95"
+                            className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 transition-colors"
                             title="Eliminar"
                         >
-                            <i className="fa-solid fa-trash"></i>
+                            <Trash2 size={15} />
                         </button>
                     </div>
                 </div>
 
                 {tieneHijos && isExpandido && (
-                    <div className="mt-1 ml-8 border-l-2 border-dashed border-slate-200 pl-2 space-y-1">
+                    <div className={esRaiz
+                        ? 'border-t border-zinc-100 bg-zinc-50/70 py-2 pr-2 pl-4 sm:pl-10 space-y-0.5'
+                        : 'mt-0.5 ml-3 sm:ml-6 border-l-2 border-dashed border-zinc-200 pl-2 space-y-0.5'}>
                         {item.hijos.map(hijo => (
                             <RenderNodo key={hijo.IdModulo} item={hijo} nivel={nivel + 1} />
                         ))}
@@ -239,116 +284,116 @@ const MenuAdmin = () => {
     };
 
     return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-10 font-sans text-slate-900">
-            <div className="max-w-5xl mx-auto">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
 
-                {/* Cabecera */}
-                <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100">
-                    <div className="mb-4 md:mb-0">
-                        <div className="flex items-center gap-4">
-                            <div className="w-14 h-14 flex items-center justify-center bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-200">
-                                <i className="fa-solid fa-list-tree text-2xl"></i>
-                            </div>
-                            <div>
-                                <h1 className="text-2xl font-black text-slate-800 tracking-tight leading-none">Menú del Sistema</h1>
-                                <p className="text-slate-400 text-sm mt-1 font-medium italic">Gestión de jerarquía y accesos API</p>
-                            </div>
-                        </div>
-                    </div>
-                    <button
-                        onClick={() => setNuevoModulo({ IdPadre: null, Titulo: '', Ruta: '', Icono: '', IndiceOrden: modulos.length })}
-                        className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 transition-all hover:-translate-y-0.5 active:scale-95"
-                    >
-                        <i className="fa-solid fa-plus"></i>
-                        <span>Nuevo Item</span>
-                    </button>
-                </header>
-
-                {/* Contenedor del Menú */}
-                <div className="space-y-6">
-                    <div className="flex items-center justify-between px-2">
-                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                            <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></span>
-                            Estructura Visual
-                        </h3>
-                        {loading && <i className="fa-solid fa-circle-notch fa-spin text-indigo-500 text-lg"></i>}
-                    </div>
-
-                    <div className="pb-20">
-                        {modulos.length > 0 ? (
-                            construirArbol(modulos).map(root => (
-                                <RenderNodo key={root.IdModulo} item={root} />
-                            ))
-                        ) : !loading && (
-                            <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
-                                <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                                    <i className="fa-solid fa-folder-open text-slate-300 text-3xl"></i>
-                                </div>
-                                <p className="text-slate-500 font-bold text-lg">No se encontraron módulos</p>
-                                <p className="text-slate-400 text-sm">Crea el primer elemento del menú</p>
-                            </div>
-                        )}
-                    </div>
+            {/* Encabezado */}
+            <div className="flex flex-wrap items-center gap-3 mb-5">
+                <ListTree size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-0 flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Menú del Sistema</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Gestión de jerarquía y accesos API</p>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setNuevoModulo({ IdPadre: null, Titulo: '', Ruta: '', Icono: '', IndiceOrden: modulos.length })}
+                    className={`${BTN_PRINCIPAL} w-full sm:w-auto`}
+                >
+                    <Plus size={16} />
+                    <span>Nuevo Item</span>
+                </button>
+            </div>
 
-                {/* Modal Formulario */}
-                {(editando || nuevoModulo) && (
-                    <div className="fixed inset-0 bg-slate-900/60  flex items-center justify-center p-4 z-[1200] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-100 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
-                            <div className="px-8 py-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center shrink-0">
-                                <div>
-                                    <h2 className="text-xl font-black text-slate-800 tracking-tight">
+            {/* Contenedor del Menú */}
+            <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 mb-3 px-1">
+                <h3 className="text-[11px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                    Estructura visual
+                    {loading && <Loader2 size={14} className="animate-spin text-brand-cyan" />}
+                </h3>
+                <span className="text-xs text-zinc-400">Arrastrá una fila sobre otra para moverla a su lugar</span>
+            </div>
+
+            <div className="space-y-3 pb-10">
+                {modulos.length > 0 ? (
+                    construirArbol(modulos).map(root => (
+                        <RenderNodo key={root.IdModulo} item={root} />
+                    ))
+                ) : !loading && (
+                    <div className={`${CARD} flex flex-col items-center justify-center text-center py-16 px-4`}>
+                        <FolderOpen size={40} className="mb-3 text-brand-cyan" />
+                        <p className="text-sm font-bold text-zinc-700">No se encontraron módulos</p>
+                        <p className="text-xs text-zinc-400 mt-1">Crea el primer elemento del menú</p>
+                    </div>
+                )}
+            </div>
+
+            {/* Modal Formulario */}
+            {(editando || nuevoModulo) && (
+                <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-3 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="menu-admin-titulo">
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="px-5 py-4 border-b border-zinc-100 flex items-center justify-between gap-3 shrink-0">
+                            <div className="flex items-center gap-3 min-w-0">
+                                {editando ? <Pencil size={20} className="text-brand-cyan shrink-0" /> : <Plus size={20} className="text-brand-cyan shrink-0" />}
+                                <div className="min-w-0">
+                                    <h2 id="menu-admin-titulo" className="text-lg font-black text-zinc-800 leading-tight truncate">
                                         {editando ? 'Editar Item' : 'Nuevo Registro'}
                                     </h2>
-                                    <p className="text-[10px] text-indigo-500 font-black uppercase tracking-widest mt-1">Sincronización de Base de Datos</p>
+                                    <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400 mt-0.5">Sincronización de Base de Datos</p>
                                 </div>
-                                <button
-                                    onClick={() => { setEditando(null); setNuevoModulo(null); }}
-                                    className="w-10 h-10 flex items-center justify-center hover:bg-white hover:text-rose-500 rounded-xl transition-all text-slate-400"
-                                >
-                                    <i className="fa-solid fa-xmark text-xl"></i>
-                                </button>
                             </div>
+                            <button
+                                type="button"
+                                onClick={cerrarModal}
+                                title="Cerrar"
+                                className="p-2 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors shrink-0"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
 
-                            <form onSubmit={handleSave} className="p-8 space-y-5 overflow-y-auto">
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Etiqueta del Menú</label>
+                        <form onSubmit={handleSave} className="flex flex-col min-h-0 flex-1">
+                            <div className="p-5 space-y-4 overflow-y-auto">
+                                <div>
+                                    <label htmlFor="menu-titulo" className={ETIQUETA}>Etiqueta del Menú</label>
                                     <input
+                                        id="menu-titulo"
                                         name="Titulo"
                                         required
                                         defaultValue={editando?.Titulo || editando?.Nombre || ''}
                                         placeholder="Ej: Administración de Roles"
-                                        className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all font-bold text-slate-700 placeholder:text-slate-400 text-sm"
+                                        className={`${ENTRADA} font-bold`}
                                     />
                                 </div>
 
                                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Ruta Navegación</label>
+                                    <div>
+                                        <label htmlFor="menu-ruta" className={ETIQUETA}>Ruta Navegación</label>
                                         <input
+                                            id="menu-ruta"
                                             name="Ruta"
                                             defaultValue={editando?.Ruta || ''}
                                             placeholder="/admin/mod"
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all text-sm font-semibold text-slate-700"
+                                            className={`${ENTRADA} font-mono`}
                                         />
                                     </div>
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Icono (FontAwesome)</label>
+                                    <div>
+                                        <label htmlFor="menu-icono" className={ETIQUETA}>Icono (FontAwesome)</label>
                                         <input
+                                            id="menu-icono"
                                             name="Icono"
                                             defaultValue={editando?.Icono || ''}
                                             placeholder="fa-home"
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all text-sm font-semibold text-slate-700"
+                                            className={`${ENTRADA} font-mono`}
                                         />
                                     </div>
                                 </div>
 
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Jerarquía (Elemento Padre)</label>
-                                    <select
+                                <div>
+                                    <span className={ETIQUETA}>Jerarquía (Elemento Padre)</span>
+                                    <SelectorCampo
                                         name="IdPadre"
                                         defaultValue={editando?.IdPadre || nuevoModulo?.IdPadre || ''}
-                                        className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none font-bold text-slate-700 text-sm cursor-pointer"
+                                        aria-label="Jerarquía (Elemento Padre)"
+                                        anchoLista={300}
                                     >
                                         <option value="">-- Nodo Raíz (Sin Padre) --</option>
                                         {modulos
@@ -358,37 +403,35 @@ const MenuAdmin = () => {
                                                 <option key={m.IdModulo} value={m.IdModulo}>{m.Titulo || m.Nombre}</option>
                                             ))
                                         }
-                                    </select>
+                                    </SelectorCampo>
                                 </div>
 
-                                <div className="space-y-1.5">
-                                    <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Orden (Índice)</label>
+                                <div>
+                                    <label htmlFor="menu-orden" className={ETIQUETA}>Orden (Índice)</label>
                                     <input
+                                        id="menu-orden"
                                         name="IndiceOrden"
                                         type="number"
                                         step="1"
                                         defaultValue={editando?.IndiceOrden || nuevoModulo?.IndiceOrden || 0}
-                                        className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all font-bold text-slate-700 text-sm"
+                                        className={`${ENTRADA} tabular-nums`}
                                     />
                                 </div>
+                            </div>
 
-                                <div className="pt-4">
-                                    <button
-                                        type="submit"
-                                        className="w-full relative group bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-2xl font-black text-base shadow-xl shadow-indigo-200 transition-all hover:-translate-y-0.5 active:scale-95 overflow-hidden"
-                                    >
-                                        <div className="flex items-center justify-center gap-2 relative z-10">
-                                            <i className="fa-solid fa-floppy-disk group-hover:rotate-12 transition-transform"></i>
-                                            <span>Guardar Cambios</span>
-                                        </div>
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
+                            <div className="px-5 py-3 bg-zinc-50 border-t border-zinc-100 flex flex-wrap justify-end gap-2 shrink-0">
+                                <button type="button" onClick={cerrarModal} className={BTN_SECUNDARIO}>Cancelar</button>
+                                <button type="submit" className={BTN_PRINCIPAL}>
+                                    <Save size={15} />
+                                    <span>Guardar Cambios</span>
+                                </button>
+                            </div>
+                        </form>
                     </div>
-                )}
+                </div>
+            )}
 
-            </div>
+            {ventanaConfirmar}
         </div>
     );
 };

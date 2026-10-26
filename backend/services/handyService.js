@@ -152,4 +152,17 @@ async function createPaymentLink({
     return { success: true, url: paymentUrl, transactionId };
 }
 
-module.exports = { createPaymentLink };
+// Monitor (/admin/monitor): éxito o falla de cada link de pago pedido a Handy
+async function createPaymentLinkMedido(...args) {
+    const salud = require('./saludIntegraciones');
+    try {
+        const r = await createPaymentLink(...args);
+        if (r && r.success === false) salud.falla('handy', r.error || 'Handy no devolvió el link'); else salud.ok('handy');
+        return r;
+    } catch (e) {
+        salud.falla('handy', e);
+        throw e;
+    }
+}
+
+module.exports = { createPaymentLink: createPaymentLinkMedido };

@@ -6,7 +6,7 @@
 > — **con su consulta de detección** — para poder chequear si otros clientes
 > tienen el mismo problema, sin tener que redescubrir cada uno desde cero.
 >
-> Ver también `RESUMEN_SESION_20-07_PALMERO.md` para la cronología completa
+> Ver también `_historico/2026-07-palmero-saldos/RESUMEN_SESION_20-07_PALMERO.md` para la cronología completa
 > de lo que se hizo específicamente en Palmero.
 
 ---
@@ -232,7 +232,7 @@ sin convertir** (el patrón de bug, no un cargo parcial legítimo) — **298
 clientes distintos afectados**, no solo los 6 del lote de cross-moneda. Suma
 de los importes (valor absoluto, mezclando monedas sin convertir — no es un
 total en una sola moneda, solo para dimensionar) ≈ $822.256. Esto contesta
-directamente el pendiente #3 de `RESUMEN_SESION_20-07_PALMERO.md`
+directamente el pendiente #3 de `_historico/2026-07-palmero-saldos/RESUMEN_SESION_20-07_PALMERO.md`
 ("dimensionar cuántos clientes más tienen estos síntomas").
 
 **Estado (21/7, actualizado): confirmado y corregido en 4 de los 5 clientes

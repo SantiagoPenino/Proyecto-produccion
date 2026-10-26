@@ -1,7 +1,7 @@
 # Consulta al Cliente — plan de implementación (SB · DTF · ECOUV)
 
 Fecha: 2026-09-10. Estado: **plan, sin implementar**.
-Origen: prototipo y spec de `Desktop/xime` (`CEREBRO_consulta_al_cliente.md`), revisados en [consulta-cliente-revision-prototipo.md](consulta-cliente-revision-prototipo.md).
+Origen: prototipo y spec de `Desktop/xime` (`CEREBRO_consulta_al_cliente.md`), revisados en [consulta-cliente-revision-prototipo.md](_historico/planes-cerrados/consulta-cliente-revision-prototipo.md).
 
 ---
 

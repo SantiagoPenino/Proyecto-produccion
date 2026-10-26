@@ -513,11 +513,14 @@ exports.estadoBackup = (req, res) => {
 //    stack son chrome-extension:// / moz-extension:// / safari(-web)-extension:// (ej. "reading 'M_ID'",
 //    ~35 líneas por visita de un cliente). Si algún paso es de la app, se loguea igual.
 //  · (13/10/2026) "__firefox__": el código que Firefox para iPhone inyecta en cada página (modo lectura).
+//  · (22/10/2026) iabjs://: los scripts que inyecta el navegador interno de Instagram/Facebook en
+//    Android ("Error invoking postMessage: Java object is gone", en=iabjs://navigation_performance_
+//    logger_android). Se cuentan como una extensión más: solo se descartan si TODO el stack es de ahí.
 // No se guardan ni se loguean, y no cuentan para la alerta de "muchos errores".
 // La misma regla está en src/utils/errorReporter.js (ahí evita mandarlos); acá cubre a los
 // navegadores que todavía tienen el front viejo.
 const RX_URL_STACK = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s)'"]+|webpack-internal:[^\s)'"]+)/gi;
-const RX_EXTENSION = /^(chrome|moz|safari|safari-web|ms-browser)-extension:\/\//i;
+const RX_EXTENSION = /^((chrome|moz|safari|safari-web|ms-browser)-extension|iabjs):\/\//i;
 const esRuidoAjeno = (message, source, stack) => {
     const m = String(message || '');
     if (/window\.ethereum/i.test(m)) return true;
@@ -534,6 +537,7 @@ exports.reportClientError = async (req, res) => {
     const { message, stack, source, url, userAgent, userId, timestamp } = req.body;
     const ip = (req.ip || '').replace(/^::ffff:/, '');
     if (esRuidoAjeno(message, source, stack)) return res.json({ ok: true, ignorado: true });
+    require('../services/monitorService').registrarErrorFront();   // errores del front por minuto, para el monitor
 
     // Store in memory + log
     if (!global.__frontendErrors) global.__frontendErrors = [];

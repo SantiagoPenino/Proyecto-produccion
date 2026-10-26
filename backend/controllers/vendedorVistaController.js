@@ -12,6 +12,7 @@
  *
  * Lo que agrega este controlador (y no existía) es:
  *   - "pendiente de retirar en depósito" por cliente
+ *   - el resumen del cliente: servicios más usados y órdenes y costo final por área
  *   - la cartera de cada vendedor (Clientes.VendedorID)
  * NO escribe nada en la base.
  */
@@ -66,6 +67,134 @@ exports.getDepositoPendiente = async (req, res) => {
     res.json({ success: true, data: result.recordset });
   } catch (err) {
     logger.error('[VENDEDOR-360] getDepositoPendiente:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+};
+
+// ── Resumen del cliente (22/10/2026) ─────────────────────────────────────
+// Sale de OrdenesDeposito: una fila por orden con su artículo y su costo final (lo que se cobra).
+// El área de una orden es la de Ordenes (por CodigoOrden). Las órdenes del sistema anterior no están en
+// Ordenes: el área sale del prefijo de su código. Los prefijos viejos se juntan con el área de hoy
+// (DF con DTF, SB con SUB, ECOUV con EUV…); RDF y RSB son las reposiciones de DTF y de SUB [inferido de
+// los códigos, no hay tabla que lo diga]. Un prefijo que no está en la lista queda como su propia área.
+const AREA_POR_PREFIJO = {
+  DTF: 'DF', DF: 'DF', RDF: 'DF',
+  SUB: 'SB', SB: 'SB', RSB: 'SB',
+  EUV: 'ECOUV', ECOUV: 'ECOUV',
+  XEUV: 'TERMINAC', XECOUV: 'TERMINAC',
+  VEN: 'PRO', PRO: 'PRO',
+  TPU: 'TPU', TP: 'TPU',
+  DIR: 'DIRECTA',
+  EMB: 'EMB', BOR: 'EMB',
+  EST: 'EST',
+};
+// Cómo se nombra cada área: el código de sus órdenes (SUB, DTF, EUV…), como en el Panel de Control. Sale
+// del prefijo más usado en Ordenes de cada área; esto es por si un área todavía no tiene órdenes.
+const CODIGO_AREA_RESPALDO = { DF: 'DTF', SB: 'SUB', ECOUV: 'EUV', TERMINAC: 'XEUV', PRO: 'VEN', TPU: 'TPU', DIRECTA: 'DIR', EMB: 'BOR', EST: 'EST' };
+const UNIDAD = { 1: 'u', 2: 'm' };
+const PERIODOS = { '1m': 1, '3m': 3, '12m': 12, todo: null };
+
+let cacheAreas = null; // { hasta, codigos: {AreaID: prefijo}, nombres: {AreaID: nombre} }
+const datosAreas = async (pool) => {
+  if (cacheAreas && cacheAreas.hasta > Date.now()) return cacheAreas;
+  const [pref, nombres] = await Promise.all([
+    pool.request().query(`
+      SELECT LTRIM(RTRIM(AreaID)) AS AreaID, LEFT(CodigoOrden, CHARINDEX('-', CodigoOrden + '-') - 1) AS Prefijo, COUNT(*) AS n
+      FROM dbo.Ordenes WITH(NOLOCK) WHERE AreaID IS NOT NULL
+      GROUP BY LTRIM(RTRIM(AreaID)), LEFT(CodigoOrden, CHARINDEX('-', CodigoOrden + '-') - 1)`),
+    pool.request().query('SELECT LTRIM(RTRIM(AreaID)) AS AreaID, LTRIM(RTRIM(Nombre)) AS Nombre FROM dbo.Areas WITH(NOLOCK)'),
+  ]);
+  const mejor = {};
+  for (const r of pref.recordset) {
+    if (!r.Prefijo) continue;
+    if (!mejor[r.AreaID] || r.n > mejor[r.AreaID].n) mejor[r.AreaID] = { p: r.Prefijo.trim(), n: r.n };
+  }
+  const codigos = { ...CODIGO_AREA_RESPALDO };
+  for (const [a, v] of Object.entries(mejor)) codigos[a] = v.p;
+  cacheAreas = { hasta: Date.now() + 60 * 60 * 1000, codigos, nombres: Object.fromEntries(nombres.recordset.map(r => [r.AreaID, r.Nombre])) };
+  return cacheAreas;
+};
+
+/**
+ * GET /api/vendedor-360/clientes/:CliIdCliente/resumen?periodo=1m|3m|12m|todo
+ * Servicios más usados (por artículo) y, por área, cuántas órdenes tiene y su costo final. Solo áreas
+ * con órdenes. Sin las canceladas. Los importes van por moneda (no se convierten).
+ */
+exports.getResumenCliente = async (req, res) => {
+  try {
+    const cli = parseInt(req.params.CliIdCliente, 10);
+    if (!Number.isInteger(cli)) return res.status(400).json({ success: false, error: 'Cliente inválido.' });
+    const periodo = Object.prototype.hasOwnProperty.call(PERIODOS, req.query.periodo) ? req.query.periodo : '12m';
+    const meses = PERIODOS[periodo];
+    const pool = await getPool();
+    const areas = await datosAreas(pool);
+
+    const r = await pool.request()
+      .input('Cli', sql.Int, cli)
+      .input('Meses', sql.Int, meses)
+      .query(`
+        SELECT o.AreaID,
+               LEFT(LTRIM(od.OrdCodigoOrden), CHARINDEX('-', LTRIM(od.OrdCodigoOrden) + '-') - 1) AS Prefijo,
+               od.ProIdProducto, LTRIM(RTRIM(a.Descripcion)) AS Articulo, a.UniIdUnidad,
+               ISNULL(mon.MonSimbolo, '$') AS Moneda,
+               COUNT(*) AS Ordenes, SUM(ISNULL(od.OrdCantidad, 0)) AS Cantidad, SUM(ISNULL(od.OrdCostoFinal, 0)) AS Costo
+        FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+        OUTER APPLY (SELECT TOP 1 LTRIM(RTRIM(o2.AreaID)) AS AreaID FROM dbo.Ordenes o2 WITH(NOLOCK) WHERE o2.CodigoOrden = od.OrdCodigoOrden) o
+        LEFT JOIN dbo.Articulos a  WITH(NOLOCK) ON a.ProIdProducto = od.ProIdProducto
+        LEFT JOIN dbo.Monedas  mon WITH(NOLOCK) ON mon.MonIdMoneda = od.MonIdMoneda
+        WHERE od.CliIdCliente = @Cli
+          AND ISNULL(od.OrdEstadoActual, 0) <> 10
+          AND (@Meses IS NULL OR od.OrdFechaIngresoOrden >= DATEADD(MONTH, -@Meses, GETDATE()))
+        GROUP BY o.AreaID, LEFT(LTRIM(od.OrdCodigoOrden), CHARINDEX('-', LTRIM(od.OrdCodigoOrden) + '-') - 1),
+                 od.ProIdProducto, LTRIM(RTRIM(a.Descripcion)), a.UniIdUnidad, ISNULL(mon.MonSimbolo, '$')`);
+
+    const sumarCosto = (lista, moneda, costo) => {
+      const m = lista.find(x => x.moneda === moneda);
+      if (m) m.total += costo; else lista.push({ moneda, total: costo });
+    };
+    const porArea = new Map();
+    const porServicio = new Map();
+    const totales = [];
+    let totalOrdenes = 0;
+    for (const f of r.recordset) {
+      const prefijo = String(f.Prefijo || '').trim().toUpperCase();
+      const clave = f.AreaID || AREA_POR_PREFIJO[prefijo] || prefijo || 'SIN ÁREA';
+      const codigo = areas.codigos[clave] || clave;
+      const costo = Number(f.Costo) || 0;
+      totalOrdenes += f.Ordenes;
+      sumarCosto(totales, f.Moneda, costo);
+
+      if (!porArea.has(clave)) porArea.set(clave, { area: clave, codigo, nombre: areas.nombres[clave] || null, ordenes: 0, costos: [] });
+      const a = porArea.get(clave);
+      a.ordenes += f.Ordenes;
+      sumarCosto(a.costos, f.Moneda, costo);
+
+      const sk = f.ProIdProducto || `sin-${clave}`;
+      if (!porServicio.has(sk)) porServicio.set(sk, { servicio: f.Articulo || 'Sin artículo', unidad: UNIDAD[f.UniIdUnidad] || null, porCodigo: {}, ordenes: 0, cantidad: 0, costos: [] });
+      const s = porServicio.get(sk);
+      s.ordenes += f.Ordenes;
+      s.cantidad += Number(f.Cantidad) || 0;
+      s.porCodigo[codigo] = (s.porCodigo[codigo] || 0) + f.Ordenes;
+      sumarCosto(s.costos, f.Moneda, costo);
+    }
+    const ordenarCostos = (l) => l.sort((x, y) => y.total - x.total).map(c => ({ moneda: c.moneda, total: Math.round(c.total * 100) / 100 }));
+    const areasLista = [...porArea.values()]
+      .filter(a => a.ordenes > 0)
+      .sort((x, y) => y.ordenes - x.ordenes)
+      .map(a => ({ ...a, costos: ordenarCostos(a.costos) }));
+    const servicios = [...porServicio.values()]
+      .sort((x, y) => (y.ordenes - x.ordenes) || (y.cantidad - x.cantidad))
+      .slice(0, 10)
+      .map(({ porCodigo, ...s }) => ({
+        ...s,
+        cantidad: Math.round(s.cantidad * 100) / 100,
+        area: Object.entries(porCodigo).sort((x, y) => y[1] - x[1])[0]?.[0] || null,
+        costos: ordenarCostos(s.costos),
+      }));
+
+    res.json({ success: true, data: { periodo, totalOrdenes, totales: ordenarCostos(totales), areas: areasLista, servicios } });
+  } catch (err) {
+    logger.error('[VENDEDOR-360] getResumenCliente:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 };
@@ -165,7 +294,10 @@ exports.getClientesDeVendedor = async (req, res) => {
  *                  crédito y Pedidos Caja: la regla del "pendiente de cobro" de Contabilidad.
  *   - COBRADO    = vendido − sin cobrar.
  *   - VENDEDOR   = el de la cartera del cliente del documento (Clientes.VendedorID = cédula de
- *                  un Trabajador del Área VENTAS). DocumentosContables.DocVendedorId no se usa:
+ *                  un Trabajador del Área VENTAS). Si el cliente quedó INACTIVO DESPUÉS del documento
+ *                  (job de clientes inactivos, que le saca el vendedor), cuenta el vendedor que tenía
+ *                  entonces, guardado en ClientesInactividadLog (23/10/2026): así sus ventas viejas no
+ *                  pasan a «Clientes sin vendedor». DocumentosContables.DocVendedorId no se usa:
  *                  no se llena nunca. Si el documento salió con una ficha genérica (mostrador /
  *                  USER CF) se busca el cliente real como en Top Clientes: el dueño de la orden
  *                  y, si no, el RUC del receptor.
@@ -196,13 +328,15 @@ const consultarPlataPorVendedor = async (pool, { desde, hasta, dgi = 'TODO', por
   const filtroDgi = condDgi('doc', dgi);
   // Con `porMes`, el mes de emisión pasa por toda la consulta
   const conMes = (expr, alFrente = false) => (!porMes ? '' : alFrente ? `${expr} AS Mes, ` : ` ${expr} AS Mes,`);
+  // El log de clientes inactivos se crea en la primera corrida del job: si esto corre antes, que exista igual.
+  await require('../services/clientesInactivosService').asegurarTabla(pool);
 
   const resultado = await pool.request()
     .input('desde', sql.VarChar(30), desde)
     .input('hasta', sql.VarChar(30), hasta)
     .query(`
         ;WITH Docs AS (
-          SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocCliDocumento,${conMes('YEAR(doc.DocFechaEmision) * 100 + MONTH(doc.DocFechaEmision)')}
+          SELECT doc.DocIdDocumento, doc.CliIdCliente, doc.DocCliDocumento, doc.DocFechaEmision AS Fecha,${conMes('YEAR(doc.DocFechaEmision) * 100 + MONTH(doc.DocFechaEmision)')}
                  ISNULL(doc.MonIdMoneda, 1) AS MonIdMoneda,
                  CASE WHEN ${condEsVenta('doc')} THEN 0 ELSE 1 END AS EsNota,
                  doc.DocTotal * ${signoExpr('doc')} AS Vendido,
@@ -251,7 +385,7 @@ const consultarPlataPorVendedor = async (pool, { desde, hasta, dgi = 'TODO', por
           GROUP BY d.DocIdDocumento
         ),
         Resueltos AS (
-          SELECT ${conMes('d.Mes', true)}d.MonIdMoneda, d.EsNota, d.Vendido, d.SinCobrar,
+          SELECT ${conMes('d.Mes', true)}d.Fecha, d.MonIdMoneda, d.EsNota, d.Vendido, d.SinCobrar,
                  CASE WHEN ${sinFicha('d')} THEN COALESCE(du.CliOrden, pr.CliRuc) ELSE d.CliIdCliente END AS CliResuelto
           FROM Docs d
           LEFT JOIN Duenos du ON du.DocIdDocumento = d.DocIdDocumento
@@ -269,8 +403,14 @@ const consultarPlataPorVendedor = async (pool, { desde, hasta, dgi = 'TODO', por
                  CAST(t.Cedula AS NVARCHAR(50)) AS Cedula
           FROM Resueltos r
           LEFT JOIN dbo.Clientes c WITH(NOLOCK) ON c.CliIdCliente = r.CliResuelto
+          -- Vendedor que tenía al emitirse el documento, si después quedó inactivo: el de la primera
+          -- inactivación posterior al documento (Hay = 1 aunque el vendedor anterior fuera NULL).
+          OUTER APPLY (SELECT TOP 1 1 AS Hay, l.VendedorIDAnterior
+                       FROM dbo.ClientesInactividadLog l WITH(NOLOCK)
+                       WHERE l.CliIdCliente = r.CliResuelto AND l.Accion = 'INACTIVADO' AND l.Fecha > r.Fecha
+                       ORDER BY l.Fecha) li
           LEFT JOIN dbo.Trabajadores t WITH(NOLOCK)
-            ON CAST(t.Cedula AS NVARCHAR(50)) = LTRIM(RTRIM(c.VendedorID))
+            ON CAST(t.Cedula AS NVARCHAR(50)) = LTRIM(RTRIM(CASE WHEN li.Hay = 1 THEN li.VendedorIDAnterior ELSE c.VendedorID END))
            AND LTRIM(RTRIM(UPPER(ISNULL(t.[Área], '')))) = 'VENTAS'
         ) x
         GROUP BY ${porMes ? 'x.Mes, ' : ''}x.Tipo, x.Cedula, x.MonIdMoneda

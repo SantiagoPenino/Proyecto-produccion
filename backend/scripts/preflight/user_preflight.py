@@ -32,6 +32,13 @@ import fitz  # PyMuPDF
 import pikepdf
 from PIL import Image
 
+# Tope de memoria (23/10/2026): python/_tope_memoria.py del backend; sin el módulo corre sin tope
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent / "python"))
+try:
+    import _tope_memoria
+except ImportError:
+    _tope_memoria = None
+
 PT_A_CM = 2.54 / 72.0  # 1 pt = 1/72 in
 
 # ---------------------------------------------------------------- resultados
@@ -512,4 +519,12 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    # PY_MAX_MEM_MB lo pone utils/preflight.js. Sin memoria: sin JSON, mensaje por stderr y código 2
+    # (el 1 es RECHAZADO, que sí trae su JSON)
+    if _tope_memoria:
+        _tope_memoria.aplicar()
+    try:
+        main()
+    except MemoryError as e:
+        print(f"sin memoria suficiente para procesarlo ({str(e) or 'MemoryError'})", file=sys.stderr)
+        sys.exit(2)

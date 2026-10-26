@@ -542,6 +542,22 @@ def main():
                     help="perfil CMYK para PNG sin perfil embebido (default USWC v2; '' = no convertir)")
     args = ap.parse_args()
 
+    # TOPE DE MEMORIA (22/10/2026, DTF-37531): un PNG de mas de 268 Mpx llego a 11,9 GB y el OOM killer
+    # del VPS lo mato; el backend se reinicio 3 s despues. Con DTF_BLANCO_MAX_MEM_MB (lo pone
+    # dtfBlancoService segun la memoria libre del momento) el proceso no puede pasar de ahi: si lo
+    # necesita, falla SOLO este script con MemoryError (sale en su JSON) en vez de que el sistema
+    # mate a otro proceso. Solo Linux (en Windows no hay `resource`: se ignora). RLIMIT_DATA y no
+    # RLIMIT_AS: desde Linux 4.7 cuenta la memoria PRIVADA (los arrays de numpy), no las librerias
+    # mapeadas ni el espacio que reservan sin usar, que con RLIMIT_AS frenaban archivos chicos.
+    tope_mb = os.environ.get("DTF_BLANCO_MAX_MEM_MB")
+    if tope_mb:
+        try:
+            import resource
+            tope = int(float(tope_mb)) * 1024 * 1024
+            resource.setrlimit(resource.RLIMIT_DATA, (tope, tope))
+        except (ImportError, ValueError, OSError) as e:
+            print(f"aviso: no se pudo poner el tope de memoria ({e})", file=sys.stderr)
+
     try:
         icc_usado = None
         if args.entrada.lower().endswith(".png"):
@@ -591,8 +607,12 @@ def main():
             "pixelesConTinta": cubiertos, "pixelesCortados": cortados,
             "tailCut": args.tail_cut, "icc": icc_usado, "scipy": _HAY_SCIPY, "bytes": len(resultado),
         }))
+    except MemoryError as e:
+        # str(MemoryError()) suele venir vacio: sin esto el log decia solo "fallo desconocido"
+        print(json.dumps({"ok": False, "error": f"sin memoria suficiente para procesarlo ({str(e) or 'MemoryError'})"}))
+        sys.exit(1)
     except Exception as e:
-        print(json.dumps({"ok": False, "error": str(e)}))
+        print(json.dumps({"ok": False, "error": f"{type(e).__name__}: {e}" if not str(e) else str(e)}))
         sys.exit(1)
 
 

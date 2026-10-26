@@ -2236,6 +2236,21 @@ const medirArteMetros = async (buf, nombre, mime) => {
     return { w: pxToM(meta.width), h: pxToM(meta.height) };
 };
 
+// Los últimos `n` bytes del archivo subido (diskStorage: sin leerlo entero; memoryStorage: del buffer).
+async function colaDelArchivo(file, n) {
+    if (file.buffer) return file.buffer.subarray(-n);
+    const fh = await require('fs').promises.open(file.path, 'r');
+    try {
+        const { size } = await fh.stat();
+        const largo = Math.min(n, size);
+        const buf = Buffer.alloc(largo);
+        await fh.read(buf, 0, largo, size - largo);
+        return buf;
+    } finally {
+        await fh.close();
+    }
+}
+
 exports.uploadOrderFile = async (req, res) => {
     const { dbId, type, finalName, area, codigoOrden } = req.body;
     const file = req.file;
@@ -2266,6 +2281,21 @@ exports.uploadOrderFile = async (req, res) => {
         const esArtePdf = type === 'ORDEN'
             && ((file.mimetype || '').toLowerCase().includes('pdf') || (finalName || '').toLowerCase().endsWith('.pdf'));
         if (esArtePdf) {
+            // ── PDF dañado (21/10/2026): sin «%%EOF» en el final. Pasa con archivos cortados (descargas o
+            //    copias a medias): ni la miniatura ni la capa de blanco los abren y no se pueden imprimir
+            //    (DTF-37153, SUB-31883, etc.). Se rechaza antes de subir nada, como el multipágina. Se lee
+            //    solo la cola del archivo (sirve para PDFs de varios GB). Si no se puede leer, no se bloquea.
+            let cola = null;
+            try {
+                cola = await colaDelArchivo(file, 4096);
+            } catch (eCola) {
+                logger.warn(`[UploadStream] No se pudo leer el final de ${finalName}: ${eCola.message}`);
+            }
+            if (cola && !cola.includes('%%EOF')) {
+                const nombreCliente = Buffer.from(file.originalname || '', 'latin1').toString('utf8') || finalName;
+                logger.warn(`[UploadStream] RECHAZADO ${finalName}: PDF dañado, sin %%EOF al final (${file.size} bytes).`);
+                return res.status(400).json({ error: `No pudimos abrir «${nombreCliente}»: el PDF está dañado y no se puede imprimir. Volvé a exportarlo desde tu programa de diseño (si te lo enviaron, descargalo de nuevo) y subilo otra vez.` });
+            }
             try {
                 const pdfBuf = file.buffer || await require('fs').promises.readFile(file.path);
                 const { PDFDocument } = require('pdf-lib');
@@ -7574,6 +7604,7 @@ exports.mpWebhook = async (req, res) => {
 
         const pagoId = mpResult.pagosCreados[0]?.pagIdPago;
         logger.info(`[MP WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${mpResult.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
+        require('../services/saludIntegraciones').ok('mercadopago');   // monitor
 
         // Guardar también ReferenciaPagoOnline en OrdenesRetiro
         await pool.request()
@@ -7613,6 +7644,7 @@ exports.mpWebhook = async (req, res) => {
 
     } catch (e) {
         logger.error('[MP WEBHOOK] Error procesando evento:', e.message);
+        require('../services/saludIntegraciones').falla('mercadopago', e);   // monitor
         // mpTxRef solo se setea con el pago aprobado y a punto de registrarse:
         // si llegamos acá con él seteado y caja no lo registró, hay plata cobrada sin registrar.
         if (mpTxRef && !mpPagoRegistrado) {

@@ -47,6 +47,27 @@ export function applyDeviceClass() {
 }
 
 /**
+ * Suelta el zoom que Chrome repone al recargar. Chrome guarda la escala de la página en el historial
+ * de la pestaña y la restaura en cada recarga: si una vez quedó ampliada (ver `#root` en index.css,
+ * ej. ×3,9 en /reportes en el celular), quedaba así para siempre en esa pestaña.
+ * Cambiar el initial-scale del meta un instante hace que Chrome vuelva a la escala inicial; después
+ * el meta queda tal cual estaba, así que el pellizco sigue andando igual.
+ */
+export function soltarZoomRestaurado() {
+    const meta = document.querySelector('meta[name="viewport"]');
+    if (!meta || !window.visualViewport) return;
+
+    const soltar = () => {
+        if (Math.abs(window.visualViewport.scale - 1) < 0.01) return;
+        const original = meta.content;
+        meta.content = original.replace(/initial-scale=[\d.]+/, 'initial-scale=0.99');
+        requestAnimationFrame(() => requestAnimationFrame(() => { meta.content = original; }));
+    };
+    if (document.readyState === 'complete') soltar();
+    else window.addEventListener('load', soltar, { once: true });
+}
+
+/**
  * Wake Lock: en las tablets de planta la pantalla NO se apaga mientras la app
  * está visible (sin esto dependés de la config de ahorro de energía de cada tablet).
  * El lock se libera solo cuando la pestaña pasa a segundo plano; por eso se

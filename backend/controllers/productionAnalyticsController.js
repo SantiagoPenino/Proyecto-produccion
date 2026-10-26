@@ -607,15 +607,21 @@ exports.getFiltros = async (req, res) => {
 
         const [resAreas, resMateriales, resClientes] = await Promise.all([
 
+            // Cada área con el código de sus órdenes (22/10/2026, como el Panel de Control): el prefijo más usado
+            // de CodigoOrden en los últimos 90 días (SUB, DTF, EUV, XEUV, VEN...). ConfigMapeoERP no sirve: no
+            // tiene TERMINAC (sus órdenes son XEUV) y para PRO dice PRO aunque las órdenes son VEN.
             safe(() => pool.request().query(`
-                SELECT DISTINCT
-                    o.AreaID                                       as area,
-                    ISNULL(cme.NombreReferencia, o.AreaID)         as nombre
-                FROM dbo.Ordenes o WITH(NOLOCK)
-                LEFT JOIN dbo.ConfigMapeoERP cme WITH(NOLOCK) ON cme.AreaID_Interno = o.AreaID
-                WHERE o.FechaIngreso > DATEADD(DAY, -90, GETDATE())
-                  AND o.AreaID IS NOT NULL AND o.AreaID != ''
-                ORDER BY o.AreaID
+                SELECT area, nombre FROM (
+                    SELECT o.AreaID AS area,
+                           ISNULL(NULLIF(LEFT(o.CodigoOrden, CHARINDEX('-', o.CodigoOrden + '-') - 1), ''), o.AreaID) AS nombre,
+                           ROW_NUMBER() OVER (PARTITION BY o.AreaID ORDER BY COUNT(*) DESC) AS rn
+                    FROM dbo.Ordenes o WITH(NOLOCK)
+                    WHERE o.FechaIngreso > DATEADD(DAY, -90, GETDATE())
+                      AND o.AreaID IS NOT NULL AND o.AreaID != ''
+                    GROUP BY o.AreaID, ISNULL(NULLIF(LEFT(o.CodigoOrden, CHARINDEX('-', o.CodigoOrden + '-') - 1), ''), o.AreaID)
+                ) x
+                WHERE rn = 1
+                ORDER BY nombre
             `), { recordset: [] }, 'areas'),
 
             safe(() => pool.request().query(`

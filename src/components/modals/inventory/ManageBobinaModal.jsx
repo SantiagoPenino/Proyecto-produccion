@@ -1,8 +1,20 @@
 import React, { useState, useEffect } from 'react';
-import { Button } from '../../ui/Button';
+import { createPortal } from 'react-dom';
+import Selector from '../../ui/Selector';
 import { inventoryService } from '../../../services/modules/inventoryService';
 import { toast } from 'sonner';
-import { X, History, AlertTriangle, CheckCircle } from 'lucide-react';
+import { X, History, AlertTriangle, Settings2, SlidersHorizontal, PackageX, Undo2, Check, Loader2 } from 'lucide-react';
+
+// Estética nueva (22/10/2026, como el Inventario de tela): modal blanco redondeado, encima de la barra de arriba
+// (z-[6000]; antes z-50 y quedaba por debajo), pestañas con la elegida en negro, campos con foco brand-cyan y el
+// motivo del cierre con el Selector propio. «Aplicar ajuste» en brand-cyan; «Confirmar cierre» en rojo (borra stock).
+const ROTULO = 'block text-[11px] font-black text-zinc-400 uppercase tracking-wide mb-1';
+const CAMPO = 'w-full rounded-xl border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-800 placeholder:text-zinc-400 outline-none transition-colors focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_PELIGRO = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-bold hover:bg-rose-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors';
+const segmento = (activo) => `flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+    activo ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`;
 
 const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const [activeTab, setActiveTab] = useState('adjust'); // 'adjust' | 'close' | 'history'
@@ -141,85 +153,87 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
         "Otro"
     ];
 
-    return (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-lg shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+    // En portal: si no, queda dentro de la capa de la página y no tapa la barra de arriba ni la lateral
+    return createPortal(
+        <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
 
                 {/* HEADER */}
-                <div className="p-4 border-b bg-zinc-50 flex justify-between items-start">
-                    <div>
-                        <h2 className="text-lg font-bold text-zinc-800">{insumoName}</h2>
-                        <div className="flex gap-2 text-xs text-zinc-500 mt-1">
-                            <span className="font-mono bg-white px-1 border rounded">{bobina.CodigoEtiqueta}</span>
-                            <span>Restante Actual: <strong>{bobina.MetrosRestantes} m</strong></span>
+                <div className="px-5 py-4 border-b border-zinc-100 flex justify-between items-start gap-3">
+                    <div className="flex items-start gap-3 min-w-0">
+                        <Settings2 className="w-6 h-6 shrink-0 text-brand-cyan mt-0.5" aria-hidden="true" />
+                        <div className="min-w-0">
+                            <h2 className="text-lg font-black text-zinc-800 leading-tight truncate">{insumoName || 'Administrar bobina'}</h2>
+                            <div className="flex items-center gap-2 text-xs text-zinc-500 mt-1 flex-wrap">
+                                <span className="font-mono font-bold bg-zinc-100 text-zinc-700 px-1.5 py-0.5 border border-zinc-200 rounded">{bobina.CodigoEtiqueta}</span>
+                                <span>Restante actual: <strong className="text-zinc-800 tabular-nums">{bobina.MetrosRestantes} m</strong></span>
+                            </div>
                         </div>
                     </div>
-                    <button onClick={onClose}><X className="w-5 h-5 text-zinc-400 hover:text-red-500" /></button>
+                    <button type="button" onClick={onClose} className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors" aria-label="Cerrar">
+                        <X className="w-5 h-5" />
+                    </button>
                 </div>
 
                 {/* TABS */}
-                <div className="flex border-b">
-                    <button
-                        onClick={() => setActiveTab('adjust')}
-                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'adjust' ? 'border-blue-600 text-blue-600 bg-blue-50/50' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}
-                    >
-                        Ajustar / Rebajar
-                    </button>
-                    <button
-                        onClick={() => setActiveTab('close')}
-                        className={`flex-1 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'close' ? 'border-red-600 text-red-600 bg-red-50/50' : 'border-transparent text-zinc-500 hover:text-zinc-700'}`}
-                    >
-                        Cerrar / Terminar
-                    </button>
+                <div className="px-5 pt-3">
+                    <div className="flex items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white">
+                        <button type="button" onClick={() => setActiveTab('adjust')} className={segmento(activeTab === 'adjust')}>
+                            <SlidersHorizontal className="w-3.5 h-3.5" /> Ajustar / Rebajar
+                        </button>
+                        <button type="button" onClick={() => setActiveTab('close')} className={segmento(activeTab === 'close')}>
+                            <PackageX className="w-3.5 h-3.5" /> Cerrar / Terminar
+                        </button>
+                    </div>
                 </div>
 
                 {/* BODY */}
-                <div className="p-6 overflow-y-auto custom-scrollbar flex-1 relative">
+                <div className="p-5 overflow-y-auto custom-scrollbar flex-1 relative">
 
                     {/* --- TAB: ADJUST --- */}
                     {activeTab === 'adjust' && (
-                        <form onSubmit={handleAdjustSubmit} className="space-y-5 animate-in fade-in slide-in-from-left-4 duration-200">
-                            <div className="flex gap-4 p-1 bg-zinc-100 rounded-lg">
+                        <form onSubmit={handleAdjustSubmit} className="space-y-4">
+                            <div className="flex gap-1 p-0.5 rounded-xl bg-zinc-100">
                                 <button
                                     type="button"
                                     onClick={() => setAdjustType('subtract')}
-                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'subtract' ? 'bg-white shadow text-zinc-800' : 'text-zinc-500'}`}
+                                    className={`flex-1 py-1.5 text-sm font-bold rounded-lg transition-colors ${adjustType === 'subtract' ? 'bg-white text-zinc-800 border border-zinc-200' : 'text-zinc-500 hover:text-zinc-800'}`}
                                 >
-                                    Rebajar (Consumo)
+                                    Rebajar (consumo)
                                 </button>
                                 <button
                                     type="button"
                                     onClick={() => setAdjustType('correction')}
-                                    className={`flex-1 py-1.5 text-sm rounded-md transition-all ${adjustType === 'correction' ? 'bg-white shadow text-zinc-800' : 'text-zinc-500'}`}
+                                    className={`flex-1 py-1.5 text-sm font-bold rounded-lg transition-colors ${adjustType === 'correction' ? 'bg-white text-zinc-800 border border-zinc-200' : 'text-zinc-500 hover:text-zinc-800'}`}
                                 >
-                                    Corrección (Fijar)
+                                    Corrección (fijar)
                                 </button>
                             </div>
 
                             {/* ORDEN — siempre visible */}
                             <div>
-                                <label className="block text-sm font-medium text-zinc-700 mb-1">
-                                    Orden <span className="text-zinc-400 font-normal text-xs">(opcional)</span>
+                                <label className={ROTULO}>
+                                    Orden <span className="normal-case font-semibold text-zinc-300">(opcional)</span>
                                 </label>
                                 <input
                                     type="text"
-                                    className="w-full border rounded p-2 text-sm font-mono text-zinc-700 bg-zinc-50 focus:bg-white focus:ring-2 focus:ring-blue-200 outline-none transition"
+                                    className={`${CAMPO} font-mono`}
                                     value={orden}
                                     onChange={e => setOrden(e.target.value)}
                                     placeholder="Ej: ORD-1234 / OC-556 / Pedido..."
                                 />
                                 {orden.trim() && (
-                                    <p className="text-[10px] text-blue-500 font-mono mt-0.5">Se guardará como: {orden.trim()} | ...</p>
+                                    <p className="text-[10px] text-brand-cyan font-mono mt-1">Se guardará como: {orden.trim()} | ...</p>
                                 )}
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium text-zinc-700 mb-1">
-                                    {adjustType === 'subtract' ? 'Cantidad a Rebajar (Metros)' : 'Nuevo Valor Real (Metros)'}
+                                <label className={ROTULO}>
+                                    {adjustType === 'subtract' ? 'Cantidad a rebajar (metros)' : 'Nuevo valor real (metros)'}
                                 </label>
                                 <input
                                     type="number" step="0.01" min="0"
-                                    className="w-full border rounded p-2 text-lg font-semibold text-zinc-700"
+                                    className={`${CAMPO} text-lg font-bold tabular-nums`}
                                     value={amount}
                                     onChange={e => setAmount(e.target.value)}
                                     placeholder="0.00"
@@ -227,7 +241,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                 />
                                 {adjustType === 'subtract' && amount && (
                                     <p className="text-xs text-zinc-400 mt-1">
-                                        Quedarán: {(bobina.MetrosRestantes - parseFloat(amount || 0)).toFixed(2)} m
+                                        Quedarán: <strong className="text-zinc-700 tabular-nums">{(bobina.MetrosRestantes - parseFloat(amount || 0)).toFixed(2)} m</strong>
                                     </p>
                                 )}
                             </div>
@@ -235,18 +249,18 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                             {/* ANCHO REAL — opcional, solo para bobinas con ancho (tela) */}
                             {anchoRelevante && (
                                 <div>
-                                    <label className="block text-sm font-medium text-zinc-700 mb-1">
-                                        Ancho Real (m) <span className="text-zinc-400 font-normal text-xs">(opcional)</span>
+                                    <label className={ROTULO}>
+                                        Ancho real (m) <span className="normal-case font-semibold text-zinc-300">(opcional)</span>
                                     </label>
                                     <input
                                         type="number" step="0.01" min="0"
-                                        className="w-full border rounded p-2 text-lg font-semibold text-zinc-700"
+                                        className={`${CAMPO} text-lg font-bold tabular-nums`}
                                         value={anchoReal}
                                         onChange={e => setAnchoReal(e.target.value)}
                                         placeholder={anchoActual != null ? anchoActual.toFixed(2) : '0.00'}
                                     />
                                     <p className="text-xs text-zinc-400 mt-1">
-                                        Ancho confirmado actual: <strong>{anchoActual != null ? `${anchoActual.toFixed(2)} m` : '—'}</strong>
+                                        Ancho confirmado actual: <strong className="text-zinc-700">{anchoActual != null ? `${anchoActual.toFixed(2)} m` : '—'}</strong>
                                         {bobina?.Ancho != null && bobina.Ancho !== '' && (
                                             <span className="text-zinc-300"> · Declarado: {parseFloat(bobina.Ancho).toFixed(2)} m</span>
                                         )}
@@ -255,20 +269,21 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                             )}
 
                             {bobina.ClienteID && (
-                                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                    ¿Es tela de este cliente y hay que devolvérsela o descartarla? Usá el botón <strong>"Solicitar devolución"</strong> de la tarjeta, no un ajuste manual acá — ese sí genera el bulto, avisa al cliente y deja todo prolijo en la bandeja.
+                                <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                    <Undo2 className="w-4 h-4 shrink-0 text-amber-600 mt-px" />
+                                    <span>¿Es tela de este cliente y hay que devolvérsela o descartarla? Usá el botón <strong>"Solicitar devolución"</strong> de la tarjeta, no un ajuste manual acá — ese sí genera el bulto, avisa al cliente y deja todo prolijo en la bandeja.</span>
                                 </div>
                             )}
 
                             <div>
-                                <label className="block text-sm font-medium text-zinc-700 mb-1">Concepto / Motivo</label>
-                                <div className="grid grid-cols-2 gap-2 mb-2">
+                                <label className={ROTULO}>Concepto / motivo</label>
+                                <div className="grid grid-cols-2 gap-2">
                                     {concepts.map(c => (
                                         <button
                                             key={c}
                                             type="button"
                                             onClick={() => { setConcept(c); setCustomConcept(''); }}
-                                            className={`text-xs p-2 rounded border text-left transition-colors ${concept === c && !customConcept ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-zinc-200 hover:bg-zinc-50'}`}
+                                            className={`text-xs font-semibold px-3 py-2 rounded-xl border text-left transition-colors ${concept === c && !customConcept ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-700 hover:border-zinc-400'}`}
                                         >
                                             {c}
                                         </button>
@@ -277,7 +292,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                 {(concept === 'Otro' || customConcept) && (
                                     <input
                                         type="text"
-                                        className="w-full border rounded p-2 text-sm mt-2"
+                                        className={`${CAMPO} mt-2`}
                                         placeholder="Especifique motivo..."
                                         value={customConcept}
                                         onChange={e => { setCustomConcept(e.target.value); setConcept('Otro'); }}
@@ -285,28 +300,29 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                 )}
                             </div>
 
-                            <div className="pt-4 flex justify-end">
-                                <Button type="submit" disabled={loading}>
-                                    Aplicar Ajuste
-                                </Button>
+                            <div className="pt-2 flex justify-end gap-2">
+                                <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>Cancelar</button>
+                                <button type="submit" disabled={loading} className={BTN_PRINCIPAL}>
+                                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Aplicar ajuste
+                                </button>
                             </div>
                         </form>
                     )}
 
                     {/* --- TAB: CLOSE --- */}
                     {activeTab === 'close' && (
-                        <form onSubmit={handleCloseSubmit} className="space-y-4 animate-in fade-in slide-in-from-right-4 duration-200">
-                            <div className="bg-orange-50 p-3 rounded border border-orange-100 flex gap-2 items-start">
-                                <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0" />
-                                <p className="text-sm text-orange-800">Esta acción marcará la bobina como <strong>Agotada</strong> o finalizada. Use esta opción si el rollo ya no se utilizará.</p>
+                        <form onSubmit={handleCloseSubmit} className="space-y-4">
+                            <div className="flex gap-2 items-start text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
+                                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
+                                <p>Esta acción marcará la bobina como <strong>Agotada</strong> o finalizada. Use esta opción si el rollo ya no se utilizará.</p>
                             </div>
 
                             <div>
-                                <label className="block text-sm font-medium mb-1">Metros Reales Sobrantes (Cartón)</label>
+                                <label className={ROTULO}>Metros reales sobrantes (cartón)</label>
                                 <input
                                     type="number"
                                     step="0.01"
-                                    className="w-full border rounded p-2 lg:text-lg"
+                                    className={`${CAMPO} text-lg font-bold tabular-nums`}
                                     value={metrosFinales}
                                     onChange={(e) => {
                                         setMetrosFinales(e.target.value);
@@ -315,69 +331,69 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     onBlur={handleCalculateWaste}
                                     required
                                 />
-                                <p className="text-xs text-zinc-500 mt-1">Lo que queda físicamente (generalmente 0 o pocos metros de merma).</p>
+                                <p className="text-xs text-zinc-400 mt-1">Lo que queda físicamente (generalmente 0 o pocos metros de merma).</p>
                             </div>
 
                             {calculatedWaste !== null && (
-                                <div className={`text-sm p-2 rounded flex justify-between ${calculatedWaste > 0 ? 'bg-red-50 text-red-700' : 'bg-green-50 text-green-700'}`}>
+                                <div className={`text-sm px-3 py-2 rounded-xl border flex justify-between gap-2 ${calculatedWaste > 0 ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
                                     <span>Sistema esperada: {bobina.MetrosRestantes}m</span>
-                                    <strong>Desecho: {calculatedWaste.toFixed(2)} m</strong>
+                                    <strong className="tabular-nums">Desecho: {calculatedWaste.toFixed(2)} m</strong>
                                 </div>
                             )}
 
                             <div>
-                                <label className="block text-sm font-medium mb-1">Motivo</label>
-                                <select
-                                    className="w-full border rounded p-2"
-                                    value={closeMotivo}
-                                    onChange={e => setCloseMotivo(e.target.value)}
-                                >
+                                <label className={ROTULO}>Motivo</label>
+                                <Selector value={closeMotivo} onChange={e => setCloseMotivo(e.target.value)} aria-label="Motivo del cierre">
                                     <option value="Fin de Bobina">Fin de Bobina (Ideal)</option>
                                     <option value="Desecho">Desecho / Merma Final</option>
                                     <option value="Vencimiento">Vencimiento / Deterioro</option>
-                                </select>
+                                </Selector>
                             </div>
 
-                            <div className="flex items-center gap-2 pt-2">
+                            <label htmlFor="finishCheck" className="flex items-center gap-2 pt-1 cursor-pointer">
                                 <input
                                     type="checkbox"
                                     id="finishCheck"
                                     checked={finish}
                                     onChange={(e) => setFinish(e.target.checked)}
-                                    className="w-4 h-4 text-red-600 rounded cursor-pointer"
+                                    className="w-4 h-4 rounded cursor-pointer accent-rose-600"
                                 />
-                                <label htmlFor="finishCheck" className="text-sm text-zinc-700 font-medium cursor-pointer">
-                                    Sacar de inventario (Agotado)
-                                </label>
-                            </div>
+                                <span className="text-sm text-zinc-700 font-semibold">Sacar de inventario (Agotado)</span>
+                            </label>
 
                             {finish && parseFloat(metrosFinales || 0) >= 0.5 && (
-                                <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700">
-                                    ⚠ Quedan <strong>{parseFloat(metrosFinales || 0).toFixed(2)} m</strong> útiles: al sacar la bobina del
-                                    inventario esos metros dejarán de estar disponibles para el cliente. Desmarque la casilla si la tela sigue utilizable.
+                                <div className="flex items-start gap-2 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2 text-xs text-rose-700">
+                                    <AlertTriangle className="w-4 h-4 shrink-0 mt-px" />
+                                    <span>Quedan <strong>{parseFloat(metrosFinales || 0).toFixed(2)} m</strong> útiles: al sacar la bobina del
+                                    inventario esos metros dejarán de estar disponibles para el cliente. Desmarque la casilla si la tela sigue utilizable.</span>
                                 </div>
                             )}
 
-                            <div className="pt-4 flex justify-end">
-                                <Button variant="destructive" type="submit" disabled={loading}>
-                                    Confirmar Cierre
-                                </Button>
+                            <div className="pt-2 flex justify-end gap-2">
+                                <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>Cancelar</button>
+                                <button type="submit" disabled={loading} className={BTN_PELIGRO}>
+                                    {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <PackageX className="w-4 h-4" />} Confirmar cierre
+                                </button>
                             </div>
                         </form>
                     )}
 
                     {/* --- TAB: HISTORY --- */}
                     {activeTab === 'history' && (
-                        <div className="space-y-4 animate-in fade-in duration-300">
+                        <div className="space-y-4">
                             {loadingHistory ? (
-                                <div className="text-center py-10 text-zinc-400">Cargando movimientos...</div>
+                                <div className="flex flex-col items-center gap-3 py-10 text-zinc-400 text-sm">
+                                    <Loader2 size={26} className="animate-spin text-brand-cyan" /> Cargando movimientos...
+                                </div>
                             ) : history.length === 0 ? (
-                                <div className="text-center py-10 text-zinc-400">No hay historial registrado.</div>
+                                <div className="flex flex-col items-center gap-2 py-10 text-zinc-400 text-sm">
+                                    <History size={36} className="text-zinc-200" /> No hay historial registrado.
+                                </div>
                             ) : (
                                 <div className="space-y-3">
                                     {history.map((mov, idx) => (
                                         <div key={idx} className="flex gap-3 items-start border-b border-zinc-100 pb-3 last:border-0">
-                                            <div className={`mt-1 w-2 h-2 rounded-full shrink-0 ${mov.Cantidad > 0 ? 'bg-green-500' : 'bg-red-500'}`}></div>
+                                            <div className={`mt-1.5 w-2 h-2 rounded-full shrink-0 ${mov.Cantidad > 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}></div>
                                             <div className="flex-1">
                                                 {/* Parsear Referencia: puede ser "ORD-xx | Ajuste BOB: Motivo" o solo "Ajuste BOB: Motivo" */}
                                                 {(() => {
@@ -389,16 +405,16 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                                         <>
                                                             {/* Fila 1: Tipo + Cantidad */}
                                                             <div className="flex justify-between items-center">
-                                                                <span className="font-medium text-zinc-700 text-sm">{mov.TipoMovimiento}</span>
-                                                                <span className={`font-mono text-sm font-bold ${mov.Cantidad > 0 ? 'text-green-600' : 'text-red-600'}`}>
+                                                                <span className="font-bold text-zinc-700 text-sm">{mov.TipoMovimiento}</span>
+                                                                <span className={`font-mono text-sm font-bold ${mov.Cantidad > 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
                                                                     {mov.Cantidad > 0 ? '+' : ''}{mov.Cantidad}m
                                                                 </span>
                                                             </div>
                                                             {/* Fila 2: Orden (si existe) */}
                                                             {ordenPart && (
                                                                 <div className="mt-1 flex items-center gap-1">
-                                                                    <span className="text-[9px] font-black uppercase tracking-widest text-blue-400">Orden</span>
-                                                                    <span className="text-xs font-mono font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded">{ordenPart}</span>
+                                                                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400">Orden</span>
+                                                                    <span className="text-xs font-mono font-bold text-brand-cyan bg-brand-cyan/5 px-1.5 py-0.5 rounded">{ordenPart}</span>
                                                                 </div>
                                                             )}
                                                             {/* Fila 3: Motivo */}
@@ -424,7 +440,8 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
 
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 };
 

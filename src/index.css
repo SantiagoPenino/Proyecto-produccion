@@ -55,6 +55,14 @@ body {
   overflow: hidden;
 }
 
+/* El documento nunca más ancho que la pantalla. Lo que se pasaba de ancho ya quedaba cortado (body con
+   overflow:hidden), pero el Chrome del celular igual lo contaba: al girar el teléfono o cambiar el ancho
+   (el marco de DevTools) multiplicaba el zoom por ancho del contenido / ancho de pantalla (ej. ×3,9 en
+   /reportes) y lo guardaba para las recargas. `clip` y no `hidden`: #root no pasa a tener scroll propio. */
+#root {
+  overflow-x: clip;
+}
+
 /* SweetAlert2 toast slide animations */
 @keyframes slideInRight {
   from {

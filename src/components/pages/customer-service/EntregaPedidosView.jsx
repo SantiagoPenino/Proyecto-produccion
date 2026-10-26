@@ -1,14 +1,47 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import TransportView from '../../logistics/TransportView';
 import { useAuth } from '../../../context/AuthContext';
 import api from '../../../services/api';
 import { logisticsService } from '../../../services/modules/logisticsService';
 import { socket } from '../../../services/socketService';
 import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
-import { Package, Truck, Search, QrCode, FileText, CheckCircle, RefreshCcw, DollarSign, ChevronDown, ChevronRight, Printer, ClipboardList, Tag, History, ChevronUp, FileImage } from 'lucide-react';
+import { Package, Truck, Search, QrCode, FileText, CheckCircle, RefreshCcw, DollarSign, ChevronDown, ChevronRight, Printer, ClipboardList, Tag, History, ChevronUp, FileImage, Store, Loader2, X, Check, Hourglass } from 'lucide-react';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import AlertaAutorizacionModal from '../../modals/AlertaAutorizacionModal';
+import Selector from '../../ui/Selector';
+import SelectorFecha from '../../ui/SelectorFecha';
+
+// Estética nueva (22/10/2026, como Reportes y Cotización): fondo claro, tarjetas blancas con borde, íconos de Lucide
+// en brand-cyan sin fondo, pestañas con la elegida en negro (en el celular, un selector) y los selects / la fecha con
+// el Selector y el SelectorFecha propios. El color queda para el estado de pago. Lo que se imprime (comprobante,
+// etiquetas, hoja de despacho) no se tocó.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+// Versiones chicas para los renglones de las tablas.
+const BTN_FILA_PRINCIPAL = 'inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg bg-brand-cyan text-white text-xs font-bold whitespace-nowrap hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_FILA_SECUNDARIO = 'inline-flex items-center justify-center gap-1 px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 whitespace-nowrap hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_ICONO_BASE = 'w-8 h-8 shrink-0 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50 hover:border-zinc-300 transition-colors disabled:opacity-40';
+const BTN_ICONO = `${BTN_ICONO_BASE} text-zinc-500 hover:text-brand-cyan`;
+const BTN_ICONO_PRINCIPAL = 'w-8 h-8 shrink-0 inline-flex items-center justify-center rounded-lg bg-brand-cyan text-white hover:bg-brand-cyan/90 transition-colors disabled:opacity-40';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const CAMPO_SIMPLE = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const CHIP = 'text-[11px] font-bold px-2.5 py-1 rounded-full border';
+const CHIP_GRIS = 'bg-zinc-100 text-zinc-600 border-zinc-200';
+// Estado de pago del retiro: pagado (verde), autorizado sin pagar (brand-cyan), pendiente de pago (ámbar).
+const PAGO_PAGADO = 'bg-emerald-50 text-emerald-700 border-emerald-200';
+const PAGO_AUTORIZADO = 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20';
+const PAGO_PENDIENTE = 'bg-amber-50 text-amber-700 border-amber-200';
+// El tipo de cliente (COMUN, SEMANAL…) no es un estado: va en gris; solo DEUDOR, en rojo suave.
+const chipTipoCliente = (desc) => (/deudor/i.test(desc || '') ? 'bg-rose-50 text-rose-700 border-rose-200' : CHIP_GRIS);
+
+const PESTANAS = [
+    { id: 'encomiendas', label: 'Logística y Despachos', icono: Package },
+    { id: 'mostrador', label: 'Mostrador', icono: Store },
+    { id: 'historial', label: 'Historial del día', icono: History },
+    { id: 'transport', label: 'En Viaje', icono: Truck },
+];
 
 // ─── TICKET: Comprobante de Retiro (igual a WebRetirosPage) ───
 const printTicketEncomienda = (enc) => {
@@ -195,6 +228,18 @@ const EntregaPedidosView = () => {
     // Refs para que el socket handler siempre acceda a la versión más reciente de las funciones
     const loadDespachoRef = useRef(null);
     const loadSinRetiroRef = useRef(null);
+    // Mostrador: «Órdenes sin retiro asignado» de a 50 (eran ~700 filas dibujadas de una). Cuando el final de la
+    // lista se acerca a la pantalla se agregan 50 más; vuelve a 50 al cambiar la lista o la búsqueda.
+    const [verSinRetiro, setVerSinRetiro] = useState(50);
+    useEffect(() => { setVerSinRetiro(50); }, [mostradorAllSinRetiro, searchTerm]);
+    const obsSinRetiro = useRef(null);
+    const centinelaSinRetiro = useCallback((nodo) => {
+        if (obsSinRetiro.current) obsSinRetiro.current.disconnect();
+        if (!nodo) return;
+        obsSinRetiro.current = new IntersectionObserver(([e]) => { if (e.isIntersecting) setVerSinRetiro(v => v + 50); },
+            { rootMargin: '0px 0px 600px 0px' });
+        obsSinRetiro.current.observe(nodo);
+    }, []);
     // Recargas por aviso del socket, con freno (la lista de despachos usa la consulta cara de retiros).
     const avisarDespachos = useRecargaConFreno(() => loadDespachoRef.current?.());
     const avisarSinRetiro = useRecargaConFreno(() => loadSinRetiroRef.current?.());
@@ -544,7 +589,7 @@ const EntregaPedidosView = () => {
                 toast: true, position: 'top-end', icon: 'warning', title: sinPagoSinAutorizar.length > 1
                     ? `${sinPagoSinAutorizar.length} órdenes no están pagas ni autorizadas. Debe pasar por Caja.`
                     : `"${sinPagoSinAutorizar[0]}" no está paga ni autorizada. Debe pasar por Caja.`,
-                showConfirmButton: false, timer: 4000,
+                showConfirmButton: false, timer: 4000, confirmButtonColor: '#006E97',
                 showClass: { popup: 'animate-[slideInRight_0.3s_ease-out]' },
                 hideClass: { popup: 'animate-[slideOutRight_0.3s_ease-in]' }
             });
@@ -563,14 +608,14 @@ const EntregaPedidosView = () => {
             Swal.fire({
                 toast: true, position: 'top-end', icon: 'success',
                 title: response.data.message || 'Órdenes entregadas correctamente.',
-                showConfirmButton: false, timer: 3000,
+                showConfirmButton: false, timer: 3000, confirmButtonColor: '#006E97',
                 showClass: { popup: 'animate-[slideInRight_0.3s_ease-out]' },
                 hideClass: { popup: 'animate-[slideOutRight_0.3s_ease-in]' }
             });
             loadDespachos();
         } catch (error) {
             const errorMsg = error.response?.data?.error || 'Error al procesar la entrega.';
-            Swal.fire('Error', errorMsg, 'error');
+            Swal.fire({ title: 'Error', html: errorMsg, icon: 'error', confirmButtonColor: '#006E97' });
         } finally {
             setLoading(false);
         }
@@ -584,7 +629,7 @@ const EntregaPedidosView = () => {
             const autorizada = enc.OReEstadoActual === 9 || enc.estado === 9;
             if (noPaga && !autorizada) {
                 Swal.fire({
-                    toast: true, position: 'top-end', icon: 'warning', title: `"${ordenCodigo}" no está paga ni autorizada. Debe pasar por Caja.`, showConfirmButton: false, timer: 4000,
+                    toast: true, position: 'top-end', icon: 'warning', title: `"${ordenCodigo}" no está paga ni autorizada. Debe pasar por Caja.`, showConfirmButton: false, timer: 4000, confirmButtonColor: '#006E97',
                     showClass: { popup: 'animate-[slideInRight_0.3s_ease-out]' },
                     hideClass: { popup: 'animate-[slideOutRight_0.3s_ease-in]' }
                 });
@@ -783,7 +828,7 @@ const EntregaPedidosView = () => {
             console.log('[PAGO MOSTRADOR] Cliente:', pagoModal.clienteInfo?.CliNombre, '| Tipo:', pagoModal.clienteInfo?.TClDescripcion, '| Estado Retiro:', pagoModal.clienteInfo?.estadoRetiro, '| Retiro:', pagoModal.retiroId);
             const response = await api.post('/apipagos/realizarPago', payload);
             console.log('[PAGO MOSTRADOR] Respuesta:', JSON.stringify(response.data, null, 2));
-            toast.success('✅ Pago registrado correctamente');
+            toast.success('Pago registrado correctamente');
             setPagoModal(null);
             // Refrescar la sección correcta según el origen del pago
             if (searchTerm.trim()) {
@@ -802,60 +847,64 @@ const EntregaPedidosView = () => {
 
 
     return (
-        <div className="p-0 md:p-4 lg:p-8 w-full max-w-[1400px] mx-auto min-h-[85vh] flex flex-col gap-0 md:gap-6 animate-in fade-in duration-300 pb-12">
-            {/* Cabecera */}
-            <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-4 md:p-6 rounded-none md:rounded-2xl shadow-sm border-b md:border border-slate-200">
-                <div>
-                    <h1 className="text-2xl md:text-3xl font-black text-slate-800 flex items-center gap-3">
-                        <div className="w-10 h-10 rounded-xl bg-brand-cyan/10 flex items-center justify-center shrink-0">
-                            <Package className="text-brand-cyan" size={22} />
-                        </div>
-                        Entrega de Pedidos & Logística
-                    </h1>
-                    <p className="text-sm md:text-base text-slate-500 mt-2 font-medium">Gestión integral de despachos, retiros y cobranza remota.</p>
+        <div className="p-3 md:p-6 w-full min-h-full bg-slate-50 text-zinc-800 flex flex-col gap-4">
+            {/* Cabecera y pestañas */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                    <Package size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <h1 className="text-2xl font-black text-zinc-800 uppercase tracking-tight">Entrega de Pedidos & Logística</h1>
+                        <p className="text-sm text-zinc-400">Gestión integral de despachos, retiros y cobranza remota.</p>
+                    </div>
                 </div>
-            </div>
 
-            {/* Tabs Selector */}
-            <div className="grid grid-cols-2 xl:flex gap-2 p-2 md:p-1 bg-slate-200/50 rounded-none md:rounded-xl w-full xl:w-fit border-b md:border-none border-slate-200">
-                <button
-                    onClick={() => setActiveTab('encomiendas')}
-                    className={`px-4 py-3 xl:py-2.5 rounded-lg font-bold text-sm transition-all duration-200 flex items-center justify-center xl:justify-start gap-2 ${activeTab === 'encomiendas' ? 'bg-white text-brand-cyan shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                    <Package size={18} className="shrink-0" /> <span className="text-xs xl:text-sm">Logística y Despachos</span>
-                </button>
-                <button
-                    onClick={() => setActiveTab('mostrador')}
-                    className={`px-4 py-3 xl:py-2.5 rounded-lg font-bold text-sm transition-all duration-200 flex items-center justify-center xl:justify-start gap-2 ${activeTab === 'mostrador' ? 'bg-white text-brand-cyan shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                    <Truck size={18} className="shrink-0" /> <span className="text-xs xl:text-sm">Mostrador</span>
-                </button>
-                <button
-                    onClick={() => setActiveTab('historial')}
-                    className={`px-4 py-3 xl:py-2.5 rounded-lg font-bold text-sm transition-all duration-200 flex items-center justify-center xl:justify-start gap-2 ${activeTab === 'historial' ? 'bg-white text-brand-cyan shadow-sm' : 'text-slate-500 hover:text-slate-700'}`}
-                >
-                    <History size={18} className="shrink-0" /> <span className="text-xs xl:text-sm">Historial del día</span>
-                </button>
-                <button
-                    onClick={() => setActiveTab('transport')}
-                    className={`px-4 py-3 xl:py-2.5 rounded-lg font-bold text-sm transition-all duration-200 flex items-center justify-center xl:justify-start gap-2 ${activeTab === 'transport' ? 'bg-white text-brand-cyan shadow-sm border border-brand-cyan/20' : 'text-slate-500 hover:text-brand-cyan'}`}
-                >
-                    <Truck size={18} className="shrink-0" /> <span className="text-xs xl:text-sm">En Viaje</span>
-                </button>
+                {/* Escritorio: pestañas */}
+                <div className="hidden sm:inline-flex flex-wrap items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white">
+                    {PESTANAS.map(tab => {
+                        const Icono = tab.icono;
+                        const activa = activeTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                type="button"
+                                onClick={() => setActiveTab(tab.id)}
+                                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold whitespace-nowrap transition-colors ${activa ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`}
+                            >
+                                <Icono size={15} className={activa ? '' : 'text-brand-cyan'} />
+                                {tab.label}
+                            </button>
+                        );
+                    })}
+                </div>
+
+                {/* Celular: selector */}
+                <div className="w-full sm:hidden">
+                    <Selector value={activeTab} onChange={e => setActiveTab(e.target.value)} aria-label="Sección" className="font-semibold">
+                        {PESTANAS.map(tab => (
+                            <option key={tab.id} value={tab.id}>
+                                <span className="flex items-center gap-2"><tab.icono size={15} className="shrink-0 text-brand-cyan" />{tab.label}</span>
+                            </option>
+                        ))}
+                    </Selector>
+                </div>
             </div>
 
             {/* TAB: ENCOMIENDAS (DESPACHOS) */}
             {activeTab === 'encomiendas' && (
-                <div className="bg-white p-4 md:p-6 rounded-none md:rounded-2xl shadow-sm border-b md:border border-slate-200">
-                    <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-                        <h2 className="text-xl font-black text-slate-800">Órdenes a Despachar / Entregar</h2>
+                <div className="flex flex-col gap-3">
+                    <div className={`${CARD} p-4 md:p-5 flex flex-col gap-3`}>
+                        <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3">
+                            <div className="min-w-0">
+                                <h2 className="text-lg font-black text-zinc-800">Órdenes a Despachar / Entregar</h2>
+                                <p className="text-sm text-zinc-400">{loading ? 'Cargando…' : `${encomiendas.length} orden(es) de retiro`}</p>
+                            </div>
 
-                        {/* Filtros Especiales */}
-                        <div className="flex flex-wrap gap-4 items-center w-full xl:w-auto">
-                            <div className="flex items-center gap-2 bg-slate-50 px-3 py-1.5 rounded-xl border border-slate-200">
-                                <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Lugar de Retiro:</span>
-                                <select
-                                    className="bg-transparent font-bold text-slate-800 text-sm outline-none cursor-pointer"
+                            {/* Filtros Especiales */}
+                            <div className="flex flex-wrap gap-2 items-center w-full xl:w-auto">
+                                <span className="text-[11px] font-black text-zinc-400 uppercase tracking-wide">Lugar de Retiro</span>
+                                <Selector
+                                    filtro
+                                    aria-label="Lugar de retiro"
                                     value={filtroLugar}
                                     onChange={(e) => setFiltroLugar(e.target.value)}
                                 >
@@ -864,84 +913,88 @@ const EntregaPedidosView = () => {
                                         <option key={lr.LReIdLugarRetiro} value={lr.LReIdLugarRetiro}>{lr.LReNombreLugar}</option>
                                     ))}
                                     {lugaresRetiro.length === 0 && <option value="" disabled>Cargando...</option>}
-                                </select>
+                                </Selector>
+
+                                <Selector
+                                    filtro
+                                    aria-label="Filtrar por pago"
+                                    value={filtroPagoEncomiendas}
+                                    onChange={(e) => setFiltroPagoEncomiendas(e.target.value)}
+                                >
+                                    <option value="todas"><span className="flex items-center gap-2"><CheckCircle size={14} className="shrink-0 text-brand-cyan" />Mostrar Todas</span></option>
+                                    <option value="pagas"><span className="flex items-center gap-2"><DollarSign size={14} className="shrink-0 text-brand-cyan" />Sólo Pagas</span></option>
+                                    <option value="nopagas"><span className="flex items-center gap-2"><Hourglass size={14} className="shrink-0 text-brand-cyan" />No Pagas</span></option>
+                                </Selector>
+
+                                <button
+                                    onClick={() => loadDespachos(filtroLugar, filtroPagoEncomiendas)}
+                                    disabled={loading}
+                                    className={BTN_SECUNDARIO}
+                                >
+                                    <Search size={15} />
+                                    {loading ? 'Buscando...' : 'Buscar'}
+                                </button>
+
+                                <button onClick={() => loadDespachos(filtroLugar, filtroPagoEncomiendas)} disabled={loading} className={BTN_SECUNDARIO} title="Recargar" aria-label="Recargar">
+                                    <RefreshCcw size={15} className={loading ? 'animate-spin' : ''} />
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="flex flex-col lg:flex-row lg:items-center gap-2">
+                            {/* Buscador rápido dentro de Logística */}
+                            <div className="relative flex-1 min-w-0">
+                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={15} />
+                                <input
+                                    type="text"
+                                    placeholder="Filtrar por orden, cliente o estado..."
+                                    aria-label="Filtrar por orden, cliente o estado"
+                                    value={filtroLogistica}
+                                    onChange={e => setFiltroLogistica(e.target.value)}
+                                    className={CAMPO}
+                                />
                             </div>
 
-                            <select
-                                value={filtroPagoEncomiendas}
-                                onChange={(e) => setFiltroPagoEncomiendas(e.target.value)}
-                                className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none cursor-pointer"
-                            >
-                                <option value="todas">✅ Mostrar Todas</option>
-                                <option value="pagas">💰 Sólo Pagas</option>
-                                <option value="nopagas">⏳ No Pagas</option>
-                            </select>
-
-                            <button
-                                onClick={() => loadDespachos(filtroLugar, filtroPagoEncomiendas)}
-                                disabled={loading}
-                                className="flex items-center gap-2 bg-brand-cyan hover:bg-brand-cyan text-white font-bold px-4 py-2 rounded-xl text-sm transition-colors shadow-sm"
-                            >
-                                <Search size={15} />
-                                {loading ? 'Buscando...' : 'Buscar'}
-                            </button>
-
-                            <button onClick={() => loadDespachos(filtroLugar, filtroPagoEncomiendas)} disabled={loading} className="p-2 text-slate-400 hover:text-brand-cyan hover:bg-brand-cyan/5 rounded-lg transition-colors" title="Recargar">
-                                <RefreshCcw size={18} className={loading ? 'animate-spin' : ''} />
-                            </button>
-
-                            <div className="flex-1"></div>
-
-                            <button
-                                onClick={generarRemitoLogistico}
-                                disabled={selectedEncomiendas.size === 0 || loading}
-                                className="bg-brand-cyan hover:bg-[#005080] disabled:opacity-50 text-white font-bold px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2 shadow-sm"
-                                title="Generar Remito Logístico"
-                            >
-                                <Package size={16} /> Generar Remito ({selectedEncomiendas.size})
-                            </button>
-                            <button
-                                onClick={printResumenSeleccionados}
-                                disabled={selectedEncomiendas.size === 0}
-                                className="bg-slate-100 hover:bg-slate-200 disabled:opacity-40 text-slate-700 font-bold px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2"
-                                title="Imprimir hoja de despacho"
-                            >
-                                <FileText size={16} /> Despacho ({selectedEncomiendas.size})
-                            </button>
-                            <button
-                                onClick={() => {
-                                    const sel = encomiendas.filter(e => selectedEncomiendas.has(e.ordenDeRetiro));
-                                    if (sel.length === 0) return toast.warning('Seleccioná al menos una orden.');
-                                    printLabels(sel);
-                                }}
-                                disabled={selectedEncomiendas.size === 0}
-                                className="bg-emerald-50 hover:bg-emerald-100 disabled:opacity-40 text-emerald-700 font-bold px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2 border border-emerald-200"
-                                title="Imprimir etiquetas de los seleccionados"
-                            >
-                                <Tag size={16} /> Etiquetas ({selectedEncomiendas.size})
-                            </button>
-                            <button
-                                onClick={marcarEntregadas}
-                                disabled={selectedEncomiendas.size === 0 || loading}
-                                className="bg-brand-cyan hover:bg-brand-cyan disabled:opacity-50 disabled:hover:bg-brand-cyan text-white font-bold px-5 py-2 rounded-xl text-sm transition-all shadow-md flex items-center gap-2"
-                            >
-                                <CheckCircle size={16} /> {loading ? <RefreshCcw className="animate-spin" size={16} /> : `Entregar (${selectedEncomiendas.size})`}
-                            </button>
+                            {/* Acciones sobre los seleccionados */}
+                            <div className="flex flex-wrap items-center gap-2">
+                                <button
+                                    onClick={generarRemitoLogistico}
+                                    disabled={selectedEncomiendas.size === 0 || loading}
+                                    className={BTN_SECUNDARIO}
+                                    title="Generar Remito Logístico"
+                                >
+                                    <Package size={15} /> Generar Remito ({selectedEncomiendas.size})
+                                </button>
+                                <button
+                                    onClick={() => printResumenSeleccionados() /* sin el evento: si no, el clic entraba como remitoCode y la hoja salía con un QR de "[object Object]" */}
+                                    disabled={selectedEncomiendas.size === 0}
+                                    className={BTN_SECUNDARIO}
+                                    title="Imprimir hoja de despacho"
+                                >
+                                    <FileText size={15} /> Despacho ({selectedEncomiendas.size})
+                                </button>
+                                <button
+                                    onClick={() => {
+                                        const sel = encomiendas.filter(e => selectedEncomiendas.has(e.ordenDeRetiro));
+                                        if (sel.length === 0) return toast.warning('Seleccioná al menos una orden.');
+                                        printLabels(sel);
+                                    }}
+                                    disabled={selectedEncomiendas.size === 0}
+                                    className={BTN_SECUNDARIO}
+                                    title="Imprimir etiquetas de los seleccionados"
+                                >
+                                    <Tag size={15} /> Etiquetas ({selectedEncomiendas.size})
+                                </button>
+                                <button
+                                    onClick={marcarEntregadas}
+                                    disabled={selectedEncomiendas.size === 0 || loading}
+                                    className={BTN_PRINCIPAL}
+                                >
+                                    <CheckCircle size={15} /> {loading ? <Loader2 className="animate-spin" size={15} /> : `Entregar (${selectedEncomiendas.size})`}
+                                </button>
+                            </div>
                         </div>
                     </div>
-
-                    {/* Buscador rápido dentro de Logística */}
-                    <div className="mb-4 relative">
-                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                        <input
-                            type="text"
-                            placeholder="Filtrar por orden, cliente o estado..."
-                            value={filtroLogistica}
-                            onChange={e => setFiltroLogistica(e.target.value)}
-                            className="w-full pl-9 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 focus:bg-white transition-all"
-                        />
-                    </div>
-
 
                     {/* ── MOBILE: Card list ── */}
                     <div className="md:hidden flex flex-col gap-3">
@@ -967,7 +1020,7 @@ const EntregaPedidosView = () => {
 
                             return (
                                 <div key={enc.ordenDeRetiro}
-                                    className={`rounded-xl border transition-all ${isSelected ? 'border-brand-cyan bg-brand-cyan/5 ring-1 ring-brand-cyan/20' : 'border-slate-200 bg-white'} shadow-sm`}>
+                                    className={`rounded-2xl border overflow-hidden transition-colors ${isSelected ? 'border-brand-cyan bg-brand-cyan/5 ring-1 ring-brand-cyan/20' : 'border-zinc-200 bg-white'}`}>
 
                                     {/* Card header row */}
                                     <div className="flex items-center gap-3 p-3">
@@ -978,51 +1031,51 @@ const EntregaPedidosView = () => {
                                             onChange={() => toggleCheckEncomienda(enc.ordenDeRetiro)}
                                         />
                                         <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2 flex-wrap">
-                                                <span className="font-black text-brand-cyan text-sm">{enc.ordenDeRetiro}</span>
+                                            <div className="flex items-center gap-1.5 flex-wrap">
+                                                <span className="font-black text-zinc-800 text-sm">{enc.ordenDeRetiro}</span>
                                                 {pagado
-                                                    ? <span className="text-[10px] font-black bg-green-100 text-green-700 px-2 py-0.5 rounded-full border border-green-200 uppercase">Pagado</span>
+                                                    ? <span className={`${CHIP} ${PAGO_PAGADO} uppercase`}>Pagado</span>
                                                     : autorizado
-                                                        ? <span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full border border-amber-200 uppercase">Autorizado</span>
-                                                        : <span className="text-[10px] font-black bg-red-100 text-red-600 px-2 py-0.5 rounded-full border border-red-200 uppercase">Pendiente</span>
+                                                        ? <span className={`${CHIP} ${PAGO_AUTORIZADO} uppercase`}>Autorizado</span>
+                                                        : <span className={`${CHIP} ${PAGO_PENDIENTE} uppercase`}>Pendiente</span>
                                                 }
-                                                <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-2 py-0.5 rounded-full uppercase">{enc.estado}</span>
+                                                <span className={`${CHIP} ${CHIP_GRIS} uppercase`}>{enc.estado}</span>
                                             </div>
-                                            <div className="flex items-center gap-2 mt-0.5">
-                                                <span className="text-xs font-bold text-slate-700 truncate">{enc.CliCodigoCliente} · {enc.TClDescripcion}</span>
+                                            <div className="flex items-center gap-2 mt-1">
+                                                <span className="text-xs font-bold text-zinc-600 truncate">{enc.CliCodigoCliente} · {enc.TClDescripcion}</span>
                                             </div>
                                         </div>
                                         <div className="text-right shrink-0">
-                                            <div className="font-black text-slate-800 text-sm">{moneda} {enc.totalCost}</div>
-                                            <div className="text-[10px] text-slate-400 flex items-center gap-1 justify-end"><Truck size={9} /> {enc.lugarRetiro}</div>
+                                            <div className="font-black text-zinc-800 text-sm tabular-nums">{moneda} {enc.totalCost}</div>
+                                            <div className="text-[11px] text-zinc-400 flex items-center gap-1 justify-end"><Truck size={11} className="shrink-0 text-brand-cyan" /> {enc.lugarRetiro}</div>
                                         </div>
                                     </div>
 
                                     {/* Actions row */}
-                                    <div className="flex border-t border-slate-100 divide-x divide-slate-100">
+                                    <div className="flex border-t border-zinc-100 divide-x divide-zinc-100">
                                         <button
                                             onClick={() => toggleRow(enc.ordenDeRetiro)}
-                                            className="flex-1 py-2 text-xs font-bold text-slate-500 flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
+                                            className="flex-1 py-2.5 text-xs font-bold text-zinc-600 flex items-center justify-center gap-1.5 hover:bg-zinc-50 transition-colors"
                                         >
                                             {isExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
                                             {enc.orders?.length || 0} hijas
                                         </button>
                                         <button
                                             onClick={() => printLabels(enc)}
-                                            className="flex-1 py-2 text-xs font-bold text-emerald-700 flex items-center justify-center gap-1.5 hover:bg-emerald-50 transition-colors"
+                                            className="flex-1 py-2.5 text-xs font-bold text-zinc-600 flex items-center justify-center gap-1.5 hover:bg-zinc-50 transition-colors"
                                         >
                                             <Tag size={13} /> Etiqueta
                                         </button>
                                         <button
                                             onClick={() => printTicketEncomienda(enc)}
-                                            className="flex-1 py-2 text-xs font-bold text-slate-500 flex items-center justify-center gap-1.5 hover:bg-slate-50 transition-colors"
+                                            className="flex-1 py-2.5 text-xs font-bold text-zinc-600 flex items-center justify-center gap-1.5 hover:bg-zinc-50 transition-colors"
                                         >
                                             <Printer size={13} /> Ticket
                                         </button>
                                         <button
                                             onClick={() => ejecutarEntregarUna(enc.ordenDeRetiro, enc)}
                                             disabled={loading}
-                                            className="flex-1 py-2 text-xs font-black text-brand-cyan flex items-center justify-center gap-1.5 hover:bg-brand-cyan/5 transition-colors disabled:opacity-40"
+                                            className="flex-1 py-2.5 text-xs font-black text-brand-cyan flex items-center justify-center gap-1.5 hover:bg-brand-cyan/5 transition-colors disabled:opacity-40"
                                         >
                                             <CheckCircle size={13} /> Entregar
                                         </button>
@@ -1030,12 +1083,12 @@ const EntregaPedidosView = () => {
 
                                     {/* Expanded sub-orders */}
                                     {isExpanded && (
-                                        <div className="border-t border-slate-100 bg-slate-50 rounded-b-xl divide-y divide-slate-100">
+                                        <div className="border-t border-zinc-100 bg-zinc-50 divide-y divide-zinc-100">
                                             {enc.orders?.map(o => (
-                                                <div key={o.orderNumber} className="flex items-center justify-between px-4 py-2">
-                                                    <span className="font-bold text-slate-700 text-xs">{o.orderNumber}</span>
-                                                    <span className="text-xs text-slate-400">{o.orderEstado || '—'}</span>
-                                                    <span className="font-black text-brand-cyan text-xs">{o.orderCosto}</span>
+                                                <div key={o.orderNumber} className="flex items-center justify-between gap-2 px-4 py-2">
+                                                    <span className="font-bold text-zinc-700 text-xs">{o.orderNumber}</span>
+                                                    <span className="text-xs text-zinc-400">{o.orderEstado || '—'}</span>
+                                                    <span className="font-black text-zinc-800 text-xs tabular-nums">{o.orderCosto}</span>
                                                 </div>
                                             ))}
                                         </div>
@@ -1045,147 +1098,148 @@ const EntregaPedidosView = () => {
                         })}
 
                         {!loading && encomiendas.length === 0 && (
-                            <div className="text-center py-12 bg-slate-50 rounded-xl border border-dashed border-slate-300">
-                                <Truck size={36} className="mx-auto mb-3 text-slate-300" />
-                                <p className="font-bold text-slate-500">No hay órdenes para despachar</p>
-                                <p className="text-sm text-slate-400">bajo los filtros seleccionados.</p>
+                            <div className={`${CARD} py-12 px-4 text-center`}>
+                                <Truck size={40} className="mx-auto mb-3 text-zinc-200" />
+                                <p className="font-bold text-zinc-500">No hay órdenes para despachar</p>
+                                <p className="text-sm text-zinc-400">bajo los filtros seleccionados.</p>
                             </div>
                         )}
                         {loading && encomiendas.length === 0 && (
-                            <div className="text-center py-10 text-brand-cyan">
-                                <RefreshCcw className="animate-spin mx-auto mb-2" size={28} />
-                                <p className="font-bold text-sm">Cargando...</p>
+                            <div className={`${CARD} py-10 px-4 text-center`}>
+                                <Loader2 className="animate-spin mx-auto mb-3 text-brand-cyan" size={30} />
+                                <p className="text-sm text-zinc-400">Cargando...</p>
                             </div>
                         )}
                     </div>
 
                     {/* ── DESKTOP: Table ── */}
-                    <div className="hidden md:block overflow-x-auto rounded-xl border border-slate-200">
-                        <table className="w-full text-left border-collapse text-sm">
-                            <thead>
-                                <tr className="bg-slate-100 text-slate-600 uppercase tracking-wider text-[11px] font-black border-b border-slate-200">
-                                    <th className="p-4 w-10 text-center">
-                                        <input
-                                            type="checkbox"
-                                            className="w-4 h-4 rounded border-slate-300 text-brand-cyan focus:ring-brand-cyan/40 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
-                                            checked={selectedEncomiendas.size === encomiendas.length && encomiendas.length > 0}
-                                            onChange={toggleAllEncomiendas}
-                                            disabled={!lugaresRetiro.some(lr => String(lr.LReIdLugarRetiro) === filtroLugar && /encomienda|agencia/i.test(lr.LReNombreLugar))}
-                                        />
-                                    </th>
-                                    <th className="p-4">Orden Retiro</th>
-                                    <th className="p-4">Cliente</th>
-                                    <th className="p-4">Total Importe</th>
-                                    <th className="p-4">Estado / Lugar</th>
-                                    <th className="p-4 text-center">Pago</th>
-                                    <th className="p-4 text-center">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {(filtroLogistica.trim()
-                                    ? encomiendas.filter(enc => {
-                                        const q = filtroLogistica.toLowerCase();
-                                        return (
-                                            (enc.ordenDeRetiro || '').toLowerCase().includes(q) ||
-                                            (enc.CliCodigoCliente || '').toLowerCase().includes(q) ||
-                                            (enc.CliNombre || '').toLowerCase().includes(q) ||
-                                            (enc.estado || '').toLowerCase().includes(q) ||
-                                            (enc.lugarRetiro || '').toLowerCase().includes(q) ||
-                                            (enc.orders || []).some(o => (o.orderNumber || '').toLowerCase().includes(q))
-                                        );
-                                    })
-                                    : encomiendas
-                                ).map((enc) => {
-                                    const isExpanded = expandedRows.has(enc.ordenDeRetiro);
-                                    const isSelected = selectedEncomiendas.has(enc.ordenDeRetiro);
-                                    const clienteEsComun = enc.TClIdTipoCliente !== 2 && enc.TClIdTipoCliente !== 3;
+                    <div className={`hidden md:block ${CARD} overflow-hidden`}>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                    <tr className="text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                        <th className="px-4 py-2.5 w-10 text-center">
+                                            <input
+                                                type="checkbox"
+                                                className="w-4 h-4 rounded border-zinc-300 accent-brand-cyan cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                                                checked={selectedEncomiendas.size === encomiendas.length && encomiendas.length > 0}
+                                                onChange={toggleAllEncomiendas}
+                                                disabled={!lugaresRetiro.some(lr => String(lr.LReIdLugarRetiro) === filtroLugar && /encomienda|agencia/i.test(lr.LReNombreLugar))}
+                                            />
+                                        </th>
+                                        <th className="px-4 py-2.5">Orden Retiro</th>
+                                        <th className="px-4 py-2.5">Cliente</th>
+                                        <th className="px-4 py-2.5">Total Importe</th>
+                                        <th className="px-4 py-2.5">Estado / Lugar</th>
+                                        <th className="px-4 py-2.5 text-center">Pago</th>
+                                        <th className="px-4 py-2.5 text-center">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-100">
+                                    {(filtroLogistica.trim()
+                                        ? encomiendas.filter(enc => {
+                                            const q = filtroLogistica.toLowerCase();
+                                            return (
+                                                (enc.ordenDeRetiro || '').toLowerCase().includes(q) ||
+                                                (enc.CliCodigoCliente || '').toLowerCase().includes(q) ||
+                                                (enc.CliNombre || '').toLowerCase().includes(q) ||
+                                                (enc.estado || '').toLowerCase().includes(q) ||
+                                                (enc.lugarRetiro || '').toLowerCase().includes(q) ||
+                                                (enc.orders || []).some(o => (o.orderNumber || '').toLowerCase().includes(q))
+                                            );
+                                        })
+                                        : encomiendas
+                                    ).map((enc) => {
+                                        const isExpanded = expandedRows.has(enc.ordenDeRetiro);
+                                        const isSelected = selectedEncomiendas.has(enc.ordenDeRetiro);
 
-                                    return (
-                                        <React.Fragment key={enc.ordenDeRetiro}>
-                                            <tr className={`border-b border-slate-100 transition-colors ${isSelected ? 'bg-brand-cyan/5' : 'hover:bg-slate-50'}`}>
-                                                <td className="p-4 text-center">
-                                                    <input type="checkbox" className="w-4 h-4 rounded border-slate-300 text-brand-cyan focus:ring-brand-cyan/40 cursor-pointer" checked={isSelected} onChange={() => toggleCheckEncomienda(enc.ordenDeRetiro)} />
-                                                </td>
-                                                <td className="p-4">
-                                                    <button onClick={() => toggleRow(enc.ordenDeRetiro)} className="flex items-center gap-2 font-black text-brand-cyan hover:opacity-75 transition-colors">
-                                                        {isExpanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-                                                        {enc.ordenDeRetiro}
-                                                    </button>
-                                                    <div className="flex items-center gap-2 ml-6 mt-1">
-                                                        <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">{enc.orders?.length || 0} HIJAS</span>
-                                                        <button onClick={(e) => { e.stopPropagation(); printTicketEncomienda(enc); }} title="Imprimir ticket" className="w-5 h-5 flex items-center justify-center text-slate-300 hover:text-brand-cyan hover:bg-brand-cyan/5 rounded transition-colors">
-                                                            <Printer size={12} />
+                                        return (
+                                            <React.Fragment key={enc.ordenDeRetiro}>
+                                                <tr className={`transition-colors ${isSelected ? 'bg-brand-cyan/5' : 'hover:bg-zinc-50'}`}>
+                                                    <td className="px-4 py-3 text-center">
+                                                        <input type="checkbox" className="w-4 h-4 rounded border-zinc-300 accent-brand-cyan cursor-pointer" checked={isSelected} onChange={() => toggleCheckEncomienda(enc.ordenDeRetiro)} />
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <button onClick={() => toggleRow(enc.ordenDeRetiro)} className="flex items-center gap-1.5 font-black text-zinc-800 hover:text-brand-cyan transition-colors">
+                                                            {isExpanded ? <ChevronDown size={16} className="text-brand-cyan" /> : <ChevronRight size={16} className="text-zinc-400" />}
+                                                            {enc.ordenDeRetiro}
                                                         </button>
-                                                    </div>
-                                                </td>
-                                                <td className="p-4">
-                                                    <span className="font-bold text-slate-800 block text-base leading-none mb-1">{enc.CliCodigoCliente}</span>
-                                                    <span className={`text-[10px] font-bold uppercase px-1.5 py-0.5 rounded ${clienteEsComun ? 'bg-slate-100 text-slate-500' : 'bg-purple-100 text-purple-700'}`}>{enc.TClDescripcion}</span>
-                                                </td>
-                                                <td className="p-4">
-                                                    <span className="font-black text-slate-800 text-lg">{enc.orders?.[0]?.monedaId === 2 ? 'US$' : '$'} {enc.totalCost}</span>
-                                                </td>
-                                                <td className="p-4">
-                                                    <span className="bg-slate-200/80 text-slate-700 px-3 py-1 rounded shadow-sm text-xs font-bold uppercase block w-fit mb-1">{enc.estado}</span>
-                                                    <span className="text-xs font-bold text-slate-500 flex items-center gap-1"><Truck size={12} /> {enc.lugarRetiro}</span>
-                                                </td>
-                                                <td className="p-4 text-center">
-                                                    {enc.pagorealizado === 1
-                                                        ? <span className="text-green-700 font-black bg-green-100 px-3 py-1 rounded-md text-xs tracking-wider shadow-sm border border-green-200">PAGADO</span>
-                                                        : enc.OReEstadoActual === 9
-                                                            ? <span className="text-amber-700 font-black bg-amber-100 px-3 py-1 rounded-md text-xs tracking-wider shadow-sm border border-amber-300">AUTORIZADO</span>
-                                                            : <span className="text-red-600 font-black bg-red-100 px-3 py-1 rounded-md text-xs tracking-wider shadow-sm border border-red-200">PENDIENTE</span>
-                                                    }
-                                                </td>
-                                                <td className="p-4 text-center" onClick={e => e.stopPropagation()}>
-                                                    <div className="flex items-center gap-1.5 justify-center">
-                                                        <button title="Imprimir etiqueta" onClick={() => printLabels(enc)} className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition-colors"><Tag size={14} /></button>
-                                                        <button title="Entregar esta orden" onClick={() => ejecutarEntregarUna(enc.ordenDeRetiro, enc)} disabled={loading} className="p-1.5 bg-brand-cyan/5 hover:bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/30 rounded-lg transition-colors disabled:opacity-40"><CheckCircle size={14} /></button>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                            {isExpanded && (
-                                                <tr className="bg-slate-50">
-                                                    <td colSpan="7" className="p-0 border-b border-slate-200">
-                                                        <div className="p-4 pl-14 pt-0">
-                                                            <div className="bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden mt-2">
-                                                                <div className="bg-slate-100 px-4 py-2 border-b border-slate-200">
-                                                                    <span className="text-xs font-black text-slate-500 uppercase">Composición de {enc.ordenDeRetiro}</span>
-                                                                </div>
-                                                                <table className="w-full text-xs text-left">
-                                                                    <tbody>
-                                                                        {enc.orders?.map(o => (
-                                                                            <tr key={o.orderNumber} className="border-b border-slate-50 hover:bg-slate-50">
-                                                                                <td className="p-3 pl-4 font-bold text-slate-700 w-32">{o.orderNumber}</td>
-                                                                                <td className="p-3 text-slate-500 font-medium">{o.orderEstado || '—'}</td>
-                                                                                <td className="p-3 font-bold text-brand-cyan text-right pr-4">{o.orderCosto}</td>
-                                                                            </tr>
-                                                                        ))}
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
+                                                        <div className="flex items-center gap-2 ml-[22px] mt-1">
+                                                            <span className="text-[10px] text-zinc-400 font-bold uppercase tracking-wide">{enc.orders?.length || 0} HIJAS</span>
+                                                            <button onClick={(e) => { e.stopPropagation(); printTicketEncomienda(enc); }} title="Imprimir ticket" aria-label="Imprimir ticket" className="w-6 h-6 flex items-center justify-center text-zinc-400 hover:text-brand-cyan hover:bg-zinc-100 rounded-md transition-colors">
+                                                                <Printer size={13} />
+                                                            </button>
+                                                        </div>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <span className="font-bold text-zinc-800 block leading-tight mb-1">{enc.CliCodigoCliente}</span>
+                                                        <span className={`${CHIP} uppercase ${chipTipoCliente(enc.TClDescripcion)}`}>{enc.TClDescripcion}</span>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <span className="font-black text-zinc-800 text-base tabular-nums whitespace-nowrap">{enc.orders?.[0]?.monedaId === 2 ? 'US$' : '$'} {enc.totalCost}</span>
+                                                    </td>
+                                                    <td className="px-4 py-3">
+                                                        <span className={`${CHIP} ${CHIP_GRIS} uppercase inline-block mb-1`}>{enc.estado}</span>
+                                                        <span className="text-xs font-bold text-zinc-500 flex items-center gap-1"><Truck size={12} className="shrink-0 text-brand-cyan" /> {enc.lugarRetiro}</span>
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center">
+                                                        {enc.pagorealizado === 1
+                                                            ? <span className={`${CHIP} ${PAGO_PAGADO}`}>PAGADO</span>
+                                                            : enc.OReEstadoActual === 9
+                                                                ? <span className={`${CHIP} ${PAGO_AUTORIZADO}`}>AUTORIZADO</span>
+                                                                : <span className={`${CHIP} ${PAGO_PENDIENTE}`}>PENDIENTE</span>
+                                                        }
+                                                    </td>
+                                                    <td className="px-4 py-3 text-center" onClick={e => e.stopPropagation()}>
+                                                        <div className="flex items-center gap-1.5 justify-center">
+                                                            <button title="Imprimir etiqueta" aria-label="Imprimir etiqueta" onClick={() => printLabels(enc)} className={BTN_ICONO}><Tag size={14} /></button>
+                                                            <button title="Entregar esta orden" aria-label="Entregar esta orden" onClick={() => ejecutarEntregarUna(enc.ordenDeRetiro, enc)} disabled={loading} className={BTN_ICONO_PRINCIPAL}><CheckCircle size={14} /></button>
                                                         </div>
                                                     </td>
                                                 </tr>
-                                            )}
-                                        </React.Fragment>
-                                    );
-                                })}
-                                {!loading && encomiendas.length === 0 && (
-                                    <tr><td colSpan="7" className="p-10 text-center text-slate-500">
-                                        <Truck size={40} className="mx-auto mb-3 text-slate-300" />
-                                        <p className="font-bold text-lg">No hay órdenes para despachar</p>
-                                        <p className="text-sm font-medium">bajo los filtros seleccionados.</p>
-                                    </td></tr>
-                                )}
-                                {loading && encomiendas.length === 0 && (
-                                    <tr><td colSpan="7" className="p-10 text-center text-brand-cyan">
-                                        <RefreshCcw className="animate-spin mx-auto mb-3" size={30} />
-                                        <p className="font-bold">Cargando...</p>
-                                    </td></tr>
-                                )}
-                            </tbody>
-                        </table>
+                                                {isExpanded && (
+                                                    <tr className="bg-zinc-50">
+                                                        <td colSpan="7" className="p-0">
+                                                            <div className="px-4 pb-4 pt-2 pl-14">
+                                                                <div className="bg-white rounded-xl border border-zinc-200 overflow-hidden">
+                                                                    <div className="px-4 py-2 bg-zinc-50 border-b border-zinc-200">
+                                                                        <span className="text-[10px] font-black text-zinc-400 uppercase tracking-wide">Composición de {enc.ordenDeRetiro}</span>
+                                                                    </div>
+                                                                    <table className="w-full text-xs text-left">
+                                                                        <tbody className="divide-y divide-zinc-100">
+                                                                            {enc.orders?.map(o => (
+                                                                                <tr key={o.orderNumber} className="hover:bg-zinc-50">
+                                                                                    <td className="px-4 py-2.5 font-bold text-zinc-700 w-32">{o.orderNumber}</td>
+                                                                                    <td className="px-4 py-2.5 text-zinc-500">{o.orderEstado || '—'}</td>
+                                                                                    <td className="px-4 py-2.5 font-bold text-zinc-800 text-right tabular-nums">{o.orderCosto}</td>
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                    </tr>
+                                                )}
+                                            </React.Fragment>
+                                        );
+                                    })}
+                                    {!loading && encomiendas.length === 0 && (
+                                        <tr><td colSpan="7" className="py-16 px-4 text-center">
+                                            <Truck size={40} className="mx-auto mb-3 text-zinc-200" />
+                                            <p className="font-bold text-zinc-500">No hay órdenes para despachar</p>
+                                            <p className="text-sm text-zinc-400">bajo los filtros seleccionados.</p>
+                                        </td></tr>
+                                    )}
+                                    {loading && encomiendas.length === 0 && (
+                                        <tr><td colSpan="7" className="py-16 px-4 text-center">
+                                            <Loader2 className="animate-spin mx-auto mb-3 text-brand-cyan" size={30} />
+                                            <p className="text-sm text-zinc-400">Cargando...</p>
+                                        </td></tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
 
                 </div>
@@ -1193,37 +1247,40 @@ const EntregaPedidosView = () => {
 
             {/* TAB: HISTORIAL DEL DÍA */}
             {activeTab === 'historial' && (
-                <div className="bg-white p-4 md:p-6 rounded-none md:rounded-2xl shadow-sm border-b md:border border-slate-200">
-                    <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center mb-6 gap-4">
-                        <div>
-                            <h2 className="text-xl font-black text-slate-800">Historial de fecha</h2>
-                            <p className="text-sm text-slate-500 font-medium mt-1">Órdenes con movimientos en el día. Filtralas acá:</p>
+                <div className="flex flex-col gap-3">
+                    <div className={`${CARD} p-4 md:p-5 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3`}>
+                        <div className="min-w-0">
+                            <h2 className="text-lg font-black text-zinc-800">Historial de fecha</h2>
+                            <p className="text-sm text-zinc-400">Órdenes con movimientos en el día. Filtralas acá:</p>
                         </div>
-                        <div className="flex items-center gap-3">
-                            <select
+                        <div className="flex flex-wrap items-center gap-2">
+                            <Selector
+                                filtro
+                                aria-label="Lugar de retiro"
                                 value={filtroLugarHistorial}
                                 onChange={e => setFiltroLugarHistorial(e.target.value)}
-                                className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none cursor-pointer"
                             >
                                 <option value="todas">— Seleccionar (Todas) —</option>
                                 {lugaresRetiro.map(lr => (
                                     <option key={lr.LReIdLugarRetiro} value={lr.LReIdLugarRetiro}>{lr.LReNombreLugar}</option>
                                 ))}
-                            </select>
+                            </Selector>
 
-                            <input
-                                type="date"
+                            <SelectorFecha
+                                filtro
+                                resaltar={false}
+                                aria-label="Fecha"
                                 value={filtroFechaHistorial}
                                 onChange={e => setFiltroFechaHistorial(e.target.value)}
-                                className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 cursor-pointer"
                             />
                             <button
                                 onClick={loadHistorialHoy}
                                 disabled={loadingHistorial}
-                                className="p-2 text-slate-400 hover:text-brand-cyan hover:bg-brand-cyan/5 rounded-lg transition-colors"
+                                className={BTN_SECUNDARIO}
                                 title="Recargar"
+                                aria-label="Recargar"
                             >
-                                <RefreshCcw size={18} className={loadingHistorial ? 'animate-spin' : ''} />
+                                <RefreshCcw size={15} className={loadingHistorial ? 'animate-spin' : ''} />
                             </button>
                             <button
                                 onClick={() => {
@@ -1232,122 +1289,127 @@ const EntregaPedidosView = () => {
                                     printLabels(sel);
                                 }}
                                 disabled={selectedHistorial.size === 0}
-                                className="bg-emerald-50 hover:bg-emerald-100 disabled:opacity-40 text-emerald-700 font-bold px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2 border border-emerald-200"
+                                className={BTN_SECUNDARIO}
                             >
-                                <Tag size={16} /> Reimprimir etiquetas ({selectedHistorial.size})
+                                <Tag size={15} /> Reimprimir etiquetas ({selectedHistorial.size})
                             </button>
                         </div>
                     </div>
 
-                    <div className="overflow-x-auto rounded-xl border border-slate-200">
-                        <table className="w-full text-left border-collapse text-sm">
-                            <thead>
-                                <tr className="bg-slate-100 text-slate-600 uppercase tracking-wider text-[11px] font-black border-b border-slate-200">
-                                    <th className="p-4 w-10 text-center">
-                                        <input
-                                            type="checkbox"
-                                            className="w-4 h-4 rounded border-slate-300 text-brand-cyan focus:ring-brand-cyan/40 cursor-pointer"
-                                            checked={selectedHistorial.size === historialHoy.length && historialHoy.length > 0}
-                                            onChange={() => {
-                                                if (selectedHistorial.size === historialHoy.length) setSelectedHistorial(new Set());
-                                                else setSelectedHistorial(new Set(historialHoy.map(e => e.ordenDeRetiro)));
-                                            }}
-                                        />
-                                    </th>
-                                    <th className="p-4">Retiro</th>
-                                    <th className="p-4">Cliente</th>
-                                    <th className="p-4">Receptor</th>
-                                    <th className="p-4">Destino</th>
-                                    <th className="p-4">Agencia</th>
-                                    <th className="p-4 text-center">Pago</th>
-                                    <th className="p-4 text-center">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {historialHoy.map(enc => (
-                                    <tr key={enc.ordenDeRetiro} className={`border-b border-slate-100 hover:bg-slate-50/80 transition-colors ${selectedHistorial.has(enc.ordenDeRetiro) ? 'bg-brand-cyan/5/50' : ''}`}>
-                                        <td className="p-4 text-center">
+                    <div className={`${CARD} overflow-hidden`}>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-left text-sm">
+                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                    <tr className="text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                        <th className="px-4 py-2.5 w-10 text-center">
                                             <input
                                                 type="checkbox"
-                                                className="w-4 h-4 rounded border-slate-300 text-brand-cyan focus:ring-brand-cyan/40 cursor-pointer"
-                                                checked={selectedHistorial.has(enc.ordenDeRetiro)}
+                                                className="w-4 h-4 rounded border-zinc-300 accent-brand-cyan cursor-pointer"
+                                                checked={selectedHistorial.size === historialHoy.length && historialHoy.length > 0}
                                                 onChange={() => {
-                                                    const s = new Set(selectedHistorial);
-                                                    s.has(enc.ordenDeRetiro) ? s.delete(enc.ordenDeRetiro) : s.add(enc.ordenDeRetiro);
-                                                    setSelectedHistorial(s);
+                                                    if (selectedHistorial.size === historialHoy.length) setSelectedHistorial(new Set());
+                                                    else setSelectedHistorial(new Set(historialHoy.map(e => e.ordenDeRetiro)));
                                                 }}
                                             />
-                                        </td>
-                                        <td className="p-4 font-black text-slate-800">{enc.ordenDeRetiro}</td>
-                                        <td className="p-4">
-                                            <span className="font-bold text-slate-700">{enc.CliNombre || enc.CliCodigoCliente || '-'}</span>
-                                            <span className={`ml-2 text-[10px] font-bold uppercase px-1.5 py-0.5 rounded bg-slate-100 text-slate-500`}>{enc.TClDescripcion}</span>
-                                        </td>
-                                        <td className="p-4">
-                                            <span className="font-bold text-brand-cyan">{enc.receptorNombre || '\u2014'}</span>
-                                        </td>
-                                        <td className="p-4 text-slate-500 font-medium text-xs">
-                                            {[enc.localidadEnvio, enc.departamentoEnvio].filter(Boolean).join(' \u2022 ') || '\u2014'}
-                                        </td>
-                                        <td className="p-4 font-bold text-slate-600 text-xs">{enc.agenciaNombre || '\u2014'}</td>
-                                        <td className="p-4 text-center">
-                                            {enc.pagorealizado === 1
-                                                ? <span className="text-green-700 font-black bg-green-100 px-3 py-1 rounded-md text-xs">PAGADO</span>
-                                                : <span className="text-red-600 font-black bg-red-100 px-3 py-1 rounded-md text-xs">PENDIENTE</span>
-                                            }
-                                        </td>
-                                        <td className="p-4 text-center">
-                                            <div className="flex items-center gap-1.5 justify-center">
-                                                {enc.comprobanteEntrega && (
-                                                    <a
-                                                        href={import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH ? `${import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH}/${enc.comprobanteEntrega.split('/').pop()}` : `${import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : ''}${enc.comprobanteEntrega}`}
-                                                        target="_blank"
-                                                        rel="noreferrer"
-                                                        title="Ver comprobante"
-                                                        className="p-1.5 bg-brand-cyan/10 hover:bg-brand-cyan/20 text-brand-cyan border border-brand-cyan/20 rounded-lg transition-colors flex items-center justify-center"
+                                        </th>
+                                        <th className="px-4 py-2.5">Retiro</th>
+                                        <th className="px-4 py-2.5">Cliente</th>
+                                        <th className="px-4 py-2.5">Receptor</th>
+                                        <th className="px-4 py-2.5">Destino</th>
+                                        <th className="px-4 py-2.5">Agencia</th>
+                                        <th className="px-4 py-2.5 text-center">Pago</th>
+                                        <th className="px-4 py-2.5 text-center">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-100">
+                                    {historialHoy.map(enc => (
+                                        <tr key={enc.ordenDeRetiro} className={`transition-colors ${selectedHistorial.has(enc.ordenDeRetiro) ? 'bg-brand-cyan/5' : 'hover:bg-zinc-50'}`}>
+                                            <td className="px-4 py-3 text-center">
+                                                <input
+                                                    type="checkbox"
+                                                    className="w-4 h-4 rounded border-zinc-300 accent-brand-cyan cursor-pointer"
+                                                    checked={selectedHistorial.has(enc.ordenDeRetiro)}
+                                                    onChange={() => {
+                                                        const s = new Set(selectedHistorial);
+                                                        s.has(enc.ordenDeRetiro) ? s.delete(enc.ordenDeRetiro) : s.add(enc.ordenDeRetiro);
+                                                        setSelectedHistorial(s);
+                                                    }}
+                                                />
+                                            </td>
+                                            <td className="px-4 py-3 font-black text-zinc-800 whitespace-nowrap">{enc.ordenDeRetiro}</td>
+                                            <td className="px-4 py-3">
+                                                <span className="font-bold text-zinc-700">{enc.CliNombre || enc.CliCodigoCliente || '-'}</span>
+                                                <span className={`ml-2 ${CHIP} uppercase ${chipTipoCliente(enc.TClDescripcion)}`}>{enc.TClDescripcion}</span>
+                                            </td>
+                                            <td className="px-4 py-3">
+                                                <span className="font-bold text-zinc-700">{enc.receptorNombre || '\u2014'}</span>
+                                            </td>
+                                            <td className="px-4 py-3 text-zinc-500 text-xs">
+                                                {[enc.localidadEnvio, enc.departamentoEnvio].filter(Boolean).join(' \u2022 ') || '\u2014'}
+                                            </td>
+                                            <td className="px-4 py-3 font-bold text-zinc-600 text-xs">{enc.agenciaNombre || '\u2014'}</td>
+                                            <td className="px-4 py-3 text-center">
+                                                {enc.pagorealizado === 1
+                                                    ? <span className={`${CHIP} ${PAGO_PAGADO}`}>PAGADO</span>
+                                                    : <span className={`${CHIP} ${PAGO_PENDIENTE}`}>PENDIENTE</span>
+                                                }
+                                            </td>
+                                            <td className="px-4 py-3 text-center">
+                                                <div className="flex items-center gap-1.5 justify-center">
+                                                    {enc.comprobanteEntrega && (
+                                                        <a
+                                                            href={import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH ? `${import.meta.env.VITE_COMPROBANTES_ENCOMIENDAS_PATH}/${enc.comprobanteEntrega.split('/').pop()}` : `${import.meta.env.VITE_API_URL ? import.meta.env.VITE_API_URL.replace('/api', '') : ''}${enc.comprobanteEntrega}`}
+                                                            target="_blank"
+                                                            rel="noreferrer"
+                                                            title="Ver comprobante"
+                                                            aria-label="Ver comprobante"
+                                                            className={`${BTN_ICONO_BASE} text-brand-cyan`}
+                                                        >
+                                                            <FileImage size={14} />
+                                                        </a>
+                                                    )}
+                                                    <button
+                                                        title="Reimprimir etiqueta"
+                                                        aria-label="Reimprimir etiqueta"
+                                                        onClick={() => printLabels(enc)}
+                                                        className={BTN_ICONO}
                                                     >
-                                                        <FileImage size={14} />
-                                                    </a>
-                                                )}
-                                                <button
-                                                    title="Reimprimir etiqueta"
-                                                    onClick={() => printLabels(enc)}
-                                                    className="p-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition-colors"
-                                                >
-                                                    <Tag size={14} />
-                                                </button>
-                                                <button
-                                                    title="Reimprimir ticket"
-                                                    onClick={() => printTicketEncomienda(enc)}
-                                                    className="p-1.5 bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200 rounded-lg transition-colors"
-                                                >
-                                                    <Printer size={14} />
-                                                </button>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                ))}
+                                                        <Tag size={14} />
+                                                    </button>
+                                                    <button
+                                                        title="Reimprimir ticket"
+                                                        aria-label="Reimprimir ticket"
+                                                        onClick={() => printTicketEncomienda(enc)}
+                                                        className={BTN_ICONO}
+                                                    >
+                                                        <Printer size={14} />
+                                                    </button>
+                                                </div>
+                                            </td>
+                                        </tr>
+                                    ))}
 
-                                {!loadingHistorial && historialHoy.length === 0 && (
-                                    <tr>
-                                        <td colSpan="8" className="p-10 text-center text-slate-500">
-                                            <Package size={40} className="mx-auto mb-3 text-slate-300" />
-                                            <p className="font-bold text-lg">Sin entregas hoy</p>
-                                            <p className="text-sm font-medium">Las encomiendas entregadas aparecerán aquí.</p>
-                                        </td>
-                                    </tr>
-                                )}
+                                    {!loadingHistorial && historialHoy.length === 0 && (
+                                        <tr>
+                                            <td colSpan="8" className="py-16 px-4 text-center">
+                                                <Package size={40} className="mx-auto mb-3 text-zinc-200" />
+                                                <p className="font-bold text-zinc-500">Sin entregas hoy</p>
+                                                <p className="text-sm text-zinc-400">Las encomiendas entregadas aparecerán aquí.</p>
+                                            </td>
+                                        </tr>
+                                    )}
 
-                                {loadingHistorial && (
-                                    <tr>
-                                        <td colSpan="8" className="p-10 text-center text-brand-cyan">
-                                            <RefreshCcw className="animate-spin mx-auto mb-3 text-brand-cyan/500" size={30} />
-                                            <p className="font-bold">Cargando...</p>
-                                        </td>
-                                    </tr>
-                                )}
-                            </tbody>
-                        </table>
+                                    {loadingHistorial && (
+                                        <tr>
+                                            <td colSpan="8" className="py-16 px-4 text-center">
+                                                <Loader2 className="animate-spin mx-auto mb-3 text-brand-cyan" size={30} />
+                                                <p className="text-sm text-zinc-400">Cargando...</p>
+                                            </td>
+                                        </tr>
+                                    )}
+                                </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
             )}
@@ -1355,22 +1417,22 @@ const EntregaPedidosView = () => {
             {/* TAB MOSTRADOR — Lista completa + filtro + búsqueda puntual */}
             {
                 activeTab === 'mostrador' && (
-                    <div className="flex flex-col gap-6">
+                    <div className="flex flex-col gap-3">
 
                         {/* ── Buscador Puntual (arriba) ── */}
-                        <div className="bg-white p-4 md:p-6 rounded-none md:rounded-2xl shadow-sm border-b md:border border-slate-200 flex flex-wrap gap-4 items-end">
-                            <div className="flex-1 min-w-[300px]">
-                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Buscar orden de retiro, depósito o cliente específico</label>
+                        <div className={`${CARD} p-4 md:p-5 flex flex-wrap gap-3 items-end`}>
+                            <div className="flex-1 min-w-[240px]">
+                                <label className="block text-[11px] font-black text-zinc-400 uppercase tracking-wide mb-1.5">Buscar orden de retiro, depósito o cliente específico</label>
                                 <div className="relative">
                                     <input
                                         type="text"
                                         placeholder="Ej: R-60653  |  DF-85423  |  MACROSOFT"
                                         value={searchTerm}
                                         onChange={(e) => setSearchTerm(e.target.value)}
-                                        className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-brand-cyan/40 outline-none text-slate-700 font-bold transition-all"
+                                        className={CAMPO}
                                         onKeyDown={(e) => e.key === 'Enter' && buscarMostrador()}
                                     />
-                                    <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 text-slate-400" size={20} />
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" size={15} />
                                 </div>
                             </div>
                             <button
@@ -1379,19 +1441,19 @@ const EntregaPedidosView = () => {
                                     if (!searchTerm.trim()) toast.warning('Ingresá un criterio de búsqueda.');
                                 }}
                                 disabled={false}
-                                className="bg-brand-cyan hover:bg-brand-cyan text-white font-bold py-3 px-8 rounded-xl shadow-md transition-all flex items-center gap-2"
+                                className={`${BTN_PRINCIPAL} h-[42px]`}
                             >
-                                <Search size={18} />
+                                <Search size={15} />
                                 Buscar Expediente
                             </button>
                         </div>
 
                         {/* ── Todas las Órdenes Sin Retiro (debajo del buscador) ── */}
-                        <div className="bg-white rounded-none md:rounded-2xl shadow-sm border-y md:border border-slate-200 overflow-hidden">
-                            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4 flex flex-wrap justify-between items-center gap-3">
-                                <div>
-                                    <div className="text-white font-black text-lg">Órdenes sin Retiro Asignado</div>
-                                    <div className="text-amber-100 text-sm">
+                        <div className={`${CARD} overflow-hidden`}>
+                            <div className="px-4 md:px-5 py-3 border-b border-zinc-100 flex flex-wrap justify-between items-center gap-3">
+                                <div className="min-w-0">
+                                    <h3 className="text-sm font-black text-zinc-800">Órdenes sin Retiro Asignado</h3>
+                                    <p className="text-xs text-zinc-400">
                                         {loadingMostradorAll ? 'Cargando...' : (() => {
                                             if (searchTerm.trim()) {
                                                 const q = searchTerm.trim().toLowerCase();
@@ -1404,11 +1466,13 @@ const EntregaPedidosView = () => {
                                             }
                                             return `${mostradorAllSinRetiro.length} orden(es) pendientes`;
                                         })()}
-                                    </div>
+                                    </p>
                                 </div>
-                                <div className="flex items-center gap-3">
+                                <div className="flex flex-wrap items-center gap-2">
                                     {/* Filtro por Lugar */}
-                                    <select
+                                    <Selector
+                                        filtro
+                                        aria-label="Filtrar por lugar de retiro"
                                         value={filtroLugarMostrador}
                                         onChange={e => {
                                             const v = e.target.value;
@@ -1416,18 +1480,17 @@ const EntregaPedidosView = () => {
                                             loadTodasSinRetiro(v);
                                             setSelectedSinRetiro(new Set());
                                         }}
-                                        className="bg-amber-600/60 text-white font-bold text-sm rounded-xl px-3 py-2 border border-amber-400/40 outline-none focus:ring-2 focus:ring-amber-300 min-w-[180px]"
                                     >
                                         <option value="">— Todos los lugares —</option>
                                         {lugaresRetiro.map(l => (
                                             <option key={l.LReIdLugarRetiro} value={l.LReIdLugarRetiro}>{l.LReNombreLugar}</option>
                                         ))}
-                                    </select>
+                                    </Selector>
                                     <button
                                         onClick={() => loadTodasSinRetiro(filtroLugarMostrador)}
-                                        className="bg-white/10 hover:bg-white/20 text-white font-bold px-3 py-2 rounded-xl border border-white/20 text-sm flex items-center gap-1"
+                                        className={BTN_SECUNDARIO}
                                     >
-                                        <RefreshCcw size={14} className={loadingMostradorAll ? 'animate-spin' : ''} /> Actualizar
+                                        <RefreshCcw size={15} className={loadingMostradorAll ? 'animate-spin' : ''} /> Actualizar
                                     </button>
 
                                 </div>
@@ -1451,16 +1514,16 @@ const EntregaPedidosView = () => {
                                 return (
                                     <>
                                         {someChecked && (
-                                            <div className="flex items-center gap-2 px-4 py-2 bg-amber-50 border-b border-amber-100">
-                                                <span className="text-xs font-bold text-amber-700">{selectedArr.length} seleccionadas</span>
+                                            <div className="flex flex-wrap items-center gap-2 px-4 md:px-5 py-2.5 bg-brand-cyan/5 border-b border-zinc-100">
+                                                <span className="text-xs font-bold text-brand-cyan">{selectedArr.length} seleccionadas</span>
                                                 <button
                                                     onClick={() => {
                                                         const items = selectedArr.map(o => ({ ...o, codigo: o.OrdCodigoOrden, costo: o.OrdCostoFinal, simbolo: o.MonSimbolo }));
                                                         abrirModalPago(items, null, selectedArr[0]);
                                                     }}
-                                                    className="bg-amber-500 hover:bg-amber-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1"
+                                                    className={BTN_FILA_PRINCIPAL}
                                                 >
-                                                    <DollarSign size={12} /> Pagar ({selectedArr.length})
+                                                    <DollarSign size={13} /> Pagar ({selectedArr.length})
                                                 </button>
                                                 <button
                                                     onClick={() => {
@@ -1470,70 +1533,70 @@ const EntregaPedidosView = () => {
                                                         setClienteEnvioDatos(null);
                                                         if (selectedArr[0]?.CliIdClienteFK) cargarEnvioCliente(selectedArr[0].CliIdClienteFK);
                                                     }}
-                                                    className="bg-brand-cyan hover:bg-brand-cyan text-white font-bold px-3 py-1.5 rounded-lg text-xs flex items-center gap-1"
+                                                    className={BTN_FILA_SECUNDARIO}
                                                 >
-                                                    <ClipboardList size={12} /> Generar Retiro ({selectedArr.length})
+                                                    <ClipboardList size={13} /> Generar Retiro ({selectedArr.length})
                                                 </button>
                                             </div>
                                         )}
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-100">
-                                                        <th className="p-3 pl-4 w-10">
+                                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                                    <tr className="text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                                        <th className="px-4 py-2.5 w-10">
                                                             <input type="checkbox" checked={allChecked}
                                                                 onChange={e => {
                                                                     if (e.target.checked) setSelectedSinRetiro(new Set(filteredSinRetiro.map(o => o.OrdIdOrden)));
                                                                     else setSelectedSinRetiro(new Set());
                                                                 }}
-                                                                className="w-4 h-4 accent-amber-500 cursor-pointer"
+                                                                className="w-4 h-4 rounded accent-brand-cyan cursor-pointer"
                                                             />
                                                         </th>
-                                                        <th className="p-3 text-left">Código</th>
-                                                        <th className="p-3 text-left">Cliente</th>
-                                                        <th className="p-3 text-left">Lugar Retiro</th>
-                                                        <th className="p-3 text-left">Estado</th>
-                                                        <th className="p-3 text-right">Importe</th>
-                                                        <th className="p-3 pr-4 text-center">Acción</th>
+                                                        <th className="px-3 py-2.5 text-left">Código</th>
+                                                        <th className="px-3 py-2.5 text-left">Cliente</th>
+                                                        <th className="px-3 py-2.5 text-left">Lugar Retiro</th>
+                                                        <th className="px-3 py-2.5 text-left">Estado</th>
+                                                        <th className="px-3 py-2.5 text-right">Importe</th>
+                                                        <th className="px-4 py-2.5 text-center">Acción</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody>
-                                                    {filteredSinRetiro.map(o => {
+                                                <tbody className="divide-y divide-zinc-100">
+                                                    {filteredSinRetiro.slice(0, verSinRetiro).map(o => {
                                                         const isSel = selectedSinRetiro.has(o.OrdIdOrden);
                                                         return (
                                                             <tr key={o.OrdIdOrden}
-                                                                className={`border-b border-slate-50 cursor-pointer transition-colors ${isSel ? 'bg-amber-50' : o.Pagada ? 'bg-green-50/60' : 'hover:bg-slate-50'}`}
+                                                                className={`cursor-pointer transition-colors ${isSel ? 'bg-brand-cyan/5' : o.Pagada ? 'bg-emerald-50/40 hover:bg-emerald-50' : 'hover:bg-zinc-50'}`}
                                                                 onClick={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
                                                             >
-                                                                <td className="p-3 pl-4" onClick={e => e.stopPropagation()}>
+                                                                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                                                                     <input type="checkbox" checked={isSel}
                                                                         onChange={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
-                                                                        className="w-4 h-4 accent-amber-500 cursor-pointer"
+                                                                        className="w-4 h-4 rounded accent-brand-cyan cursor-pointer"
                                                                     />
                                                                 </td>
-                                                                <td className="p-3 font-bold text-slate-800">
+                                                                <td className="px-3 py-3 font-bold text-zinc-800 whitespace-nowrap">
                                                                     {o.OrdCodigoOrden}
-                                                                    {o.Pagada ? <span className="ml-2 text-[10px] bg-green-100 text-green-700 font-black px-1.5 py-0.5 rounded-full">✓ Paga</span> : null}
+                                                                    {o.Pagada ? <span className={`ml-2 ${CHIP} ${PAGO_PAGADO} inline-flex items-center gap-1 align-middle`}><Check size={11} /> Paga</span> : null}
                                                                 </td>
-                                                                <td className="p-3 text-slate-600 font-medium">
-                                                                    <div className="font-bold">{o.CliNombre || o.CliCodigo}</div>
-                                                                    <div className="text-[10px] text-slate-400">{o.TClDescripcion}</div>
+                                                                <td className="px-3 py-3 text-zinc-600">
+                                                                    <div className="font-bold text-zinc-700">{o.CliNombre || o.CliCodigo}</div>
+                                                                    <div className="text-[11px] text-zinc-400">{o.TClDescripcion}</div>
                                                                 </td>
-                                                                <td className="p-3">
+                                                                <td className="px-3 py-3">
                                                                     {o.LugarRetiroNombre
-                                                                        ? <span className="bg-brand-cyan/10 text-brand-cyan text-[10px] font-bold px-2 py-0.5 rounded-full">{o.LugarRetiroNombre}</span>
-                                                                        : <span className="text-slate-400 text-xs italic">Sin lugar</span>}
+                                                                        ? <span className={`${CHIP} bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20 whitespace-nowrap`}>{o.LugarRetiroNombre}</span>
+                                                                        : <span className="text-zinc-400 text-xs italic">Sin lugar</span>}
                                                                 </td>
-                                                                <td className="p-3 font-bold text-slate-800 text-xs">{o.OrdNombreTrabajo || o.estadoOrden || '-'}</td>
-                                                                <td className="p-3 text-right font-black text-amber-700">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</td>
-                                                                <td className="p-3 pr-4" onClick={e => e.stopPropagation()}>
+                                                                <td className="px-3 py-3 font-bold text-zinc-700 text-xs">{o.OrdNombreTrabajo || o.estadoOrden || '-'}</td>
+                                                                <td className="px-3 py-3 text-right font-black text-zinc-800 tabular-nums whitespace-nowrap">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</td>
+                                                                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                                                                     <div className="flex items-center gap-2 justify-center">
                                                                         {!o.Pagada && (
                                                                             <button
                                                                                 onClick={() => abrirModalPago([{ ...o, codigo: o.OrdCodigoOrden, costo: o.OrdCostoFinal, simbolo: o.MonSimbolo }], null, o)}
-                                                                                className="bg-amber-500 hover:bg-amber-600 text-white font-bold px-2 py-1 rounded-lg text-xs flex items-center gap-1"
+                                                                                className={BTN_FILA_PRINCIPAL}
                                                                             >
-                                                                                <DollarSign size={11} /> Pagar
+                                                                                <DollarSign size={13} /> Pagar
                                                                             </button>
                                                                         )}
                                                                         <button
@@ -1544,67 +1607,74 @@ const EntregaPedidosView = () => {
                                                                                 setClienteEnvioDatos(null);
                                                                                 if (o.CliIdClienteFK) cargarEnvioCliente(o.CliIdClienteFK);
                                                                             }}
-                                                                            className="bg-brand-cyan hover:bg-brand-cyan text-white font-bold px-2 py-1 rounded-lg text-xs flex items-center gap-1"
+                                                                            className={BTN_FILA_SECUNDARIO}
                                                                         >
-                                                                            <ClipboardList size={11} /> Retiro
+                                                                            <ClipboardList size={13} /> Retiro
                                                                         </button>
                                                                     </div>
                                                                 </td>
                                                             </tr>
                                                         );
                                                     })}
+                                                    {filteredSinRetiro.length > verSinRetiro && (
+                                                        <tr ref={centinelaSinRetiro}>
+                                                            <td colSpan={7} className="px-4 py-3 text-center text-xs text-zinc-400">
+                                                                Mostrando {verSinRetiro} de {filteredSinRetiro.length}…
+                                                            </td>
+                                                        </tr>
+                                                    )}
                                                 </tbody>
                                             </table>
                                         </div>
                                     </>
                                 );
                             })() : (
-                                <div className="p-10 text-center">
+                                <div className="py-16 px-4 text-center">
                                     {loadingMostradorAll
-                                        ? <RefreshCcw className="animate-spin mx-auto mb-3 text-amber-400" size={28} />
-                                        : <><Package size={36} className="mx-auto mb-3 text-slate-300" /><p className="font-bold text-slate-500">No hay órdenes sin retiro{filtroLugarMostrador ? ' para este lugar' : ''}</p></>}
+                                        ? <Loader2 className="animate-spin mx-auto mb-3 text-brand-cyan" size={30} />
+                                        : <><Package size={40} className="mx-auto mb-3 text-zinc-200" /><p className="text-zinc-400">No hay órdenes sin retiro{filtroLugarMostrador ? ' para este lugar' : ''}</p></>}
                                 </div>
                             )}
                         </div>
 
                         {/* Resultados de búsqueda puntual */}
                         {mostradorData && (
-                            <div className="flex flex-col gap-4">
+                            <div className="flex flex-col gap-3">
                                 {/* Retiros con órdenes sin pagar */}
                                 {mostradorData.retiros.map(ret => (
-                                    <div key={ret.OReIdOrdenRetiro} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-                                        <div className="bg-gradient-to-r from-brand-cyan to-[#005080] px-6 py-4 flex justify-between items-center">
-                                            <div>
-                                                <div className="text-white font-black text-lg tracking-wide">{ret.etiqueta}</div>
-                                                <div className="text-brand-cyan/60 text-sm font-medium">{ret.estadoRetiro} · {ret.lugarRetiro}</div>
+                                    <div key={ret.OReIdOrdenRetiro} className={`${CARD} overflow-hidden`}>
+                                        <div className="px-4 md:px-5 py-3 border-b border-zinc-100 flex flex-wrap justify-between items-center gap-3">
+                                            <div className="min-w-0">
+                                                <h3 className="text-sm font-black text-zinc-800 tracking-wide">{ret.etiqueta}</h3>
+                                                <p className="text-xs text-zinc-400">{ret.estadoRetiro} · {ret.lugarRetiro}</p>
                                             </div>
-                                            <div className="text-right">
-                                                <div className="text-white font-bold text-sm">{ret.CliNombre || ret.CliCodigo}</div>
-                                                <div className="text-brand-cyan/70 text-xs">{ret.TClDescripcion}</div>
+                                            <div className="text-right min-w-0">
+                                                <div className="text-sm font-bold text-zinc-700">{ret.CliNombre || ret.CliCodigo}</div>
+                                                <div className="text-xs text-zinc-400">{ret.TClDescripcion}</div>
                                             </div>
                                         </div>
                                         <div className="overflow-x-auto">
                                             <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-100">
-                                                        <th className="p-3 pl-6 text-left">Código Orden</th>
-                                                        <th className="p-3 text-left">Estado</th>
-                                                        <th className="p-3 text-right">Importe</th>
-                                                        <th className="p-3 pr-6 text-center">Acción</th>
+                                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                                    <tr className="text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                                        <th className="px-4 md:px-5 py-2.5 text-left">Código Orden</th>
+                                                        <th className="px-3 py-2.5 text-left">Estado</th>
+                                                        <th className="px-3 py-2.5 text-right">Importe</th>
+                                                        <th className="px-4 md:px-5 py-2.5 text-center">Acción</th>
                                                     </tr>
                                                 </thead>
-                                                <tbody>
+                                                <tbody className="divide-y divide-zinc-100">
                                                     {ret.ordenes.map(o => (
-                                                        <tr key={o.OrdIdOrden} className="border-b border-slate-50 hover:bg-slate-50">
-                                                            <td className="p-3 pl-6 font-bold text-slate-800">{o.codigo}</td>
-                                                            <td className="p-3 text-slate-500 font-medium">{o.estado}</td>
-                                                            <td className="p-3 text-right font-black text-brand-cyan">{o.simbolo} {parseFloat(o.costo || 0).toFixed(2)}</td>
-                                                            <td className="p-3 pr-6 text-center">
+                                                        <tr key={o.OrdIdOrden} className="hover:bg-zinc-50 transition-colors">
+                                                            <td className="px-4 md:px-5 py-3 font-bold text-zinc-800 whitespace-nowrap">{o.codigo}</td>
+                                                            <td className="px-3 py-3 text-zinc-500">{o.estado}</td>
+                                                            <td className="px-3 py-3 text-right font-black text-zinc-800 tabular-nums whitespace-nowrap">{o.simbolo} {parseFloat(o.costo || 0).toFixed(2)}</td>
+                                                            <td className="px-4 md:px-5 py-3 text-center">
                                                                 <button
                                                                     onClick={() => abrirModalPago([o], ret.etiqueta, ret)}
-                                                                    className="bg-green-500 hover:bg-green-600 text-white font-bold px-3 py-1 rounded-lg text-xs transition-colors flex items-center gap-1 mx-auto"
+                                                                    className={`${BTN_FILA_PRINCIPAL} mx-auto`}
                                                                 >
-                                                                    <DollarSign size={12} /> Pagar
+                                                                    <DollarSign size={13} /> Pagar
                                                                 </button>
                                                             </td>
                                                         </tr>
@@ -1612,13 +1682,13 @@ const EntregaPedidosView = () => {
                                                 </tbody>
                                             </table>
                                         </div>
-                                        <div className="p-4 px-6 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
-                                            <span className="text-xs font-bold text-slate-400 uppercase">{ret.ordenes.length} orden(es) sin pagar</span>
+                                        <div className="px-4 md:px-5 py-3 bg-zinc-50 border-t border-zinc-100 flex flex-wrap justify-between items-center gap-2">
+                                            <span className="text-[11px] font-black text-zinc-400 uppercase tracking-wide">{ret.ordenes.length} orden(es) sin pagar</span>
                                             <button
                                                 onClick={() => abrirModalPago(ret.ordenes, ret.etiqueta, ret)}
-                                                className="bg-brand-cyan hover:bg-brand-cyan text-white font-bold px-4 py-2 rounded-xl text-sm transition-colors flex items-center gap-2 shadow-sm"
+                                                className={BTN_PRINCIPAL}
                                             >
-                                                <DollarSign size={14} /> Pagar Todas las Órdenes
+                                                <DollarSign size={15} /> Pagar Todas las Órdenes
                                             </button>
                                         </div>
                                     </div>
@@ -1633,16 +1703,16 @@ const EntregaPedidosView = () => {
                                     const totalSeleccionado = selectedArr.reduce((s, o) => s + parseFloat(o.OrdCostoFinal || 0), 0);
 
                                     return (
-                                        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+                                        <div className={`${CARD} overflow-hidden`}>
                                             {/* Header con acciones grupales */}
-                                            <div className="bg-gradient-to-r from-amber-500 to-amber-600 px-6 py-4 flex justify-between items-center">
-                                                <div>
-                                                    <div className="text-white font-black text-lg">Órdenes sin Retiro</div>
-                                                    <div className="text-amber-100 text-sm">Sin orden de retiro asignada · {totalSR} orden{totalSR !== 1 ? 'es' : ''}</div>
+                                            <div className="px-4 md:px-5 py-3 border-b border-zinc-100 flex flex-wrap justify-between items-center gap-3">
+                                                <div className="min-w-0">
+                                                    <h3 className="text-sm font-black text-zinc-800">Órdenes sin Retiro</h3>
+                                                    <p className="text-xs text-zinc-400">Sin orden de retiro asignada · {totalSR} orden{totalSR !== 1 ? 'es' : ''}</p>
                                                 </div>
                                                 {someChecked && (
-                                                    <div className="flex items-center gap-2">
-                                                        <span className="text-white text-xs font-bold bg-amber-700/40 px-2 py-1 rounded-lg">
+                                                    <div className="flex flex-wrap items-center gap-2">
+                                                        <span className="text-xs font-bold text-brand-cyan bg-brand-cyan/5 border border-brand-cyan/20 px-2 py-1 rounded-lg tabular-nums">
                                                             {selectedArr.length} sel. · $ {totalSeleccionado.toFixed(2)}
                                                         </span>
                                                         <button
@@ -1650,95 +1720,97 @@ const EntregaPedidosView = () => {
                                                                 const items = selectedArr.map(o => ({ ...o, codigo: o.OrdCodigoOrden, costo: o.OrdCostoFinal, simbolo: o.MonSimbolo }));
                                                                 abrirModalPago(items, null, selectedArr[0]);
                                                             }}
-                                                            className="bg-white text-amber-700 font-black px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 hover:bg-amber-50"
+                                                            className={BTN_FILA_PRINCIPAL}
                                                         >
-                                                            <DollarSign size={12} /> Pagar ({selectedArr.length})
+                                                            <DollarSign size={13} /> Pagar ({selectedArr.length})
                                                         </button>
                                                         <button
                                                             onClick={() => { setRetiroModal({ ordenes: selectedArr }); setRetiroLugar(lugaresRetiro[0]?.LReIdLugarRetiro || ''); }}
-                                                            className="bg-brand-cyan text-white font-black px-3 py-1.5 rounded-lg text-xs flex items-center gap-1 hover:bg-brand-cyan"
+                                                            className={BTN_FILA_SECUNDARIO}
                                                         >
-                                                            <ClipboardList size={12} /> Generar Retiro ({selectedArr.length})
+                                                            <ClipboardList size={13} /> Generar Retiro ({selectedArr.length})
                                                         </button>
                                                     </div>
                                                 )}
                                             </div>
-                                            <table className="w-full text-sm">
-                                                <thead>
-                                                    <tr className="bg-slate-50 text-slate-500 uppercase text-[10px] tracking-wider border-b border-slate-100">
-                                                        <th className="p-3 pl-4 w-10">
-                                                            <input
-                                                                type="checkbox"
-                                                                checked={allChecked}
-                                                                onChange={e => {
-                                                                    if (e.target.checked) setSelectedSinRetiro(new Set(mostradorData.sinRetiro.map(o => o.OrdIdOrden)));
-                                                                    else setSelectedSinRetiro(new Set());
-                                                                }}
-                                                                className="w-4 h-4 accent-amber-500 cursor-pointer"
-                                                            />
-                                                        </th>
-                                                        <th className="p-3 text-left">Código</th>
-                                                        <th className="p-3 text-left">Cliente</th>
-                                                        <th className="p-3 text-left">Estado</th>
-                                                        <th className="p-3 text-right">Importe</th>
-                                                        <th className="p-3 pr-6 text-center">Acción Individual</th>
-                                                    </tr>
-                                                </thead>
-                                                <tbody>
-                                                    {mostradorData.sinRetiro.map(o => {
-                                                        const isSel = selectedSinRetiro.has(o.OrdIdOrden);
-                                                        return (
-                                                            <tr key={o.OrdIdOrden} className={`border-b border-slate-50 cursor-pointer transition-colors ${isSel ? 'bg-amber-50' : o.Pagada ? 'bg-green-50/60' : 'hover:bg-slate-50'}`}
-                                                                onClick={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
-                                                            >
-                                                                <td className="p-3 pl-4" onClick={e => e.stopPropagation()}>
-                                                                    <input
-                                                                        type="checkbox"
-                                                                        checked={isSel}
-                                                                        onChange={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
-                                                                        className="w-4 h-4 accent-amber-500 cursor-pointer"
-                                                                    />
-                                                                </td>
-                                                                <td className="p-3 font-bold text-slate-800">
-                                                                    {o.OrdCodigoOrden}
-                                                                    {o.Pagada ? <span className="ml-2 text-[10px] bg-green-100 text-green-700 font-black px-1.5 py-0.5 rounded-full">✓ Paga</span> : null}
-                                                                </td>
-                                                                <td className="p-3 text-slate-600 font-medium">{o.CliNombre || o.CliCodigo}</td>
-                                                                <td className="p-3 text-slate-500">{o.estadoOrden}</td>
-                                                                <td className="p-3 text-right font-black text-amber-700">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</td>
-                                                                <td className="p-3 pr-6" onClick={e => e.stopPropagation()}>
-                                                                    <div className="flex items-center gap-2 justify-center">
-                                                                        {!o.Pagada && (
+                                            <div className="overflow-x-auto">
+                                                <table className="w-full text-sm">
+                                                    <thead className="bg-zinc-50 border-b border-zinc-200">
+                                                        <tr className="text-[10px] font-black uppercase tracking-wide text-zinc-400">
+                                                            <th className="px-4 py-2.5 w-10">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={allChecked}
+                                                                    onChange={e => {
+                                                                        if (e.target.checked) setSelectedSinRetiro(new Set(mostradorData.sinRetiro.map(o => o.OrdIdOrden)));
+                                                                        else setSelectedSinRetiro(new Set());
+                                                                    }}
+                                                                    className="w-4 h-4 rounded accent-brand-cyan cursor-pointer"
+                                                                />
+                                                            </th>
+                                                            <th className="px-3 py-2.5 text-left">Código</th>
+                                                            <th className="px-3 py-2.5 text-left">Cliente</th>
+                                                            <th className="px-3 py-2.5 text-left">Estado</th>
+                                                            <th className="px-3 py-2.5 text-right">Importe</th>
+                                                            <th className="px-4 md:px-5 py-2.5 text-center">Acción Individual</th>
+                                                        </tr>
+                                                    </thead>
+                                                    <tbody className="divide-y divide-zinc-100">
+                                                        {mostradorData.sinRetiro.map(o => {
+                                                            const isSel = selectedSinRetiro.has(o.OrdIdOrden);
+                                                            return (
+                                                                <tr key={o.OrdIdOrden} className={`cursor-pointer transition-colors ${isSel ? 'bg-brand-cyan/5' : o.Pagada ? 'bg-emerald-50/40 hover:bg-emerald-50' : 'hover:bg-zinc-50'}`}
+                                                                    onClick={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
+                                                                >
+                                                                    <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
+                                                                        <input
+                                                                            type="checkbox"
+                                                                            checked={isSel}
+                                                                            onChange={() => setSelectedSinRetiro(prev => { const s = new Set(prev); if (s.has(o.OrdIdOrden)) s.delete(o.OrdIdOrden); else s.add(o.OrdIdOrden); return s; })}
+                                                                            className="w-4 h-4 rounded accent-brand-cyan cursor-pointer"
+                                                                        />
+                                                                    </td>
+                                                                    <td className="px-3 py-3 font-bold text-zinc-800 whitespace-nowrap">
+                                                                        {o.OrdCodigoOrden}
+                                                                        {o.Pagada ? <span className={`ml-2 ${CHIP} ${PAGO_PAGADO} inline-flex items-center gap-1 align-middle`}><Check size={11} /> Paga</span> : null}
+                                                                    </td>
+                                                                    <td className="px-3 py-3 font-bold text-zinc-700">{o.CliNombre || o.CliCodigo}</td>
+                                                                    <td className="px-3 py-3 text-zinc-500">{o.estadoOrden}</td>
+                                                                    <td className="px-3 py-3 text-right font-black text-zinc-800 tabular-nums whitespace-nowrap">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</td>
+                                                                    <td className="px-4 md:px-5 py-3" onClick={e => e.stopPropagation()}>
+                                                                        <div className="flex items-center gap-2 justify-center">
+                                                                            {!o.Pagada && (
+                                                                                <button
+                                                                                    onClick={() => abrirModalPago([{ ...o, codigo: o.OrdCodigoOrden, costo: o.OrdCostoFinal, simbolo: o.MonSimbolo }], null, o)}
+                                                                                    className={BTN_FILA_PRINCIPAL}
+                                                                                >
+                                                                                    <DollarSign size={13} /> Pagar
+                                                                                </button>
+                                                                            )}
                                                                             <button
-                                                                                onClick={() => abrirModalPago([{ ...o, codigo: o.OrdCodigoOrden, costo: o.OrdCostoFinal, simbolo: o.MonSimbolo }], null, o)}
-                                                                                className="bg-amber-500 hover:bg-amber-600 text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1"
+                                                                                onClick={() => {
+                                                                                    setRetiroModal({ ordenes: [o] });
+                                                                                    setRetiroLugar(
+                                                                                        o.LReIdLugarRetiro
+                                                                                            ? String(o.LReIdLugarRetiro)
+                                                                                            : String(lugaresRetiro[0]?.LReIdLugarRetiro || '')
+                                                                                    );
+                                                                                    setRetiroEnvio({ direccion: '', departamentoId: '', localidadId: '', agenciaId: '' });
+                                                                                    setClienteEnvioDatos(null);
+                                                                                    if (o.CliIdClienteFK) cargarEnvioCliente(o.CliIdClienteFK);
+                                                                                }}
+                                                                                className={BTN_FILA_SECUNDARIO}
                                                                             >
-                                                                                <DollarSign size={12} /> Pagar
+                                                                                <ClipboardList size={13} /> Generar Retiro
                                                                             </button>
-                                                                        )}
-                                                                        <button
-                                                                            onClick={() => {
-                                                                                setRetiroModal({ ordenes: [o] });
-                                                                                setRetiroLugar(
-                                                                                    o.LReIdLugarRetiro
-                                                                                        ? String(o.LReIdLugarRetiro)
-                                                                                        : String(lugaresRetiro[0]?.LReIdLugarRetiro || '')
-                                                                                );
-                                                                                setRetiroEnvio({ direccion: '', departamentoId: '', localidadId: '', agenciaId: '' });
-                                                                                setClienteEnvioDatos(null);
-                                                                                if (o.CliIdClienteFK) cargarEnvioCliente(o.CliIdClienteFK);
-                                                                            }}
-                                                                            className="bg-brand-cyan hover:bg-brand-cyan text-white font-bold px-3 py-1.5 rounded-lg text-xs transition-colors flex items-center gap-1"
-                                                                        >
-                                                                            <ClipboardList size={12} /> Generar Retiro
-                                                                        </button>
-                                                                    </div>
-                                                                </td>
-                                                            </tr>
-                                                        );
-                                                    })}
-                                                </tbody>
-                                            </table>
+                                                                        </div>
+                                                                    </td>
+                                                                </tr>
+                                                            );
+                                                        })}
+                                                    </tbody>
+                                                </table>
+                                            </div>
                                         </div>
                                     );
                                 })()}
@@ -1758,65 +1830,71 @@ const EntregaPedidosView = () => {
                     const lugarSeleccionado = lugaresRetiro.find(l => String(l.LReIdLugarRetiro) === String(retiroLugar));
                     const esEnvio = lugarSeleccionado && !/local|mostrador/i.test(lugarSeleccionado.LReNombreLugar);
                     return (
-                        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto">
-                                <div className="bg-gradient-to-r from-brand-cyan to-[#005080] px-6 py-4 rounded-t-2xl flex justify-between items-center sticky top-0 z-10">
-                                    <div>
-                                        <div className="text-white font-black text-lg">Generar Orden de Retiro</div>
-                                        <div className="text-brand-cyan/70 text-sm">
-                                            {ordenes.length === 1
-                                                ? `${ordenes[0].OrdCodigoOrden} · ${clienteNombre}`
-                                                : `${ordenes.length} órdenes · ${clienteNombre}`}
+                        <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md max-h-[90vh] overflow-y-auto text-zinc-800">
+                                <div className="bg-white px-5 py-4 border-b border-zinc-200 rounded-t-2xl flex justify-between items-center gap-3 sticky top-0 z-10">
+                                    <div className="flex items-center gap-3 min-w-0">
+                                        <ClipboardList size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                                        <div className="min-w-0">
+                                            <p className="text-lg font-black text-zinc-800 leading-tight">Generar Orden de Retiro</p>
+                                            <p className="text-sm text-zinc-400 truncate">
+                                                {ordenes.length === 1
+                                                    ? `${ordenes[0].OrdCodigoOrden} · ${clienteNombre}`
+                                                    : `${ordenes.length} órdenes · ${clienteNombre}`}
+                                            </p>
                                         </div>
                                     </div>
-                                    <button onClick={() => setRetiroModal(null)} className="text-white hover:text-brand-cyan/70 text-2xl font-bold">&times;</button>
+                                    <button onClick={() => setRetiroModal(null)} className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors" title="Cerrar" aria-label="Cerrar">
+                                        <X size={18} />
+                                    </button>
                                 </div>
-                                <div className="p-6 flex flex-col gap-4">
+                                <div className="p-5 flex flex-col gap-4">
                                     {/* Lista de órdenes seleccionadas */}
-                                    <div className="bg-slate-50 rounded-xl border border-slate-200 overflow-hidden">
-                                        <div className="px-4 py-2 bg-slate-100 text-xs font-bold text-slate-500 uppercase tracking-wider">Incluye</div>
-                                        <div className="divide-y divide-slate-100 max-h-36 overflow-y-auto">
+                                    <div className="bg-zinc-50 rounded-xl border border-zinc-200 overflow-hidden">
+                                        <div className="px-4 py-2 border-b border-zinc-200 text-[10px] font-black text-zinc-400 uppercase tracking-wide">Incluye</div>
+                                        <div className="divide-y divide-zinc-100 max-h-36 overflow-y-auto">
                                             {ordenes.map(o => (
-                                                <div key={o.OrdIdOrden} className="flex justify-between items-center px-4 py-2 text-sm">
-                                                    <span className="font-bold text-slate-800">{o.OrdCodigoOrden}</span>
-                                                    <span className="font-black text-brand-cyan">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</span>
+                                                <div key={o.OrdIdOrden} className="flex justify-between items-center gap-2 px-4 py-2 text-sm">
+                                                    <span className="font-bold text-zinc-800">{o.OrdCodigoOrden}</span>
+                                                    <span className="font-black text-zinc-700 tabular-nums">{o.MonSimbolo} {parseFloat(o.OrdCostoFinal || 0).toFixed(2)}</span>
                                                 </div>
                                             ))}
                                         </div>
-                                        <div className="px-4 py-2 bg-brand-cyan/5 flex justify-between text-sm font-black">
-                                            <span className="text-slate-600">TOTAL</span>
-                                            <span className="text-brand-cyan">{simboloTotal} {totalCost.toFixed(2)}</span>
+                                        <div className="px-4 py-2 bg-white border-t border-zinc-200 flex justify-between text-sm font-black">
+                                            <span className="text-zinc-500">TOTAL</span>
+                                            <span className="text-zinc-800 tabular-nums">{simboloTotal} {totalCost.toFixed(2)}</span>
                                         </div>
                                     </div>
 
                                     {/* Lugar / Forma de Envío */}
                                     <div>
-                                        <label className="block text-sm font-bold text-slate-700 mb-1">Lugar / Forma de Envío</label>
-                                        <select
+                                        <label className="block text-sm font-bold text-zinc-700 mb-1.5">Lugar / Forma de Envío</label>
+                                        <Selector
+                                            aria-label="Lugar / Forma de Envío"
                                             value={retiroLugar}
                                             onChange={e => {
                                                 setRetiroLugar(e.target.value);
                                                 setRetiroEnvio({ direccion: '', ciudad: '', localidad: '', agenciaId: '' });
                                                 setRetiroDirSeleccionada(null);
                                             }}
-                                            className="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40"
                                         >
                                             {lugaresRetiro.map(l => (
                                                 <option key={l.LReIdLugarRetiro} value={l.LReIdLugarRetiro}>{l.LReNombreLugar}</option>
                                             ))}
-                                        </select>
+                                        </Selector>
                                     </div>
 
                                     {/* ── Sección Dirección: solo cuando NO es retiro local ── */}
                                     {esEnvio && (
-                                        <div className="flex flex-col gap-3 border border-brand-cyan/20 bg-brand-cyan/5/40 rounded-xl p-4">
-                                            <p className="text-xs font-bold text-brand-cyan uppercase tracking-wide">Datos de Envío</p>
+                                        <div className="flex flex-col gap-3 border border-zinc-200 bg-zinc-50 rounded-xl p-4">
+                                            <p className="text-[11px] font-black text-zinc-400 uppercase tracking-wide flex items-center gap-1.5"><Truck size={14} className="shrink-0 text-brand-cyan" /> Datos de Envío</p>
 
                                             {/* Selector de direcciones guardadas */}
                                             {clienteEnvioDatos?.direcciones?.length > 0 && (
                                                 <div>
-                                                    <label className="block text-xs font-bold text-slate-600 mb-1">Dirección guardada</label>
-                                                    <select
+                                                    <label className="block text-xs font-bold text-zinc-600 mb-1">Dirección guardada</label>
+                                                    <Selector
+                                                        aria-label="Dirección guardada"
                                                         value={retiroDirSeleccionada || ''}
                                                         onChange={e => {
                                                             const id = e.target.value;
@@ -1840,81 +1918,80 @@ const EntregaPedidosView = () => {
                                                                 });
                                                             }
                                                         }}
-                                                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 bg-white"
                                                     >
                                                         <option value="">— Ingresar manualmente —</option>
                                                         {clienteEnvioDatos.direcciones.map(d => (
                                                             <option key={d.ID} value={d.ID}>{d.Alias || d.Direccion} {d.Ciudad ? `· ${d.Ciudad}` : ''}</option>
                                                         ))}
-                                                    </select>
+                                                    </Selector>
                                                 </div>
                                             )}
 
                                             {/* Agencia — siempre visible si hay datos */}
                                             {agenciasLista.length > 0 && (
                                                 <div>
-                                                    <label className="block text-xs font-bold text-slate-600 mb-1">Agencia de transporte</label>
-                                                    <select
+                                                    <label className="block text-xs font-bold text-zinc-600 mb-1">Agencia de transporte</label>
+                                                    <Selector
+                                                        aria-label="Agencia de transporte"
                                                         value={retiroEnvio.agenciaId || ''}
                                                         onChange={e => setRetiroEnvio(prev => ({ ...prev, agenciaId: e.target.value }))}
-                                                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 bg-white"
                                                     >
                                                         <option value="">— Sin agencia —</option>
                                                         {agenciasLista.map(a => (
                                                             <option key={a.ID} value={a.ID}>{a.Nombre}</option>
                                                         ))}
-                                                    </select>
+                                                    </Selector>
                                                 </div>
                                             )}
 
                                             {/* Dirección */}
                                             <div>
-                                                <label className="block text-xs font-bold text-slate-600 mb-1">Dirección</label>
+                                                <label className="block text-xs font-bold text-zinc-600 mb-1">Dirección</label>
                                                 <input
                                                     type="text"
                                                     value={retiroEnvio.direccion}
                                                     onChange={e => setRetiroEnvio(prev => ({ ...prev, direccion: e.target.value }))}
                                                     placeholder="Ej: Av. Italia 1234"
-                                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40"
+                                                    className={CAMPO_SIMPLE}
                                                 />
                                             </div>
 
-                                            <div className="grid grid-cols-2 gap-3">
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                                                 {/* Departamento */}
-                                                <div>
-                                                    <label className="block text-xs font-bold text-slate-600 mb-1">Departamento</label>
-                                                    <select
+                                                <div className="min-w-0">
+                                                    <label className="block text-xs font-bold text-zinc-600 mb-1">Departamento</label>
+                                                    <Selector
+                                                        aria-label="Departamento"
                                                         value={retiroEnvio.departamentoId || ''}
                                                         onChange={e => handleDepartamentoChange(e.target.value)}
-                                                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 bg-white"
                                                     >
                                                         <option value="">— Seleccionar —</option>
                                                         {departamentosLista.map(d => (
                                                             <option key={d.ID} value={d.ID}>{d.Nombre}</option>
                                                         ))}
-                                                    </select>
+                                                    </Selector>
                                                 </div>
                                                 {/* Localidad */}
-                                                <div>
-                                                    <label className="block text-xs font-bold text-slate-600 mb-1">Localidad</label>
-                                                    <select
+                                                <div className="min-w-0">
+                                                    <label className="block text-xs font-bold text-zinc-600 mb-1">Localidad</label>
+                                                    <Selector
+                                                        aria-label="Localidad"
                                                         value={retiroEnvio.localidadId || ''}
                                                         onChange={e => setRetiroEnvio(prev => ({ ...prev, localidadId: e.target.value }))}
                                                         disabled={!retiroEnvio.departamentoId}
-                                                        className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm text-slate-700 outline-none focus:ring-2 focus:ring-brand-cyan/40 bg-white disabled:opacity-50"
                                                     >
                                                         <option value="">— Seleccionar —</option>
                                                         {localidadesLista.map(l => (
                                                             <option key={l.ID} value={l.ID}>{l.Nombre}</option>
                                                         ))}
-                                                    </select>
+                                                    </Selector>
                                                 </div>
                                             </div>
                                         </div>
                                     )}
 
                                     <div className="flex gap-3 mt-1">
-                                        <button onClick={() => setRetiroModal(null)} className="flex-1 border border-slate-200 text-slate-600 font-bold py-2.5 rounded-xl hover:bg-slate-50 transition-colors">
+                                        <button onClick={() => setRetiroModal(null)} className={`${BTN_SECUNDARIO} flex-1`}>
                                             Cancelar
                                         </button>
                                         <button
@@ -1958,9 +2035,9 @@ const EntregaPedidosView = () => {
                                                     setRetiroGenerando(false);
                                                 }
                                             }}
-                                            className="flex-1 bg-brand-cyan hover:bg-brand-cyan disabled:opacity-50 text-white font-black py-2.5 rounded-xl transition-colors shadow-md flex items-center justify-center gap-2"
+                                            className={`${BTN_PRINCIPAL} flex-1`}
                                         >
-                                            <ClipboardList size={16} />
+                                            {retiroGenerando ? <Loader2 size={15} className="animate-spin" /> : <ClipboardList size={15} />}
                                             {retiroGenerando ? 'Generando...' : `Generar${ordenes.length > 1 ? ` (${ordenes.length})` : ''} e Imprimir`}
                                         </button>
                                     </div>
@@ -1990,96 +2067,101 @@ const EntregaPedidosView = () => {
             {/* MODAL DE PAGO — igual a Caja */}
             {
                 pagoModal && (
-                    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-                        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+                    <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto text-zinc-800">
                             {/* Cabecera */}
-                            <div className="bg-gradient-to-r from-brand-cyan to-[#005080] px-6 py-4 rounded-t-2xl flex justify-between items-center">
-                                <div>
-                                    <div className="text-white font-black text-lg">Registrar Pago</div>
-                                    <div className="text-brand-cyan/60 text-sm">{pagoModal.retiroId || 'Orden directa'} · {pagoModal.ordenes.length} orden(es)</div>
+                            <div className="bg-white px-5 py-4 border-b border-zinc-200 rounded-t-2xl flex justify-between items-center gap-3 sticky top-0 z-10">
+                                <div className="flex items-center gap-3 min-w-0">
+                                    <DollarSign size={24} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                                    <div className="min-w-0">
+                                        <p className="text-lg font-black text-zinc-800 leading-tight">Registrar Pago</p>
+                                        <p className="text-sm text-zinc-400 truncate">{pagoModal.retiroId || 'Orden directa'} · {pagoModal.ordenes.length} orden(es)</p>
+                                    </div>
                                 </div>
-                                <button onClick={() => setPagoModal(null)} className="text-white hover:text-brand-cyan/70 text-2xl font-bold leading-none">&times;</button>
+                                <button onClick={() => setPagoModal(null)} className="w-8 h-8 shrink-0 flex items-center justify-center rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors" title="Cerrar" aria-label="Cerrar">
+                                    <X size={18} />
+                                </button>
                             </div>
 
-                            <div className="p-6 flex flex-col gap-4">
+                            <div className="p-5 flex flex-col gap-4">
                                 {/* Cotización */}
                                 {cotizacion && (
-                                    <div className="bg-brand-cyan/5 border border-brand-cyan/30 rounded-xl px-4 py-2 text-sm text-brand-cyan font-bold text-center">
+                                    <div className="bg-brand-cyan/5 border border-brand-cyan/20 rounded-xl px-4 py-2 text-sm text-brand-cyan font-bold text-center">
                                         Cotización: 1 USD = {Number(cotizacion).toFixed(2)} UYU
                                     </div>
                                 )}
 
                                 {/* Resumen órdenes */}
-                                <div className="bg-slate-50 rounded-xl p-3 border border-slate-200">
+                                <div className="bg-zinc-50 rounded-xl px-4 py-2 border border-zinc-200 divide-y divide-zinc-100">
                                     {pagoModal.ordenes.map(o => (
-                                        <div key={o.OrdIdOrden} className="flex justify-between text-sm font-bold py-1 border-b border-slate-100 last:border-0">
-                                            <span className="text-slate-600">{o.codigo || o.OrdCodigoOrden}</span>
-                                            <span className="text-brand-cyan">{o.simbolo} {parseFloat(o.costo || o.OrdCostoFinal || 0).toFixed(2)}</span>
+                                        <div key={o.OrdIdOrden} className="flex justify-between gap-2 text-sm font-bold py-1.5">
+                                            <span className="text-zinc-600">{o.codigo || o.OrdCodigoOrden}</span>
+                                            <span className="text-zinc-800 tabular-nums">{o.simbolo} {parseFloat(o.costo || o.OrdCostoFinal || 0).toFixed(2)}</span>
                                         </div>
                                     ))}
                                 </div>
 
                                 {/* Forma de pago — select igual a Caja */}
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-sm font-bold text-zinc-800">Seleccionar forma de pago</label>
-                                    <select
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-sm font-bold text-zinc-700">Seleccionar forma de pago</label>
+                                    <Selector
+                                        aria-label="Forma de pago"
                                         value={formaPago}
                                         onChange={e => setFormaPago(e.target.value)}
-                                        className="w-full bg-white border border-zinc-300 rounded-lg px-4 py-2.5 text-zinc-700 outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan/40 appearance-none"
                                     >
                                         <option value="">Seleccione un método</option>
                                         {metodosPago.map(m => (
                                             <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>{m.MPaDescripcionMetodo}</option>
                                         ))}
-                                    </select>
+                                    </Selector>
                                 </div>
 
                                 {/* Moneda — igual a Caja */}
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-sm font-bold text-zinc-800">Seleccionar Moneda</label>
-                                    <select
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-sm font-bold text-zinc-700">Seleccionar Moneda</label>
+                                    <Selector
+                                        aria-label="Moneda"
                                         value={monedaPago}
                                         onChange={e => handleCambioMoneda(e.target.value)}
-                                        className="w-full bg-white border border-zinc-300 rounded-lg px-4 py-2.5 text-zinc-700 outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan/40 appearance-none"
                                     >
                                         <option value="UYU">UYU — Peso Uruguayo</option>
                                         <option value="USD">USD — Dólar</option>
-                                    </select>
+                                    </Selector>
                                 </div>
 
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-sm font-bold text-zinc-800">Cargar comprobante (opcional)</label>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-sm font-bold text-zinc-700">Cargar comprobante (opcional)</label>
                                     <input
                                         type="file"
                                         accept="image/*,application/pdf"
                                         capture="environment"
                                         onChange={e => setFileComprobante(e.target.files[0])}
-                                        className="w-full text-sm border border-zinc-300 p-2 rounded-lg cursor-pointer"
+                                        className="w-full text-sm text-zinc-600 bg-white border border-zinc-200 p-2 rounded-xl cursor-pointer file:mr-3 file:px-3 file:py-1.5 file:rounded-lg file:border-0 file:bg-zinc-100 file:text-xs file:font-bold file:text-zinc-700 hover:file:bg-zinc-200"
                                     />
                                 </div>
 
                                 {/* Monto */}
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-sm font-bold text-zinc-800">Ingrese Monto ({monedaPago})</label>
+                                <div className="flex flex-col gap-1.5">
+                                    <label className="text-sm font-bold text-zinc-700">Ingrese Monto ({monedaPago})</label>
                                     <input
                                         type="number"
                                         placeholder="Monto"
                                         step="0.01"
                                         value={montoPago}
                                         onChange={e => setMontoPago(e.target.value)}
-                                        className="w-full bg-white border border-zinc-300 rounded-lg px-4 py-2.5 text-zinc-700 outline-none focus:border-brand-cyan focus:ring-1 focus:ring-brand-cyan/40 text-lg font-bold"
+                                        className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-lg font-bold text-zinc-800 tabular-nums placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
                                     />
                                 </div>
 
                                 {/* Botones */}
-                                <div className="flex gap-3 mt-2">
-                                    <button onClick={() => setPagoModal(null)} className="flex-1 border border-slate-200 text-slate-600 font-bold py-2.5 rounded-xl hover:bg-slate-50 transition-colors">Cancelar</button>
+                                <div className="flex gap-3 mt-1">
+                                    <button onClick={() => setPagoModal(null)} className={`${BTN_SECUNDARIO} flex-1`}>Cancelar</button>
                                     <button
                                         onClick={confirmarPago}
                                         disabled={pagandoLoading}
-                                        className="flex-1 bg-brand-cyan hover:bg-[#005080] disabled:opacity-50 text-white font-black py-2.5 rounded-full transition-colors flex items-center justify-center gap-2 shadow-md"
+                                        className={`${BTN_PRINCIPAL} flex-1`}
                                     >
-                                        {pagandoLoading ? <RefreshCcw className="animate-spin" size={16} /> : <CheckCircle size={16} />}
+                                        {pagandoLoading ? <Loader2 className="animate-spin" size={15} /> : <CheckCircle size={15} />}
                                         {pagandoLoading ? 'Registrando...' : 'Realizar Pago'}
                                     </button>
                                 </div>
@@ -2089,9 +2171,11 @@ const EntregaPedidosView = () => {
                 )
             }
 
-            {/* TAB TRANSPORT (EN VIAJE) */}
+            {/* TAB TRANSPORT (EN VIAJE) — TransportView ya trae su fondo claro y su margen (p-3 md:p-6): el margen
+                negativo lo alinea con el resto de la página en vez de sumarle otro recuadro. Arriba no más que el gap
+                (gap-4 = 16 px): con -mt-6 tapaba el subtítulo del encabezado. */}
             {activeTab === 'transport' && (
-                <div className="bg-white rounded-2xl shadow-sm border border-slate-200 flex flex-col flex-1 overflow-hidden min-h-[600px] mt-4">
+                <div className="flex flex-col flex-1 -mx-3 -mb-3 -mt-3 md:-mx-6 md:-mb-6 md:-mt-4">
                     <TransportView areaFilter="TODOS" mode="transport" originArea="LOGISTICA_ENCOMIENDAS" />
                 </div>
             )}

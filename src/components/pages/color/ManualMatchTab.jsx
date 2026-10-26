@@ -439,7 +439,7 @@ export default function ManualMatchTab() {
                             <div className="bg-white rounded-2xl shadow-sm border border-zinc-200 p-5">
                                 <div className="flex items-start justify-between mb-4">
                                     <div>
-                                        <div className="text-xs font-bold text-purple-500 uppercase tracking-wide">Camino B</div>
+                                        <div className="text-xs font-bold text-brand-cyan uppercase tracking-wide">Camino B</div>
                                         <div className="text-sm font-semibold text-zinc-700 mt-0.5">CMYK de entrada (perfil cliente)</div>
                                     </div>
                                     {result.caminoB && <DeltaEBadge value={result.caminoB.deltaE} />}
@@ -458,11 +458,11 @@ export default function ManualMatchTab() {
                             </div>
 
                             {result.recomendacion && (
-                                <div className="bg-blue-50 border border-blue-200 rounded-2xl p-4 flex gap-3">
-                                    <Info size={18} className="text-blue-500 flex-shrink-0 mt-0.5" />
+                                <div className="bg-brand-cyan/5 border border-brand-cyan/20 rounded-2xl p-4 flex gap-3">
+                                    <Info size={18} className="text-brand-cyan flex-shrink-0 mt-0.5" />
                                     <div>
-                                        <div className="font-semibold text-blue-700 text-sm">Recomendación</div>
-                                        <div className="text-blue-600 text-sm mt-0.5">{result.recomendacion}</div>
+                                        <div className="font-bold text-zinc-800 text-sm">Recomendación</div>
+                                        <div className="text-zinc-600 text-sm mt-0.5">{result.recomendacion}</div>
                                     </div>
                                 </div>
                             )}

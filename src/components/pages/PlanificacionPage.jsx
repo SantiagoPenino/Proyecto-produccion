@@ -3,6 +3,8 @@ import { useSearchParams } from 'react-router-dom';
 import { areasService, planificacionService, ordersService } from '../../services/api';
 import PlanillaAlertas from '../production/components/PlanillaAlertas';
 import OrderDetailModal from '../production/components/OrderDetailModal';
+import Selector from '../ui/Selector';
+import { CalendarDays } from 'lucide-react';
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -170,10 +172,10 @@ const PlanificacionPage = () => {
                 key={dia.fecha}
                 className={`rounded-xl border shadow-sm bg-white overflow-hidden flex flex-col
                     ${!dia.laborable ? 'opacity-60' : ''}
-                    ${esHoy ? 'ring-2 ring-teal-400' : 'border-slate-200'}`}
+                    ${esHoy ? 'ring-2 ring-brand-cyan' : 'border-slate-200'}`}
             >
                 <div className={`px-3 py-2 flex items-start justify-between gap-2
-                    ${dia.esFeriado ? 'bg-rose-50' : dia.laborable ? 'bg-teal-50' : 'bg-slate-100'}`}>
+                    ${dia.esFeriado ? 'bg-rose-50' : dia.laborable ? 'bg-brand-cyan/5' : 'bg-slate-100'}`}>
                     <div>
                         <div className="text-xs font-bold uppercase text-slate-500">{dia.diaNombre}</div>
                         <div className="text-sm font-black text-slate-800">{fmtDia(dia.fecha)}</div>
@@ -218,7 +220,7 @@ const PlanificacionPage = () => {
                                         <button
                                             type="button"
                                             onClick={() => setGrupoExpandido(expandido ? null : claveExpand)}
-                                            className="w-full text-left rounded-lg border border-teal-200 bg-teal-50/40 p-2.5 hover:bg-teal-50"
+                                            className="w-full text-left rounded-lg border border-brand-cyan/20 bg-brand-cyan/5 p-2.5 hover:bg-brand-cyan/10"
                                         >
                                             <div className="flex items-start justify-between gap-2 mb-1">
                                                 <span className="text-[11px] font-bold text-slate-700">
@@ -254,7 +256,7 @@ const PlanificacionPage = () => {
                                             </div>
                                         </button>
                                         {expandido && (
-                                            <div className="ml-2 mt-1.5 space-y-1.5 border-l-2 border-teal-200 pl-2 max-h-64 overflow-y-auto">
+                                            <div className="ml-2 mt-1.5 space-y-1.5 border-l-2 border-brand-cyan/20 pl-2 max-h-64 overflow-y-auto">
                                                 {g.ordenes.map(a => (
                                                     <div key={a.OrdenID} className="rounded-lg border border-slate-200 bg-white p-2">
                                                         <div className="flex items-center justify-between gap-2">
@@ -294,10 +296,10 @@ const PlanificacionPage = () => {
                 key={dia.fecha}
                 className={`rounded-lg border bg-white overflow-hidden flex-1
                     ${!dia.laborable ? 'opacity-60' : ''}
-                    ${esHoy ? 'ring-2 ring-teal-400' : 'border-slate-200'}`}
+                    ${esHoy ? 'ring-2 ring-brand-cyan' : 'border-slate-200'}`}
             >
                 <div className={`px-2 py-1 flex items-center justify-between gap-1
-                    ${dia.esFeriado ? 'bg-rose-50' : dia.laborable ? 'bg-teal-50' : 'bg-slate-100'}`}>
+                    ${dia.esFeriado ? 'bg-rose-50' : dia.laborable ? 'bg-brand-cyan/5' : 'bg-slate-100'}`}>
                     <span className="text-[10px] font-bold text-slate-600">{dia.diaNombre.slice(0, 3)} {fmtDia(dia.fecha)}</span>
                     {dia.esFeriado ? (
                         <span className="text-[8px] font-bold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-600 uppercase">Feriado</span>
@@ -381,30 +383,32 @@ const PlanificacionPage = () => {
     // de MainAppContent ya es absolute inset-0 + overflow-y-auto, así que h-full ahí también es
     // una altura definida y el scroll queda igual que antes.
     return (
-        <div className="h-full overflow-y-auto bg-slate-50 p-8 font-sans text-slate-800">
+        // scrollbar-gutter: el lugar de la barra de scroll queda reservado. La Planilla scrollea y el Calendario
+        // a veces no: sin esto, al cambiar de vista todo se corría ~10 px de costado.
+        <div className="h-full overflow-y-auto [scrollbar-gutter:stable] bg-slate-50 p-8 font-sans text-slate-800">
         <div className="flex gap-6 items-start">
         <div className="flex-1 min-w-0">
             <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
                 <div>
                     <h1 className="text-2xl font-black text-slate-800 flex items-center gap-2">
-                        <i className="fa-solid fa-calendar-week text-teal-500"></i> Planificación
+                        <CalendarDays size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" /> Planificación
                     </h1>
                     <p className="text-sm text-slate-500 mt-1">
                         Qué días trabaja cada área y qué órdenes tienen fecha de entrega estimada en cada uno.
                     </p>
                 </div>
                 <div className="flex items-center gap-3">
-                    <div className="relative">
-                        <select
-                            className={`bg-white border border-slate-200 text-sm font-bold text-slate-700 rounded-lg py-2 pl-3 pr-8 outline-none shadow-sm
-                                ${areaFijada ? 'opacity-70 cursor-not-allowed' : 'cursor-pointer'}`}
+                    <div className="relative w-56">
+                        <Selector
+                            className="font-bold shadow-sm"
                             value={areaId}
                             disabled={areaFijada}
                             onChange={(e) => setAreaId(e.target.value)}
+                            aria-label="Área"
                             title={areaFijada ? 'Entraste desde un área puntual — para ver otras, abrí Planificación desde el menú' : undefined}
                         >
                             {areas.map(a => <option key={a.code} value={a.code}>{a.name}</option>)}
-                        </select>
+                        </Selector>
                         {areaFijada && (
                             <i
                                 className="fa-solid fa-lock absolute -top-1.5 -right-1.5 text-[9px] bg-slate-400 text-white rounded-full w-4 h-4 flex items-center justify-center"
@@ -418,20 +422,21 @@ const PlanificacionPage = () => {
                     <div className="flex items-center bg-white border border-slate-200 rounded-lg shadow-sm p-0.5">
                         <button
                             onClick={() => setVista('calendario')}
-                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'calendario' ? 'bg-teal-500 text-white' : 'text-slate-500 hover:text-teal-600'}`}
+                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'calendario' ? 'bg-brand-cyan text-white' : 'text-slate-500 hover:text-brand-cyan'}`}
                         >
                             <i className="fa-solid fa-calendar-days"></i> Calendario
                         </button>
                         <button
                             onClick={() => setVista('planilla')}
-                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'planilla' ? 'bg-teal-500 text-white' : 'text-slate-500 hover:text-teal-600'}`}
+                            className={`px-3 h-8 rounded-md text-xs font-bold uppercase flex items-center gap-1.5 transition-colors ${vista === 'planilla' ? 'bg-brand-cyan text-white' : 'text-slate-500 hover:text-brand-cyan'}`}
                         >
                             <i className="fa-solid fa-table-list"></i> Planilla
                         </button>
                     </div>
 
-                    {vista === 'calendario' && (
-                        <>
+                    {/* En Planilla no se usan, pero quedan ocupando su lugar (invisibles): si se sacaban, el área
+                        y el interruptor saltaban a la derecha al cambiar de vista. */}
+                    <div className={`flex items-center gap-3 ${vista === 'calendario' ? '' : 'invisible'}`}>
                             <button
                                 onClick={() => setDesde(addDiasStr(desde, -14))}
                                 className="w-9 h-9 flex items-center justify-center rounded-lg bg-white border border-slate-200 text-slate-500 hover:bg-slate-100 shadow-sm"
@@ -452,8 +457,7 @@ const PlanificacionPage = () => {
                             >
                                 <i className="fa-solid fa-chevron-right"></i>
                             </button>
-                        </>
-                    )}
+                    </div>
                 </div>
             </div>
 

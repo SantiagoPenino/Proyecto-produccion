@@ -288,6 +288,8 @@ Cada uno con lo que se perdería si se borrara (es lo que justifica marcarlo en 
 
 ## 6. ARCHIVAR — scripts, docs y datos por episodio
 
+> **Estado al 21/10 (archivado):** se movieron 67 archivos a `backend/scripts/_historico/<episodio>/` y `docs/_historico/<tema>/`, con un README por carpeta (qué pasó, qué se corrió en producción, qué quedó pendiente). **Quedaron en su lugar**, porque el código o un plan vigente los cita: `auditoria_integridad_docs.js` (genérico), `backfill_ordcodigoorden_detalle.js`, `wmsImportSnapshot.js`, `wmsRellenoTelas.js`, `sql/areas_sector_stock_2026-09-29.sql`, `impresion-parcial-plan.md`, `disenadores-portal-plan.md`, `analisis-cpu-sql-2026-09-23.md`, `wms-johnson-schema.md`, `wms-data/A_tipos.json` (fuera de git, como el resto de la foto del WMS). También quedaron abiertos `capacidad-planta-plan.md` (Yoania trabaja en las fechas prometidas) y `tienda-retiro-encomienda-y-billetera.md` (documenta el problema de que la caja imputa dos veces). `auditar_cliente_capa.js` ya no existía, y `analizar_tizadapro.js` sigue en `backend/scripts/` porque la integración de TizadaPro está en curso. No se tocó la sección MOVER.
+
 Propuesta de carpetas: `backend/scripts/_historico/<año-mes-episodio>/` para scripts y runbooks técnicos, `docs/_historico/<año-mes-tema>/` para planes cerrados. Lo que trae datos de clientes sale del repo.
 
 | Episodio | Carpeta propuesta | Qué va |
@@ -700,7 +702,7 @@ Resumen de las 16 propuestas del agente de orden (detalle con comandos exactos e
 **Lote final:** los refactors de §9, un archivo grande por deploy, empezando por los que tienen bug confirmado (§18) para que el fix sea un diff chico antes de mover.
 
 > **Estado al 16/10:**
-> - **Lote 0:** hechos el 2 y el 4. Pendientes el 3 (secretos), el 5 (archivar) y el 6 (`scripts/dev/`).
+> - **Lote 0:** hechos el 2 y el 4. Pendientes el 3 (secretos), el 5 (archivar) y el 6 (`scripts/dev/`). **21/10:** el 5 (archivar) quedó hecho, ver §6; el 3 lo descartó Santiago el 20/10.
 > - **Lote 1:** hecho, el 13/10 y del 14 al 16/10.
 > - **Lote 2** (dependencias) **y lotes 3..N** (carpetas): pendientes.
 > - **Lote final:** ya bajaron `prendasOrdersController` y la ventana de Cuentas.

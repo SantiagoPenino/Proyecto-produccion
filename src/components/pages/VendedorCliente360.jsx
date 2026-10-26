@@ -5,7 +5,8 @@
  * que cobre, facture, anule ni modifique nada. Convive con
  * /contabilidad/cliente-360 (la de contabilidad, que sí opera) sin reemplazarla.
  *
- * Seis pestañas, una por cosa que el vendedor necesita saber del cliente:
+ * Pestañas, una por cosa que el vendedor necesita saber del cliente:
+ *   0. Resumen               → servicios más usados, y órdenes y costo final por área (22/10/2026)
  *   1. Recursos              → planes de metros comprados (comprado / usado / restante)
  *   2. Telas del cliente     → metros de tela física del cliente en el depósito
  *   3. Pendiente de pago     → documentos con saldo (deudas vivas)
@@ -14,19 +15,20 @@
  *   6. Precios especiales    → reglas de precio propias del cliente
  *
  * Reutiliza endpoints existentes; lo único nuevo es
- * GET /api/vendedor-360/clientes/:id/deposito-pendiente (solo lectura).
+ * GET /api/vendedor-360/clientes/:id/deposito-pendiente y .../resumen (solo lectura).
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   Search, RefreshCw, Users, Eye, Layers, Package,
   Truck, Tag, ChevronDown, ChevronRight, CheckCircle2, Clock,
-  History, X, BadgePercent,
+  History, X, BadgePercent, LayoutDashboard, IdCard, Mail, Phone, Folder, Globe,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
 import api from '../../services/api';
-import { fetchAPI, FilaCliente } from './cuentasComunes';
+import { fetchAPI } from './cuentasComunes';
+import Selector from '../ui/Selector';
 import { fmtFechaCorta } from '../../utils/fechas';
 import TabBeneficiosCliente from '../beneficios/TabBeneficiosCliente';
 
@@ -40,6 +42,7 @@ const LS_VENDEDOR = 'vendedor360_cartera';
 
 /* ── Definición de pestañas ───────────────────────────────────────────── */
 const TABS = [
+  { key: 'RESUMEN',    label: 'Resumen',             icon: LayoutDashboard },
   { key: 'RECURSOS',   label: 'Recursos',            icon: Layers },
   { key: 'TELAS',      label: 'Telas del cliente',   icon: Package },
   { key: 'DEPOSITO',   label: 'Pendiente de retirar', icon: Truck },
@@ -50,14 +53,37 @@ const TABS = [
 ];
 
 /* ── Piezas chicas de UI ──────────────────────────────────────────────── */
+const ChipCliente = ({ tono, children }) => (
+  <span className={`inline-flex items-center px-1.5 py-px rounded-full text-[10px] font-bold ${tono}`}>{children}</span>
+);
+
+const FilaClienteVendedor = ({ c, seleccionado, onClick }) => (
+  <button type="button" onClick={onClick}
+    className={`w-full text-left px-4 py-3 border-b border-zinc-100 last:border-b-0 border-l-[3px] transition-colors flex items-center gap-3 ${seleccionado ? 'bg-brand-cyan/5 border-l-brand-cyan' : 'border-l-transparent hover:bg-zinc-50'}`}>
+    <span className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${seleccionado ? 'bg-brand-cyan text-white' : 'bg-zinc-100 text-zinc-500'}`}>
+      {(c.Nombre || '?').trim().charAt(0).toUpperCase()}
+    </span>
+    <span className="min-w-0 flex-1">
+      <span className="block text-sm font-bold text-zinc-800 truncate" title={c.Nombre}>{c.Nombre}</span>
+      <span className="flex flex-wrap items-center gap-1.5 mt-0.5">
+        <span className="text-[10px] font-mono text-zinc-400">#{c.IDCliente || c.CodCliente || c.CliIdCliente}</span>
+        {c.EsSemanal == 1 && <ChipCliente tono="bg-brand-cyan/10 text-brand-cyan">Semanal</ChipCliente>}
+        {c.TieneCicloAbierto == 1 && <ChipCliente tono="bg-emerald-50 text-emerald-700">Ciclo</ChipCliente>}
+        {c.DocsVencidos > 0 && <ChipCliente tono="bg-brand-magenta/10 text-brand-magenta">{c.DocsVencidos} venc.</ChipCliente>}
+      </span>
+    </span>
+  </button>
+);
+
+const etiquetaCampo = 'block mb-1 text-[10px] font-black uppercase tracking-widest text-zinc-400';
 const Cargando = () => (
   <div className="flex justify-center py-12">
-    <div className="animate-spin h-7 w-7 border-2 border-cyan-600 border-t-transparent rounded-full" />
+    <div className="animate-spin h-7 w-7 border-2 border-brand-cyan border-t-transparent rounded-full" />
   </div>
 );
 
 const Vacio = ({ children }) => (
-  <p className="text-center text-slate-400 text-sm py-12">{children}</p>
+  <p className="text-center text-zinc-400 text-sm py-12">{children}</p>
 );
 
 // OJO: las clases van completas (text-left / text-right / text-center) porque
@@ -71,7 +97,7 @@ const Tabla = ({ head, children }) => (
   <div className="overflow-x-auto">
     <table className="w-full text-sm">
       <thead>
-        <tr className="text-[10px] uppercase tracking-wider text-slate-400 border-b border-slate-200">{head}</tr>
+        <tr className="text-[10px] uppercase tracking-wider text-zinc-400 border-b border-zinc-200">{head}</tr>
       </thead>
       <tbody>{children}</tbody>
     </table>
@@ -83,7 +109,7 @@ const BarraConsumo = ({ pct }) => {
   const p = Math.max(0, Math.min(100, Number(pct) || 0));
   const color = p >= 90 ? 'bg-rose-500' : p >= 70 ? 'bg-amber-500' : 'bg-emerald-500';
   return (
-    <div className="w-full min-w-[90px] h-1.5 bg-slate-100 rounded-full overflow-hidden">
+    <div className="w-full min-w-[90px] h-1.5 bg-zinc-100 rounded-full overflow-hidden">
       <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${p}%` }} />
     </div>
   );
@@ -91,12 +117,12 @@ const BarraConsumo = ({ pct }) => {
 
 // Totales por moneda (pesos y dólares nunca se suman entre sí)
 const TotalesPorMoneda = ({ totales, etiqueta }) => (
-  <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-2">
+  <div className="px-4 py-3 bg-zinc-50 border-t border-zinc-200 flex flex-wrap items-center gap-x-6 gap-y-2">
     {totales.map(t => (
       <div key={t.moneda} className="flex items-baseline gap-2">
-        <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">{etiqueta} {t.moneda}</span>
-        <span className="text-base font-black tracking-tight text-slate-800">{t.moneda} {fmtNum(t.total)}</span>
-        <span className="text-[11px] text-slate-400">{t.cant} ítem{t.cant !== 1 ? 's' : ''}</span>
+        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{etiqueta} {t.moneda}</span>
+        <span className="text-base font-black tracking-tight text-zinc-800">{t.moneda} {fmtNum(t.total)}</span>
+        <span className="text-[11px] text-zinc-400">{t.cant} ítem{t.cant !== 1 ? 's' : ''}</span>
       </div>
     ))}
   </div>
@@ -210,49 +236,49 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
   const hayDesfasaje = !loading && movs.length > 0 && Math.abs(difPlanCuenta) > 0.01;
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
+    <div className="fixed inset-0 z-[6000] bg-zinc-900/60 flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
       onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-[97vw] max-w-5xl max-h-[calc(100vh-4rem)] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}>
 
         {/* Cabecera */}
-        <div className="flex items-center justify-between px-5 py-3 bg-violet-600 text-white shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-zinc-200 text-zinc-800 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <Layers size={16} />
+            <Layers size={18} className="text-brand-cyan shrink-0" />
             <div className="min-w-0">
               <h3 className="text-sm font-black leading-tight truncate">
                 Consumo del recurso · {plan.NombreArticulo || plan.PlaDescripcion || `Plan #${plan.PlaIdPlan}`}
               </h3>
-              <p className="text-[11px] text-violet-100">
+              <p className="text-[11px] text-zinc-500">
                 {plan.PlaDescripcion || `Plan #${plan.PlaIdPlan}`}
                 {planesDelMat.length > 1 && ` · incluye ${planesDelMat.length} planes del mismo material`}
               </p>
             </div>
           </div>
           <button onClick={onClose} title="Cerrar el estado de cuenta del recurso"
-            className="p-2 rounded-lg hover:bg-white/20 transition-colors shrink-0">
+            className="p-2 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors shrink-0">
             <X size={18} />
           </button>
         </div>
 
         {/* Resumen del plan */}
-        <div className="px-5 py-3 bg-violet-50 border-b border-violet-100 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
+        <div className="px-5 py-3 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Comprado</span>
-            <span className="text-sm font-black text-slate-700">{fmtNum(plan.PlaCantidadTotal)} {unidad}</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Comprado</span>
+            <span className="text-sm font-black text-zinc-700">{fmtNum(plan.PlaCantidadTotal)} {unidad}</span>
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Usado</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Usado</span>
             <span className="text-sm font-black text-rose-600">{fmtNum(plan.PlaCantidadUsada)} {unidad}</span>
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Restante del plan</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Restante del plan</span>
             <span className="text-sm font-black text-emerald-600">{fmtNum(plan.PlaCantidadRestante)} {unidad}</span>
           </div>
           <div className="flex items-baseline gap-2 ml-auto">
-            <span className="text-[10px] font-black uppercase tracking-widest text-violet-400">Saldo real de la cuenta</span>
-            <span className={`text-sm font-black ${saldoCuenta < 0 ? 'text-rose-600' : 'text-violet-700'}`}>{fmtNum(saldoCuenta)} {unidad}</span>
-            <span className="text-[11px] text-slate-400">{movsConSaldo.length} mov.</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Saldo real de la cuenta</span>
+            <span className={`text-sm font-black ${saldoCuenta < 0 ? 'text-rose-600' : 'text-brand-cyan'}`}>{fmtNum(saldoCuenta)} {unidad}</span>
+            <span className="text-[11px] text-zinc-400">{movsConSaldo.length} mov.</span>
           </div>
         </div>
 
@@ -272,7 +298,7 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
         )}
 
         {recorte && (
-          <div className="px-5 py-2 bg-slate-50 border-b border-slate-200 text-[11px] text-slate-600 shrink-0">
+          <div className="px-5 py-2 bg-zinc-50 border-b border-zinc-200 text-[11px] text-zinc-600 shrink-0">
             Se muestran los <strong>{recorte.mostrados}</strong> movimientos más recientes de{' '}
             <strong>{recorte.total}</strong>. Los saldos ya incluyen el arrastre de los anteriores.
           </div>
@@ -285,7 +311,7 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
           ) : (
             <table className="w-full text-xs">
               <thead className="sticky top-0 z-10">
-                <tr className="text-[10px] text-slate-500 uppercase bg-slate-50 border-b border-slate-200">
+                <tr className="text-[10px] text-zinc-500 uppercase bg-zinc-50 border-b border-zinc-200">
                   <th className="px-3 py-2 text-left font-semibold">Fecha</th>
                   <th className="px-3 py-2 text-left font-semibold">Tipo</th>
                   <th className="px-3 py-2 text-left font-semibold">Documento</th>
@@ -296,30 +322,30 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
                   <th className="px-3 py-2 text-right font-semibold">Saldo Fn.</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-100">
+              <tbody className="divide-y divide-zinc-100">
                 {/* Más reciente arriba (el saldo ya viene calculado en orden cronológico) */}
                 {[...movsConSaldo].reverse().map(m => (
-                  <tr key={m.MovIdMovimiento} className="hover:bg-slate-50/60 transition-colors">
-                    <td className="px-3 py-2 text-slate-500 whitespace-nowrap">{fmtFechaCorta(m.MovFecha)}</td>
+                  <tr key={m.MovIdMovimiento} className="hover:bg-zinc-50/60 transition-colors">
+                    <td className="px-3 py-2 text-zinc-500 whitespace-nowrap">{fmtFechaCorta(m.MovFecha)}</td>
                     <td className="px-3 py-2">
                       <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
                         m._tipo === 'RECARGO_URGENCIA' ? 'bg-rose-50 text-rose-700'
                           : m._tipo === 'ENTRADA' ? 'bg-emerald-50 text-emerald-700'
-                          : 'bg-violet-50 text-violet-700'
+                          : 'bg-brand-cyan/10 text-brand-cyan'
                       }`}>
                         {m._tipo === 'RECARGO_URGENCIA' ? 'RECARGO URGENCIA' : m._tipo}
                       </span>
                     </td>
-                    <td className="px-3 py-2 font-bold text-slate-700 whitespace-nowrap">{m._cod || '—'}</td>
-                    <td className="px-3 py-2 text-slate-600 max-w-[240px] truncate" title={m.MovConcepto}>{m._desc || '—'}</td>
-                    <td className="px-3 py-2 text-right text-slate-500 whitespace-nowrap">{fmtNum(m._saldoIn)} {unidad}</td>
-                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._debe > 0 ? 'text-rose-600' : 'text-slate-300'}`}>
+                    <td className="px-3 py-2 font-bold text-zinc-700 whitespace-nowrap">{m._cod || '—'}</td>
+                    <td className="px-3 py-2 text-zinc-600 max-w-[240px] truncate" title={m.MovConcepto}>{m._desc || '—'}</td>
+                    <td className="px-3 py-2 text-right text-zinc-500 whitespace-nowrap">{fmtNum(m._saldoIn)} {unidad}</td>
+                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._debe > 0 ? 'text-rose-600' : 'text-zinc-300'}`}>
                       {m._debe > 0 ? `${fmtNum(m._debe)} ${unidad}` : '—'}
                     </td>
-                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._haber > 0 ? 'text-emerald-600' : 'text-slate-300'}`}>
+                    <td className={`px-3 py-2 text-right whitespace-nowrap font-semibold ${m._haber > 0 ? 'text-emerald-600' : 'text-zinc-300'}`}>
                       {m._haber > 0 ? `${fmtNum(m._haber)} ${unidad}` : '—'}
                     </td>
-                    <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${m._saldoFn < 0 ? 'text-rose-600' : 'text-violet-700'}`}>
+                    <td className={`px-3 py-2 text-right font-bold whitespace-nowrap ${m._saldoFn < 0 ? 'text-rose-600' : 'text-brand-cyan'}`}>
                       {fmtNum(m._saldoFn)} {unidad}
                     </td>
                   </tr>
@@ -329,10 +355,10 @@ function ModalConsumoPlan({ plan, planes, onClose }) {
           )}
         </div>
 
-        <div className="px-5 py-2.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-slate-400">Vista de consulta: acá no se puede editar ni revertir ningún consumo.</span>
+        <div className="px-5 py-2.5 border-t border-zinc-200 bg-zinc-50 flex items-center justify-between shrink-0">
+          <span className="text-[11px] text-zinc-400">Vista de consulta: acá no se puede editar ni revertir ningún consumo.</span>
           <button onClick={onClose}
-            className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors">
+            className="px-4 py-2 text-xs font-bold text-zinc-600 bg-white border border-zinc-200 hover:bg-zinc-100 rounded-lg transition-colors">
             Cerrar
           </button>
         </div>
@@ -367,12 +393,12 @@ function TabRecursos({ CliIdCliente }) {
 
   return (
     <>
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Disponible en planes activos</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Disponible en planes activos</span>
           <span className="text-base font-black tracking-tight text-emerald-600">{fmtNum(restanteActivo)}</span>
         </div>
-        <span className="text-[11px] text-slate-400">{activos.length} activo{activos.length !== 1 ? 's' : ''} de {planes.length}</span>
+        <span className="text-[11px] text-zinc-400">{activos.length} activo{activos.length !== 1 ? 's' : ''} de {planes.length}</span>
       </div>
 
       <Tabla head={<>
@@ -381,44 +407,44 @@ function TabRecursos({ CliIdCliente }) {
         <Th align="center">Detalle</Th>
       </>}>
         {planes.map(p => (
-          <tr key={p.PlaIdPlan} className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/60 ${p.PlaActivo ? '' : 'opacity-50'}`}>
+          <tr key={p.PlaIdPlan} className={`border-b border-zinc-100 last:border-0 hover:bg-zinc-50/60 ${p.PlaActivo ? '' : 'opacity-50'}`}>
             <td className="px-4 py-3 align-top">
-              <span className="font-bold text-slate-800">{p.PlaDescripcion || `Plan #${p.PlaIdPlan}`}</span>
-              <span className="block text-[11px] text-slate-400">Alta {fmtFechaCorta(p.PlaFechaAlta)}</span>
+              <span className="font-bold text-zinc-800">{p.PlaDescripcion || `Plan #${p.PlaIdPlan}`}</span>
+              <span className="block text-[11px] text-zinc-400">Alta {fmtFechaCorta(p.PlaFechaAlta)}</span>
             </td>
-            <td className="px-4 py-3 align-top text-slate-600 text-xs">{p.NombreArticulo || '—'}</td>
-            <td className="px-4 py-3 text-right tabular-nums font-semibold text-slate-700 align-top whitespace-nowrap">
+            <td className="px-4 py-3 align-top text-zinc-600 text-xs">{p.NombreArticulo || '—'}</td>
+            <td className="px-4 py-3 text-right tabular-nums font-semibold text-zinc-700 align-top whitespace-nowrap">
               {fmtNum(p.PlaCantidadTotal)} {p.UniSimbolo || ''}
             </td>
-            <td className="px-4 py-3 text-right tabular-nums text-slate-500 align-top whitespace-nowrap">{fmtNum(p.PlaCantidadUsada)}</td>
-            <td className={`px-4 py-3 text-right tabular-nums font-black align-top whitespace-nowrap ${Number(p.PlaCantidadRestante) > 0.01 ? 'text-emerald-600' : 'text-slate-400'}`}>
+            <td className="px-4 py-3 text-right tabular-nums text-zinc-500 align-top whitespace-nowrap">{fmtNum(p.PlaCantidadUsada)}</td>
+            <td className={`px-4 py-3 text-right tabular-nums font-black align-top whitespace-nowrap ${Number(p.PlaCantidadRestante) > 0.01 ? 'text-emerald-600' : 'text-zinc-400'}`}>
               {fmtNum(p.PlaCantidadRestante)}
             </td>
             <td className="px-4 py-3 align-top">
               <BarraConsumo pct={p.PorcentajeUsado} />
-              <span className="block text-[10px] text-slate-400 mt-1">{fmtNum(p.PorcentajeUsado, 1)}% usado</span>
+              <span className="block text-[10px] text-zinc-400 mt-1">{fmtNum(p.PorcentajeUsado, 1)}% usado</span>
             </td>
-            <td className="px-4 py-3 align-top text-xs text-slate-500 whitespace-nowrap">
+            <td className="px-4 py-3 align-top text-xs text-zinc-500 whitespace-nowrap">
               {p.PlaFechaVencimiento ? (
                 <>
                   {fmtFechaCorta(p.PlaFechaVencimiento)}
                   {p.DiasParaVencer != null && (
-                    <span className={`block text-[10px] font-bold ${p.DiasParaVencer < 0 ? 'text-rose-600' : p.DiasParaVencer <= 15 ? 'text-amber-600' : 'text-slate-400'}`}>
+                    <span className={`block text-[10px] font-bold ${p.DiasParaVencer < 0 ? 'text-rose-600' : p.DiasParaVencer <= 15 ? 'text-amber-600' : 'text-zinc-400'}`}>
                       {p.DiasParaVencer < 0 ? `Vencido hace ${Math.abs(p.DiasParaVencer)} d` : `Faltan ${p.DiasParaVencer} d`}
                     </span>
                   )}
                 </>
-              ) : <span className="text-slate-300">Sin vencimiento</span>}
+              ) : <span className="text-zinc-300">Sin vencimiento</span>}
             </td>
             <td className="px-4 py-3 text-center align-top">
-              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${p.PlaActivo ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-slate-100 text-slate-400 border-slate-200'}`}>
+              <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border ${p.PlaActivo ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-zinc-100 text-zinc-400 border-zinc-200'}`}>
                 {p.PlaActivo ? 'Activo' : 'Inactivo'}
               </span>
             </td>
             <td className="px-4 py-3 text-center align-top">
               <button onClick={() => setPlanConsumo(p)}
                 title="Ver el estado de cuenta de este recurso: orden por orden, cómo se fueron consumiendo los metros"
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-violet-700 bg-violet-50 hover:bg-violet-100 border border-violet-200 transition-colors whitespace-nowrap">
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-brand-cyan bg-white hover:bg-brand-cyan/5 border border-zinc-200 hover:border-brand-cyan/40 transition-colors whitespace-nowrap">
                 <History size={12} /> Ver consumo
               </button>
             </td>
@@ -447,11 +473,11 @@ const TIPO_MOV_TELA = {
   AJUSTE_ANCHO:           { label: 'Ajuste ancho',   color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±' },
   CONFIRMACION_MEDIDA:    { label: 'Confirm. medida', color: 'text-sky-700 bg-sky-50 border-sky-200',            sign: '✓' },
   DEVOLUCION_CANCELACION: { label: 'Devolución',     color: 'text-teal-700 bg-teal-50 border-teal-200',          sign: '+' },
-  RESERVA_ORDEN:          { label: 'Reserva',        color: 'text-indigo-700 bg-indigo-50 border-indigo-200',    sign: '→' },
+  RESERVA_ORDEN:          { label: 'Reserva',        color: 'text-brand-cyan bg-brand-cyan/10 border-brand-cyan/20',    sign: '→' },
   LIBERACION_RESERVA:     { label: 'Lib. reserva',   color: 'text-teal-700 bg-teal-50 border-teal-200',          sign: '←' },
   MERMA_REIMPRESION:      { label: 'Merma reimp.',   color: 'text-orange-700 bg-orange-50 border-orange-200',    sign: '-' },
 };
-const getTipoTela = (t) => TIPO_MOV_TELA[t] || { label: t || '—', color: 'text-slate-500 bg-slate-50 border-slate-200', sign: '' };
+const getTipoTela = (t) => TIPO_MOV_TELA[t] || { label: t || '—', color: 'text-zinc-500 bg-zinc-50 border-zinc-200', sign: '' };
 
 // (Existía una lista NO_CONSUMO para excluir tipos de movimiento del consumo. Se eliminó:
 // clasificar por tipo era el origen del error — el consumo ahora se deriva del saldo.)
@@ -512,56 +538,56 @@ function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
   }, [movs, tela.TipoTela]);
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/50 backdrop-blur-sm flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
+    <div className="fixed inset-0 z-[6000] bg-zinc-900/60 flex items-start justify-center px-2 sm:px-4 pt-10 pb-4"
       onClick={onClose}>
       <div className="bg-white rounded-2xl shadow-2xl w-[97vw] max-w-5xl max-h-[calc(100vh-4rem)] flex flex-col overflow-hidden"
         onClick={e => e.stopPropagation()}>
 
-        <div className="flex items-center justify-between px-5 py-3 bg-indigo-600 text-white shrink-0">
+        <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-zinc-200 text-zinc-800 shrink-0">
           <div className="flex items-center gap-2.5 min-w-0">
-            <Package size={16} />
+            <Package size={18} className="text-brand-cyan shrink-0" />
             <div className="min-w-0">
               <h3 className="text-sm font-black leading-tight truncate">Consumo de tela · {tela.TipoTela || tela.InsumoNombre}</h3>
-              <p className="text-[11px] text-indigo-100">
+              <p className="text-[11px] text-zinc-500">
                 {bobinas.length} bulto{bobinas.length !== 1 ? 's' : ''} · tocá uno para ver sus movimientos
               </p>
             </div>
           </div>
           <button onClick={onClose} title="Cerrar el estado de cuenta de la tela"
-            className="p-2 rounded-lg hover:bg-white/20 transition-colors shrink-0">
+            className="p-2 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors shrink-0">
             <X size={18} />
           </button>
         </div>
 
-        <div className="px-5 py-3 bg-indigo-50 border-b border-indigo-100 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
+        <div className="px-5 py-3 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center gap-x-6 gap-y-2 shrink-0">
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Ingresados</span>
-            <span className="text-sm font-black text-slate-700">{fmtNum(tela.MetrosIngresados)} m</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Ingresados</span>
+            <span className="text-sm font-black text-zinc-700">{fmtNum(tela.MetrosIngresados)} m</span>
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Consumidos</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Consumidos</span>
             <span className="text-sm font-black text-rose-600">{fmtNum(tela.MetrosConsumidos)} m</span>
           </div>
           <div className="flex items-baseline gap-2">
-            <span className="text-[10px] font-black uppercase tracking-widest text-indigo-400">Disponibles</span>
-            <span className="text-sm font-black text-indigo-700">{fmtNum(tela.MetrosDisponibles)} m</span>
+            <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Disponibles</span>
+            <span className="text-sm font-black text-brand-cyan">{fmtNum(tela.MetrosDisponibles)} m</span>
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-auto p-4 flex flex-col gap-2 bg-slate-50">
+        <div className="flex-1 min-h-0 overflow-auto p-4 flex flex-col gap-2 bg-zinc-50">
           {loading ? <Cargando /> : bobinas.length === 0 ? (
             <Vacio>No hay movimientos registrados para esta tela.</Vacio>
           ) : bobinas.map(b => {
             const open = abierta === b.bobinaId;
             return (
-              <div key={b.bobinaId} className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+              <div key={b.bobinaId} className="bg-white border border-zinc-200 rounded-xl overflow-hidden">
                 <button type="button" onClick={() => setAbierta(open ? null : b.bobinaId)}
-                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-slate-50 transition-colors text-left">
-                  {open ? <ChevronDown size={15} className="text-slate-400 shrink-0" /> : <ChevronRight size={15} className="text-slate-400 shrink-0" />}
-                  <Package size={14} className="text-indigo-500 shrink-0" />
+                  className="w-full flex items-center gap-3 px-4 py-3 hover:bg-zinc-50 transition-colors text-left">
+                  {open ? <ChevronDown size={15} className="text-zinc-400 shrink-0" /> : <ChevronRight size={15} className="text-zinc-400 shrink-0" />}
+                  <Package size={14} className="text-brand-cyan shrink-0" />
                   <div className="min-w-0 flex-1">
-                    <span className="font-bold text-slate-800 text-sm">{b.referencia || b.bulto}</span>
-                    <span className="block text-[10px] text-slate-400 font-mono">
+                    <span className="font-bold text-zinc-800 text-sm">{b.referencia || b.bulto}</span>
+                    <span className="block text-[10px] text-zinc-400 font-mono">
                       {b.bulto} · Ingreso {fmtFechaCorta(b.fechaIngreso)}
                       {b.metrosIniciales ? ` · L:${fmtNum(b.metrosIniciales)}m` : ''}
                       {b.ancho ? ` · A:${fmtNum(b.ancho)}m` : ''}
@@ -569,29 +595,29 @@ function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
                   </div>
                   <div className="flex items-center gap-4 shrink-0">
                     <div className="text-center hidden sm:block">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Ingreso</p>
+                      <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Ingreso</p>
                       <p className="text-sm font-black tabular-nums text-emerald-600">+{fmtNum(b.ingresado)}</p>
                     </div>
                     <div className="text-center hidden sm:block">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Consumo</p>
+                      <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Consumo</p>
                       <p className="text-sm font-black tabular-nums text-rose-500">{b.consumido > 0 ? '-' : ''}{fmtNum(b.consumido)}</p>
                     </div>
                     <div className="text-center">
-                      <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Saldo</p>
-                      <p className={`text-sm font-black tabular-nums ${b.saldo > 0 ? 'text-indigo-700' : 'text-slate-400'}`}>{fmtNum(b.saldo)}</p>
+                      <p className="text-[9px] font-black text-zinc-400 uppercase tracking-widest">Saldo</p>
+                      <p className={`text-sm font-black tabular-nums ${b.saldo > 0 ? 'text-brand-cyan' : 'text-zinc-400'}`}>{fmtNum(b.saldo)}</p>
                     </div>
-                    <span className="text-[10px] text-slate-400 font-bold hidden md:block">{b.movimientos.length} mov.</span>
-                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-black border bg-slate-50 text-slate-500 border-slate-200 uppercase">
+                    <span className="text-[10px] text-zinc-400 font-bold hidden md:block">{b.movimientos.length} mov.</span>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-black border bg-zinc-50 text-zinc-500 border-zinc-200 uppercase">
                       {b.estado || '—'}
                     </span>
                   </div>
                 </button>
 
                 {open && (
-                  <div className="border-t border-slate-100 overflow-x-auto">
+                  <div className="border-t border-zinc-100 overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead>
-                        <tr className="bg-slate-50 border-b border-slate-200 text-[9px] font-black uppercase tracking-widest text-slate-500">
+                        <tr className="bg-zinc-50 border-b border-zinc-200 text-[9px] font-black uppercase tracking-widest text-zinc-500">
                           <th className="px-4 py-2 text-left">Fecha</th>
                           <th className="px-4 py-2 text-left">Tipo</th>
                           <th className="px-4 py-2 text-right">Cantidad</th>
@@ -604,21 +630,21 @@ function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
                         {b.movimientos.map((m, i) => {
                           const cfg = getTipoTela(m.TipoMovimiento);
                           return (
-                            <tr key={m.MovimientoID || i} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/60">
-                              <td className="px-4 py-2.5 tabular-nums text-[10px] text-slate-500 whitespace-nowrap">{fmtFechaCorta(m.FechaMovimiento)}</td>
+                            <tr key={m.MovimientoID || i} className="border-b border-zinc-50 last:border-0 hover:bg-zinc-50/60">
+                              <td className="px-4 py-2.5 tabular-nums text-[10px] text-zinc-500 whitespace-nowrap">{fmtFechaCorta(m.FechaMovimiento)}</td>
                               <td className="px-4 py-2.5">
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full border text-[9px] font-black uppercase ${cfg.color}`}>
                                   {cfg.label}
                                 </span>
                               </td>
-                              <td className={`px-4 py-2.5 font-black tabular-nums text-right whitespace-nowrap ${m.TipoMovimiento === 'INGRESO' ? 'text-emerald-600' : Number(m.Cantidad) < 0 ? 'text-rose-600' : 'text-slate-600'}`}>
+                              <td className={`px-4 py-2.5 font-black tabular-nums text-right whitespace-nowrap ${m.TipoMovimiento === 'INGRESO' ? 'text-emerald-600' : Number(m.Cantidad) < 0 ? 'text-rose-600' : 'text-zinc-600'}`}>
                                 {cfg.sign} {fmtNum(Math.abs(m.Cantidad))} m
                               </td>
-                              <td className="px-4 py-2.5 font-black tabular-nums text-right text-indigo-700 whitespace-nowrap">{fmtNum(m.SaldoAcumulado || 0)} m</td>
-                              <td className="px-4 py-2.5 text-[10px] text-slate-400 max-w-[200px] truncate" title={m.Referencia || ''}>
+                              <td className="px-4 py-2.5 font-black tabular-nums text-right text-brand-cyan whitespace-nowrap">{fmtNum(m.SaldoAcumulado || 0)} m</td>
+                              <td className="px-4 py-2.5 text-[10px] text-zinc-400 max-w-[200px] truncate" title={m.Referencia || ''}>
                                 {m.Referencia || m.CodigoRecepcion || '—'}
                               </td>
-                              <td className="px-4 py-2.5 text-[10px] text-slate-400">{m.Operario || '—'}</td>
+                              <td className="px-4 py-2.5 text-[10px] text-zinc-400">{m.Operario || '—'}</td>
                             </tr>
                           );
                         })}
@@ -631,10 +657,10 @@ function ModalConsumoTela({ CliIdCliente, tela, onClose }) {
           })}
         </div>
 
-        <div className="px-5 py-2.5 border-t border-slate-200 bg-slate-50 flex items-center justify-between shrink-0">
-          <span className="text-[11px] text-slate-400">Vista de consulta: acá no se puede ajustar ni cerrar ninguna bobina.</span>
+        <div className="px-5 py-2.5 border-t border-zinc-200 bg-zinc-50 flex items-center justify-between shrink-0">
+          <span className="text-[11px] text-zinc-400">Vista de consulta: acá no se puede ajustar ni cerrar ninguna bobina.</span>
           <button onClick={onClose}
-            className="px-4 py-2 text-xs font-bold text-slate-600 bg-white border border-slate-200 hover:bg-slate-100 rounded-lg transition-colors">
+            className="px-4 py-2 text-xs font-bold text-zinc-600 bg-white border border-zinc-200 hover:bg-zinc-100 rounded-lg transition-colors">
             Cerrar
           </button>
         </div>
@@ -669,12 +695,12 @@ function TabTelas({ CliIdCliente }) {
 
   return (
     <>
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-x-6 gap-y-2">
+      <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center gap-x-6 gap-y-2">
         <div className="flex items-baseline gap-2">
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Metros disponibles</span>
-          <span className="text-base font-black tracking-tight text-indigo-600">{fmtNum(totalDisp)} m</span>
+          <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Metros disponibles</span>
+          <span className="text-base font-black tracking-tight text-brand-cyan">{fmtNum(totalDisp)} m</span>
         </div>
-        <span className="text-[11px] text-slate-400">{totalBultos} bulto{totalBultos !== 1 ? 's' : ''} · {saldos.length} tipo{saldos.length !== 1 ? 's' : ''} de tela</span>
+        <span className="text-[11px] text-zinc-400">{totalBultos} bulto{totalBultos !== 1 ? 's' : ''} · {saldos.length} tipo{saldos.length !== 1 ? 's' : ''} de tela</span>
       </div>
 
       <Tabla head={<>
@@ -684,28 +710,28 @@ function TabTelas({ CliIdCliente }) {
         <Th align="center">Detalle</Th>
       </>}>
         {saldos.map((t, i) => (
-          <tr key={`${t.InsumoID}_${i}`} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
+          <tr key={`${t.InsumoID}_${i}`} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/60">
             <td className="px-4 py-3 align-top">
-              <span className="font-bold text-slate-800">{t.TipoTela || t.InsumoNombre}</span>
+              <span className="font-bold text-zinc-800">{t.TipoTela || t.InsumoNombre}</span>
               {t.TipoTela && t.InsumoNombre && t.TipoTela !== t.InsumoNombre && (
-                <span className="block text-[11px] text-slate-400">{t.InsumoNombre}</span>
+                <span className="block text-[11px] text-zinc-400">{t.InsumoNombre}</span>
               )}
             </td>
-            <td className="px-4 py-3 text-center tabular-nums text-slate-600 align-top">{t.CantidadBultos}</td>
-            <td className="px-4 py-3 text-right tabular-nums text-slate-600 align-top">{fmtNum(t.MetrosIngresados)}</td>
-            <td className="px-4 py-3 text-right tabular-nums text-slate-500 align-top">{fmtNum(t.MetrosConsumidos)}</td>
-            <td className="px-4 py-3 text-right tabular-nums font-black text-indigo-600 align-top">{fmtNum(t.MetrosDisponibles)}</td>
+            <td className="px-4 py-3 text-center tabular-nums text-zinc-600 align-top">{t.CantidadBultos}</td>
+            <td className="px-4 py-3 text-right tabular-nums text-zinc-600 align-top">{fmtNum(t.MetrosIngresados)}</td>
+            <td className="px-4 py-3 text-right tabular-nums text-zinc-500 align-top">{fmtNum(t.MetrosConsumidos)}</td>
+            <td className="px-4 py-3 text-right tabular-nums font-black text-brand-cyan align-top">{fmtNum(t.MetrosDisponibles)}</td>
             <td className="px-4 py-3 text-right tabular-nums text-emerald-600 font-semibold align-top">{fmtNum(t.MetrosLibres)}</td>
             <td className="px-4 py-3 text-right tabular-nums text-amber-600 font-semibold align-top">{fmtNum(t.MetrosEnProceso)}</td>
             <td className="px-4 py-3 align-top">
               <BarraConsumo pct={t.PorcentajeConsumido} />
-              <span className="block text-[10px] text-slate-400 mt-1">{fmtNum(t.PorcentajeConsumido, 1)}% consumido</span>
+              <span className="block text-[10px] text-zinc-400 mt-1">{fmtNum(t.PorcentajeConsumido, 1)}% consumido</span>
             </td>
-            <td className="px-4 py-3 align-top text-xs text-slate-500 whitespace-nowrap">{fmtFechaCorta(t.UltimoIngreso)}</td>
+            <td className="px-4 py-3 align-top text-xs text-zinc-500 whitespace-nowrap">{fmtFechaCorta(t.UltimoIngreso)}</td>
             <td className="px-4 py-3 text-center align-top">
               <button onClick={() => setTelaConsumo(t)}
                 title="Ver el estado de cuenta de esta tela: bulto por bulto, cómo se fueron consumiendo los metros"
-                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-indigo-700 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 transition-colors whitespace-nowrap">
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold text-brand-cyan bg-white hover:bg-brand-cyan/5 border border-zinc-200 hover:border-brand-cyan/40 transition-colors whitespace-nowrap">
                 <History size={12} /> Ver consumo
               </button>
             </td>
@@ -715,6 +741,107 @@ function TabTelas({ CliIdCliente }) {
 
       {telaConsumo && (
         <ModalConsumoTela CliIdCliente={CliIdCliente} tela={telaConsumo} onClose={() => setTelaConsumo(null)} />
+      )}
+    </>
+  );
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   PESTAÑA 0 — RESUMEN (22/10/2026)
+   Servicios más usados, y por área: cuántas órdenes y su costo final. Solo las áreas con órdenes, sin
+   las canceladas. Sale de GET /api/vendedor-360/clientes/:id/resumen (OrdenesDeposito). Los importes
+   van por moneda, sin convertir.
+   ══════════════════════════════════════════════════════════════════════ */
+const PERIODOS_RESUMEN = [['1m', 'Último mes'], ['3m', 'Últimos 3 meses'], ['12m', 'Últimos 12 meses'], ['todo', 'Todo']];
+const costosTexto = (costos = []) => costos.map(c => `${c.moneda} ${fmtNum(c.total)}`).join(' · ') || '—';
+
+function TabResumen({ CliIdCliente }) {
+  const [periodo, setPeriodo] = useState('12m');
+  const [datos, setDatos]     = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    fetchAPI(`/api/vendedor-360/clientes/${CliIdCliente}/resumen?periodo=${periodo}`)
+      .then(r => { if (alive) setDatos(r.data || null); })
+      .catch(e => { if (alive) { toast.error(e.message); setDatos(null); } })
+      .finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [CliIdCliente, periodo]);
+
+  const maxOrdenes = Math.max(1, ...((datos?.areas || []).map(a => a.ordenes)));
+
+  return (
+    <>
+      <div className="px-4 py-3 border-b border-zinc-100 flex flex-wrap items-center gap-2">
+        <div className="sm:hidden w-full">
+          <Selector value={periodo} onChange={e => setPeriodo(e.target.value)} aria-label="Período">
+            {PERIODOS_RESUMEN.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+          </Selector>
+        </div>
+        <div className="hidden sm:inline-flex rounded-full border border-zinc-200 p-0.5">
+          {PERIODOS_RESUMEN.map(([k, l]) => (
+            <button key={k} type="button" onClick={() => setPeriodo(k)}
+              className={`px-3 py-1 rounded-full text-[11px] font-bold transition-colors ${periodo === k ? 'bg-brand-cyan text-white' : 'text-zinc-500 hover:text-zinc-700'}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+        {datos?.totalOrdenes > 0 && (
+          <span className="ml-auto text-[11px] font-semibold text-zinc-400">
+            {datos.totalOrdenes} orden{datos.totalOrdenes !== 1 ? 'es' : ''} · {costosTexto(datos.totales)}
+          </span>
+        )}
+      </div>
+
+      {loading ? <Cargando /> : !datos?.totalOrdenes ? (
+        <Vacio>Este cliente no tiene órdenes en este período.</Vacio>
+      ) : (
+        <div className="p-4 space-y-6">
+          <section>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Servicios más usados</h3>
+            <div className="rounded-xl border border-zinc-200 overflow-hidden">
+              <Tabla head={<>
+                <Th>Servicio</Th><Th align="center">Área</Th><Th align="right">Órdenes</Th><Th align="right">Cantidad</Th><Th align="right">Costo final</Th>
+              </>}>
+                {datos.servicios.map((sv, i) => (
+                  <tr key={`${sv.servicio}-${i}`} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/60">
+                    <td className="px-4 py-2.5 font-bold text-zinc-800">{sv.servicio}</td>
+                    <td className="px-4 py-2.5 text-center">
+                      {sv.area ? <span className="px-2 py-0.5 rounded-full bg-zinc-100 text-[10px] font-black text-zinc-600">{sv.area}</span> : <span className="text-zinc-300">—</span>}
+                    </td>
+                    <td className="px-4 py-2.5 text-right tabular-nums font-bold text-zinc-700">{sv.ordenes}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-zinc-600 whitespace-nowrap">{fmtNum(sv.cantidad)}{sv.unidad ? ` ${sv.unidad}` : ''}</td>
+                    <td className="px-4 py-2.5 text-right tabular-nums text-zinc-700 whitespace-nowrap">{costosTexto(sv.costos)}</td>
+                  </tr>
+                ))}
+              </Tabla>
+            </div>
+          </section>
+
+          <section>
+            <h3 className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2">Órdenes y costo final por área</h3>
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              {datos.areas.map(a => (
+                <div key={a.area} className="rounded-xl border border-zinc-200 p-3">
+                  <div className="flex items-baseline gap-2 min-w-0">
+                    <span className="text-sm font-black text-zinc-800">{a.codigo}</span>
+                    {a.nombre && <span className="text-[11px] text-zinc-400 truncate">{a.nombre}</span>}
+                  </div>
+                  <p className="mt-1 text-2xl font-black tracking-tight text-zinc-800 tabular-nums">
+                    {a.ordenes}<span className="ml-1 text-[11px] font-bold text-zinc-400">orden{a.ordenes !== 1 ? 'es' : ''}</span>
+                  </p>
+                  <div className="mt-2 h-1.5 rounded-full bg-zinc-100 overflow-hidden">
+                    <div className="h-full bg-brand-cyan rounded-full" style={{ width: `${Math.round(a.ordenes * 100 / maxOrdenes)}%` }} />
+                  </div>
+                  <p className="mt-2 text-xs font-bold text-zinc-700 tabular-nums">{costosTexto(a.costos)}</p>
+                  <p className="text-[10px] text-zinc-400">costo final</p>
+                </div>
+              ))}
+            </div>
+          </section>
+        </div>
       )}
     </>
   );
@@ -760,13 +887,13 @@ function TabDeposito({ CliIdCliente }) {
 
   return (
     <>
-      <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-2">
+      <div className="px-4 py-3 border-b border-zinc-100 flex flex-wrap items-center gap-2">
         <div className="relative">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
           <input value={busqueda} onChange={e => setBusqueda(e.target.value)} placeholder="Buscar orden, trabajo o material…"
-            className="w-64 pl-7 pr-3 py-1.5 text-[11px] font-medium border border-slate-200 rounded-full outline-none focus:border-cyan-400 focus:ring-2 focus:ring-cyan-500/10 placeholder:text-slate-400" />
+            className="w-64 pl-7 pr-3 py-1.5 text-[11px] font-medium border border-zinc-200 rounded-full outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 placeholder:text-zinc-400" />
         </div>
-        <span className="ml-auto text-[11px] font-semibold text-slate-400">
+        <span className="ml-auto text-[11px] font-semibold text-zinc-400">
           {visibles.length} orden{visibles.length !== 1 ? 'es' : ''} en depósito
         </span>
       </div>
@@ -778,31 +905,31 @@ function TabDeposito({ CliIdCliente }) {
         <Th align="right">Cantidad</Th><Th align="right">Importe</Th><Th align="center">Estado</Th><Th align="center">Aviso</Th>
       </>}>
         {visibles.map(o => (
-          <tr key={o.OrdIdOrden} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
+          <tr key={o.OrdIdOrden} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/60">
             <td className="px-4 py-3 align-top text-xs whitespace-nowrap">
-              <span className="tabular-nums text-slate-500">{fmtFechaCorta(o.OrdFechaIngresoOrden)}</span>
+              <span className="tabular-nums text-zinc-500">{fmtFechaCorta(o.OrdFechaIngresoOrden)}</span>
               {o.DiasEnDeposito != null && (
-                <span className={`block text-[10px] font-bold ${o.DiasEnDeposito >= 30 ? 'text-rose-600' : o.DiasEnDeposito >= 15 ? 'text-amber-600' : 'text-slate-400'}`}>
+                <span className={`block text-[10px] font-bold ${o.DiasEnDeposito >= 30 ? 'text-rose-600' : o.DiasEnDeposito >= 15 ? 'text-amber-600' : 'text-zinc-400'}`}>
                   {o.DiasEnDeposito} día{o.DiasEnDeposito !== 1 ? 's' : ''} acá
                 </span>
               )}
             </td>
             <td className="px-4 py-3 align-top">
-              <span className="font-bold text-slate-800">{o.OrdCodigoOrden}</span>
+              <span className="font-bold text-zinc-800">{o.OrdCodigoOrden}</span>
               {o.OrdNombreTrabajo && (
-                <span className="block text-[11px] text-slate-400 truncate max-w-[220px]" title={o.OrdNombreTrabajo}>{o.OrdNombreTrabajo}</span>
+                <span className="block text-[11px] text-zinc-400 truncate max-w-[220px]" title={o.OrdNombreTrabajo}>{o.OrdNombreTrabajo}</span>
               )}
             </td>
-            <td className="px-4 py-3 align-top text-xs text-slate-600">
-              {o.Material ? <span className="truncate max-w-[160px] inline-block align-top" title={o.Material}>{o.Material}</span> : <span className="text-slate-300">—</span>}
+            <td className="px-4 py-3 align-top text-xs text-zinc-600">
+              {o.Material ? <span className="truncate max-w-[160px] inline-block align-top" title={o.Material}>{o.Material}</span> : <span className="text-zinc-300">—</span>}
             </td>
-            <td className="px-4 py-3 text-center align-top text-xs tabular-nums text-slate-600">
-              {o.BultosEsperados ? `${o.BultosRecibidos || 0}/${o.BultosEsperados}` : <span className="text-slate-300">—</span>}
+            <td className="px-4 py-3 text-center align-top text-xs tabular-nums text-zinc-600">
+              {o.BultosEsperados ? `${o.BultosRecibidos || 0}/${o.BultosEsperados}` : <span className="text-zinc-300">—</span>}
             </td>
-            <td className="px-4 py-3 text-right tabular-nums text-slate-600 align-top">{fmtNum(o.OrdCantidad)}</td>
-            <td className="px-4 py-3 text-right tabular-nums font-bold text-slate-800 align-top whitespace-nowrap">{o.MonSimbolo} {fmtNum(o.OrdCostoFinal)}</td>
+            <td className="px-4 py-3 text-right tabular-nums text-zinc-600 align-top">{fmtNum(o.OrdCantidad)}</td>
+            <td className="px-4 py-3 text-right tabular-nums font-bold text-zinc-800 align-top whitespace-nowrap">{o.MonSimbolo} {fmtNum(o.OrdCostoFinal)}</td>
             <td className="px-4 py-3 text-center align-top">
-              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-cyan-50 text-cyan-700 border-cyan-200 whitespace-nowrap">
+              <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold border bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20 whitespace-nowrap">
                 {o.EOrNombreEstado || `Estado ${o.OrdEstadoActual ?? '—'}`}
               </span>
             </td>
@@ -812,7 +939,7 @@ function TabDeposito({ CliIdCliente }) {
                   <CheckCircle2 size={12} /> Avisado
                 </span>
               ) : (
-                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400">
+                <span className="inline-flex items-center gap-1 text-[10px] font-bold text-zinc-400">
                   <Clock size={12} /> Sin avisar
                 </span>
               )}
@@ -836,11 +963,11 @@ function TabDeposito({ CliIdCliente }) {
 // Perfiles de precio asignados al cliente: se muestran como contexto arriba de
 // las excepciones (antes eran una pestaña aparte).
 const ResumenTarifas = ({ profiles }) => (
-  <div className="px-4 py-3 border-b border-slate-100 flex flex-wrap items-center gap-2">
-    <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Tarifas asignadas</span>
+  <div className="px-4 py-3 border-b border-zinc-100 flex flex-wrap items-center gap-2">
+    <span className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Tarifas asignadas</span>
     {profiles.map(p => (
       <span key={p.ID} title={`Perfil de precios #${p.ID}`}
-        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border bg-cyan-50 text-cyan-700 border-cyan-200">
+        className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold border bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20">
         {p.NombrePerfil}
       </span>
     ))}
@@ -902,13 +1029,13 @@ function TabPreciosEspeciales({ CliIdCliente }) {
     const monId   = Number(r.Moneda) === 2 ? 2 : 1;
     const simbolo = monId === 2 ? 'USD' : 'UYU';
 
-    let tipo = 'PRODUCTO', icono = '📦', descripcion = `Producto ${cod}`, precioBase = 0;
+    let tipo = 'PRODUCTO', icono = Package, descripcion = `Producto ${cod}`, precioBase = 0;
 
     if (cod === 'TOTAL' || Number(r.ProIdProducto) === 0) {
-      tipo = 'GLOBAL'; icono = '🌐';
+      tipo = 'GLOBAL'; icono = Globe;
       descripcion = 'Aplica a todo el resto (Regla Global)';
     } else if (r.CodGrupo) {
-      tipo = 'FAMILIA'; icono = '📁';
+      tipo = 'FAMILIA'; icono = Folder;
       descripcion = `Toda la familia: ${nombreGrupo.get(String(r.CodGrupo).trim()) || r.CodGrupo}`;
     } else {
       const filasCat = catalogo.get(cod) || [];
@@ -954,11 +1081,11 @@ function TabPreciosEspeciales({ CliIdCliente }) {
     <>
       {profiles.length > 0 && <ResumenTarifas profiles={profiles} />}
 
-      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-2">
-        <span className="text-[10px] font-black uppercase tracking-widest text-slate-500 bg-white border border-slate-200 px-2.5 py-1 rounded-full">
+      <div className="px-4 py-3 bg-zinc-50 border-b border-zinc-200 flex flex-wrap items-center gap-2">
+        <span className="text-[10px] font-black uppercase tracking-widest text-zinc-500 bg-white border border-zinc-200 px-2.5 py-1 rounded-full">
           {filas.length} excepcion{filas.length !== 1 ? 'es' : ''} cargada{filas.length !== 1 ? 's' : ''}
         </span>
-        <span className="text-[11px] text-slate-500">
+        <span className="text-[11px] text-zinc-500">
           Precios pactados <strong>solo para este cliente</strong>. El resto del catálogo se cobra a lista base.
         </span>
       </div>
@@ -968,28 +1095,28 @@ function TabPreciosEspeciales({ CliIdCliente }) {
         <Th align="right">Precio base</Th><Th align="right">Tarifa especial</Th><Th align="right">Desde cantidad</Th>
       </>}>
         {filas.map(f => (
-          <tr key={f.key} className="border-b border-slate-100 last:border-0 hover:bg-slate-50/60">
-            <td className="px-4 py-3 text-center text-lg align-top select-none"
+          <tr key={f.key} className="border-b border-zinc-100 last:border-0 hover:bg-zinc-50/60">
+            <td className="px-4 py-3 text-center align-top"
               title={f.tipo === 'PRODUCTO' ? 'Producto' : f.tipo === 'FAMILIA' ? 'Familia de productos' : 'Regla global'}>
-              {f.icono}
+              <f.icono size={16} className="text-brand-cyan mx-auto" />
             </td>
             <td className="px-4 py-3 align-top">
-              <span className="font-bold text-slate-800">{f.descripcion}</span>
-              <span className="block text-[11px] font-mono text-slate-400 mt-0.5">Ref: {f.cod}</span>
+              <span className="font-bold text-zinc-800">{f.descripcion}</span>
+              <span className="block text-[11px] font-mono text-zinc-400 mt-0.5">Ref: {f.cod}</span>
             </td>
-            <td className="px-4 py-3 text-right tabular-nums font-mono text-slate-500 align-top whitespace-nowrap">
-              {f.precioBase > 0 ? `${f.simbolo} ${fmtNum(f.precioBase)}` : <span className="text-slate-300">--</span>}
+            <td className="px-4 py-3 text-right tabular-nums font-mono text-zinc-500 align-top whitespace-nowrap">
+              {f.precioBase > 0 ? `${f.simbolo} ${fmtNum(f.precioBase)}` : <span className="text-zinc-300">--</span>}
             </td>
-            <td className="px-4 py-3 text-right align-top whitespace-nowrap bg-indigo-50/30">
-              <span className="font-mono font-black text-indigo-700">
+            <td className="px-4 py-3 text-right align-top whitespace-nowrap bg-brand-cyan/5">
+              <span className="font-mono font-black text-brand-cyan">
                 {f.precioFinal != null ? `${f.simbolo} ${fmtNum(f.precioFinal)}` : `${fmtNum(f.descuentoPct)}% OFF`}
               </span>
               {f.precioFinal != null && f.descuentoPct != null && (
                 <span className="block text-[10px] font-bold text-emerald-600">{fmtNum(f.descuentoPct, 2)}% OFF</span>
               )}
             </td>
-            <td className="px-4 py-3 text-right tabular-nums text-slate-500 text-xs align-top">
-              {f.minCantidad > 0 ? fmtNum(f.minCantidad) : <span className="text-slate-300">Sin mínimo</span>}
+            <td className="px-4 py-3 text-right tabular-nums text-zinc-500 text-xs align-top">
+              {f.minCantidad > 0 ? fmtNum(f.minCantidad) : <span className="text-zinc-300">Sin mínimo</span>}
             </td>
           </tr>
         ))}
@@ -1010,7 +1137,7 @@ export default function VendedorCliente360() {
   const pedidoListaRef                        = useRef(0);       // descarta respuestas de una búsqueda que ya cambió
   const [loadingLista, setLoadingLista]       = useState(false);
   const [clienteSel, setClienteSel]           = useState(null);
-  const [tab, setTab]                         = useState('RECURSOS');
+  const [tab, setTab]                         = useState('RESUMEN');
   // Cambia al refrescar: fuerza a las pestañas a volver a pedir sus datos.
   const [refresh, setRefresh]                 = useState(0);
 
@@ -1086,6 +1213,7 @@ export default function VendedorCliente360() {
   const cuerpoTab = () => {
     const key = `${clienteSel.CliIdCliente}_${refresh}`;
     switch (tab) {
+      case 'RESUMEN':    return <TabResumen         key={key} CliIdCliente={clienteSel.CliIdCliente} />;
       case 'RECURSOS':   return <TabRecursos        key={key} CliIdCliente={clienteSel.CliIdCliente} />;
       case 'TELAS':      return <TabTelas           key={key} CliIdCliente={clienteSel.CliIdCliente} />;
       case 'DEPOSITO':   return <TabDeposito        key={key} CliIdCliente={clienteSel.CliIdCliente} />;
@@ -1096,170 +1224,171 @@ export default function VendedorCliente360() {
   };
 
   return (
-    <div className="bg-[#f1f5f9] min-h-full text-slate-700 font-sans">
-      {/* Barra superior */}
-      <div className="bg-white border-b border-slate-200 px-4 py-3 flex items-center gap-3 sticky top-0 z-10">
-        <div className="w-9 h-9 rounded-xl bg-cyan-700 flex items-center justify-center text-white shrink-0">
-          <Eye size={16} />
+    <div className="min-h-full text-zinc-700 px-3 sm:px-6 py-5">
+      {/* Encabezado */}
+      <div className="flex flex-wrap items-center gap-3 mb-5">
+        <Eye size={30} className="text-brand-cyan shrink-0" />
+        <div className="min-w-0 flex-1">
+          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Vista 360° del cliente</h1>
+          <p className="text-sm text-zinc-500 mt-1">Vendedores · solo consulta. Desde «Beneficios» se pueden proponer pactos.</p>
         </div>
-        <div className="min-w-0">
-          <h1 className="text-sm font-black text-slate-800 leading-tight">Vista 360° del cliente · Vendedores</h1>
-          <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider">Consulta — solo la pestaña Beneficios propone pactos, y no cambia precios</p>
-        </div>
-        <span className="ml-2 text-[10px] font-bold text-slate-500 bg-slate-50 border border-slate-200 px-2.5 py-1 rounded-full font-mono">
-          /vendedores/cliente-360
-        </span>
-        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-100 px-2.5 py-1 rounded-full flex items-center gap-1">
+        <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-zinc-200 bg-white text-[11px] font-bold text-zinc-500">
           <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" /> Solo lectura
         </span>
       </div>
 
-      <div className="px-3 sm:px-4 py-3">
-        <div className="flex flex-col lg:flex-row gap-4 w-full items-start">
+      <div className="flex flex-col lg:flex-row gap-4 w-full items-start">
 
-          {/* ── Columna izquierda: clientes ── */}
-          <div className="w-full md:w-80 shrink-0 flex flex-col bg-[#f1f5f9] rounded-xl border border-slate-200 shadow-sm">
-            <div className="px-4 py-4 border-b border-slate-200 flex flex-col gap-3">
-              <div className="flex items-center justify-between">
-                <h2 className="text-base font-bold text-slate-800 flex items-center gap-2">
-                  <Users size={16} className="text-cyan-500" />Clientes
-                </h2>
-                <button onClick={() => cargarClientes(busqueda, filtroTipoCliente, vendedorSel)} title="Actualizar la lista de clientes"
-                  className="p-1.5 hover:bg-slate-200 rounded-lg transition-colors text-slate-500">
-                  <RefreshCw size={13} className={loadingLista ? 'animate-spin' : ''} />
-                </button>
-              </div>
-              <div className="flex gap-2">
-                <div className="relative flex-1 flex items-center">
-                  <div className="absolute left-3 text-slate-400"><Search size={14} /></div>
-                  <input type="text" placeholder="Buscar por nombre, RUC o código..." value={busqueda}
-                    onChange={e => setBusqueda(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 hover:border-slate-300 focus:border-cyan-500 focus:bg-white rounded-xl pl-9 pr-3 py-2 text-xs font-bold text-slate-800 placeholder-slate-400 outline-none transition-all" />
-                </div>
-                <select value={filtroTipoCliente} onChange={e => setFiltroTipo(e.target.value)}
-                  className="bg-slate-50 border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700 outline-none w-[92px]">
+        {/* ── Columna izquierda: clientes ── */}
+        <aside className="w-full lg:w-[340px] shrink-0 bg-white rounded-2xl border border-zinc-200 flex flex-col overflow-hidden">
+          <div className="p-4 border-b border-zinc-100 flex flex-col gap-3">
+            <div className="flex items-center justify-between">
+              <h2 className="text-sm font-black uppercase tracking-wide text-zinc-800 flex items-center gap-2">
+                <Users size={16} className="text-brand-cyan" /> Clientes
+              </h2>
+              <button type="button" onClick={() => cargarClientes(busqueda, filtroTipoCliente, vendedorSel)} title="Actualizar la lista de clientes"
+                className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors">
+                <RefreshCw size={14} className={loadingLista ? 'animate-spin' : ''} />
+              </button>
+            </div>
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+              <input type="text" placeholder="Buscar por nombre, RUC o código…" value={busqueda}
+                onChange={e => setBusqueda(e.target.value)}
+                className="w-full pl-9 pr-3 py-2 border border-zinc-200 rounded-xl text-sm text-zinc-800 bg-white outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 placeholder:text-zinc-400" />
+            </div>
+            <div className="grid grid-cols-[112px_minmax(0,1fr)] gap-2">
+              <div>
+                <span className={etiquetaCampo}>Tipo</span>
+                <Selector filtro className="w-full" value={filtroTipoCliente} onChange={e => setFiltroTipo(e.target.value)} aria-label="Tipo de cliente">
                   <option value="">Todos</option>
                   <option value="1">Común</option>
                   <option value="2">Semanal</option>
                   <option value="3">Rollo</option>
-                </select>
+                </Selector>
               </div>
-
-              {/* Cartera: "Mis clientes" = los que tienen a ese vendedor asignado.
-                  Lo elegido queda guardado en este navegador para la próxima vez. */}
-              <div className="flex flex-col gap-1">
-                <label className="text-[10px] font-black uppercase tracking-widest text-slate-400">Cartera</label>
-                <select value={vendedorSel} onChange={e => elegirVendedor(e.target.value)}
-                  title="Filtrar por el vendedor que tiene asignados a los clientes"
-                  className="bg-white border border-slate-200 rounded-xl px-2 py-2 text-xs font-bold text-slate-700 outline-none focus:border-cyan-500">
+              {/* Cartera: los clientes que tienen a ese vendedor asignado. Queda guardada en este navegador. */}
+              <div className="min-w-0">
+                <span className={etiquetaCampo}>Cartera</span>
+                <Selector filtro className="w-full" value={vendedorSel} onChange={e => elegirVendedor(e.target.value)} aria-label="Cartera" anchoLista={280}>
                   <option value="">Todos los clientes</option>
                   {vendedores.map(v => (
-                    <option key={v.VendedorID} value={v.VendedorID}>
-                      {v.esMio ? '★ Mis clientes — ' : ''}{v.Etiqueta} ({v.CantClientes})
+                    <option key={v.VendedorID} value={v.VendedorID} descripcion={`${v.CantClientes} cliente${v.CantClientes !== 1 ? 's' : ''}${v.esMio ? ' · tu cartera' : ''}`}>
+                      {v.Etiqueta}
                     </option>
                   ))}
-                </select>
-                {vendedorSel && (
-                  <span className="text-[10px] text-cyan-700 font-bold">
-                    Mostrando solo la cartera de {vendedorActual?.Etiqueta || vendedorSel}
-                    {' · '}
-                    <button type="button" onClick={() => elegirVendedor('')}
-                      className="underline hover:text-cyan-900">ver todos</button>
-                  </span>
-                )}
+                </Selector>
               </div>
             </div>
-            {/* Llega de a 50: al acercarse al final del scroll se pide la página siguiente sola */}
-            <div className="flex-1 overflow-y-auto max-h-[70vh]"
-              onScroll={e => {
-                const el = e.currentTarget;
-                if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) cargarMasClientes();
-              }}>
-              {loadingLista ? (
-                <div className="flex justify-center py-12"><div className="animate-spin h-6 w-6 border-2 border-cyan-500 border-t-transparent rounded-full" /></div>
-              ) : clientes.length === 0 ? (
-                <div className="text-center py-12 text-slate-500">
-                  <Users size={28} className="mx-auto mb-2 opacity-30" />
-                  <p className="text-xs">
-                    {vendedorSel
-                      ? 'Ningún cliente de esta cartera coincide con la búsqueda'
-                      : busqueda.trim() ? 'No se encontraron clientes' : 'Escribí para buscar cualquier cliente'}
-                  </p>
-                </div>
-              ) : (
-                <>
-                  {clientes.map(c => (
-                    <FilaCliente key={c.CliIdCliente} c={c}
-                      seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
-                      onClick={() => setClienteSel(c)} />
-                  ))}
-                  {hayMasClientes && (
-                    <button type="button" onClick={cargarMasClientes} disabled={cargandoMas}
-                      className="w-full py-3 text-[11px] font-bold text-cyan-700 hover:bg-cyan-50 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors">
-                      {cargandoMas
-                        ? <><RefreshCw size={12} className="animate-spin" /> Cargando más clientes…</>
-                        : `Cargar más clientes (quedan ${totalClientes - clientes.length})`}
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-            <div className="px-4 py-2.5 border-t border-slate-200 text-[11px] text-slate-500 text-center">
-              {clientes.length < totalClientes
-                ? `${clientes.length} de ${totalClientes} clientes`
-                : `${clientes.length} clientes`}
-              {vendedorSel ? ' en tu cartera' : ''}
-            </div>
+            {vendedorSel && (
+              <p className="text-[11px] text-zinc-500">
+                Solo la cartera de <b className="text-zinc-700">{vendedorActual?.Etiqueta || vendedorSel}</b>
+                {' · '}
+                <button type="button" onClick={() => elegirVendedor('')} className="font-bold text-brand-cyan hover:underline">ver todos</button>
+              </p>
+            )}
           </div>
 
-          {/* ── Columna derecha: detalle ── */}
-          <div className="flex-1 space-y-4 min-w-0">
-            {!clienteSel ? (
-              <div className="flex flex-col items-center justify-center py-24 text-slate-500 bg-white rounded-2xl border border-slate-200 border-dashed">
-                <Eye size={48} className="mb-4 opacity-20" />
-                <p className="text-base font-medium">Seleccioná un cliente</p>
-                <p className="text-sm mt-1">para ver sus recursos, telas, deudas, depósito y precios</p>
+          {/* Llega de a 50: al acercarse al final del scroll se pide la página siguiente sola */}
+          <div className="flex-1 overflow-y-auto max-h-[65vh]"
+            onScroll={e => {
+              const el = e.currentTarget;
+              if (el.scrollHeight - el.scrollTop - el.clientHeight < 150) cargarMasClientes();
+            }}>
+            {loadingLista ? (
+              <Cargando />
+            ) : clientes.length === 0 ? (
+              <div className="text-center py-12 px-4">
+                <Users size={26} className="mx-auto mb-2 text-brand-cyan" />
+                <p className="text-xs text-zinc-500">
+                  {vendedorSel
+                    ? 'Ningún cliente de esta cartera coincide con la búsqueda'
+                    : busqueda.trim() ? 'No se encontraron clientes' : 'Escribí para buscar cualquier cliente'}
+                </p>
               </div>
             ) : (
               <>
-                {/* Ficha del cliente */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex items-start gap-3">
-                  <div className="w-12 h-12 rounded-2xl bg-gradient-to-br from-cyan-600 to-cyan-800 flex items-center justify-center text-white font-black text-lg shrink-0">
-                    {(clienteSel.Nombre || '?').slice(0, 2).toUpperCase()}
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <h2 className="text-base font-black text-slate-800 leading-tight truncate" title={clienteSel.Nombre}>{clienteSel.Nombre}</h2>
-                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider font-mono mt-0.5">
-                      ID: {clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}
-                    </p>
-                    <div className="flex flex-wrap gap-x-4 gap-y-0.5 text-[11px] text-slate-500 font-medium mt-2">
-                      {clienteSel.CioRuc && <span>RUC/CI: <span className="font-mono font-bold text-slate-700">{clienteSel.CioRuc}</span></span>}
-                      {clienteSel.Email && <span className="truncate max-w-[220px]" title={clienteSel.Email}>{clienteSel.Email}</span>}
-                      {clienteSel.TelefonoTrabajo && <span>{clienteSel.TelefonoTrabajo}</span>}
-                    </div>
-                  </div>
-                  <button onClick={() => setRefresh(v => v + 1)} title="Volver a consultar los datos de la pestaña actual"
-                    className="p-2 text-slate-500 hover:bg-slate-100 rounded-lg transition-colors shrink-0">
-                    <RefreshCw size={14} />
+                {clientes.map(c => (
+                  <FilaClienteVendedor key={c.CliIdCliente} c={c}
+                    seleccionado={clienteSel?.CliIdCliente === c.CliIdCliente}
+                    onClick={() => setClienteSel(c)} />
+                ))}
+                {hayMasClientes && (
+                  <button type="button" onClick={cargarMasClientes} disabled={cargandoMas}
+                    className="w-full py-3 text-xs font-bold text-brand-cyan hover:bg-brand-cyan/5 disabled:opacity-60 flex items-center justify-center gap-2 transition-colors">
+                    {cargandoMas
+                      ? <><RefreshCw size={12} className="animate-spin" /> Cargando más clientes…</>
+                      : `Cargar más clientes (quedan ${totalClientes - clientes.length})`}
                   </button>
-                </div>
-
-                {/* Pestañas */}
-                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                  <div className="px-4 pt-3 flex items-center gap-4 flex-wrap border-b border-slate-100">
-                    {TABS.map(({ key, label, icon: Icon }) => (
-                      <button key={key} type="button" onClick={() => setTab(key)}
-                        className={`relative pb-2.5 text-xs font-bold transition-colors flex items-center gap-1.5 ${tab === key ? 'text-cyan-700' : 'text-slate-400 hover:text-slate-600'}`}>
-                        <Icon size={13} /> {label}
-                        {tab === key && <span className="absolute -bottom-px left-0 right-0 h-0.5 bg-cyan-600 rounded-full" />}
-                      </button>
-                    ))}
-                  </div>
-                  {cuerpoTab()}
-                </div>
+                )}
               </>
             )}
           </div>
+          <div className="px-4 py-2.5 border-t border-zinc-100 text-[11px] text-zinc-400 text-center">
+            {clientes.length < totalClientes
+              ? `${clientes.length} de ${totalClientes} clientes`
+              : `${clientes.length} clientes`}
+            {vendedorSel ? ' en la cartera' : ''}
+          </div>
+        </aside>
+
+        {/* ── Columna derecha: detalle ── */}
+        <div className="flex-1 space-y-4 min-w-0 w-full">
+          {!clienteSel ? (
+            <div className="flex flex-col items-center justify-center py-24 px-4 text-center bg-white rounded-2xl border border-dashed border-zinc-300">
+              <Eye size={36} className="mb-3 text-brand-cyan" />
+              <p className="text-base font-bold text-zinc-800">Elegí un cliente</p>
+              <p className="text-sm text-zinc-500 mt-1">para ver su resumen, recursos, telas, depósito y precios</p>
+            </div>
+          ) : (
+            <>
+              {/* Ficha del cliente */}
+              <div className="bg-white rounded-2xl border border-zinc-200 p-4 sm:p-5 flex items-start gap-4">
+                <span className="w-12 h-12 rounded-2xl bg-brand-cyan/10 text-brand-cyan flex items-center justify-center font-black text-lg shrink-0">
+                  {(clienteSel.Nombre || '?').trim().slice(0, 2).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <h2 className="text-lg font-black text-zinc-900 leading-tight truncate" title={clienteSel.Nombre}>{clienteSel.Nombre}</h2>
+                  <p className="text-[11px] font-mono text-zinc-400 mt-0.5">#{clienteSel.IDCliente || clienteSel.CodCliente || clienteSel.CliIdCliente}</p>
+                  <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-zinc-600 mt-2">
+                    {clienteSel.CioRuc && (
+                      <span className="inline-flex items-center gap-1.5"><IdCard size={14} className="text-brand-cyan" /> RUC/CI <b className="font-mono text-zinc-800">{clienteSel.CioRuc}</b></span>
+                    )}
+                    {clienteSel.Email && (
+                      <span className="inline-flex items-center gap-1.5 min-w-0"><Mail size={14} className="text-brand-cyan shrink-0" /> <span className="truncate max-w-[240px]" title={clienteSel.Email}>{clienteSel.Email}</span></span>
+                    )}
+                    {clienteSel.TelefonoTrabajo && (
+                      <span className="inline-flex items-center gap-1.5"><Phone size={14} className="text-brand-cyan" /> {clienteSel.TelefonoTrabajo}</span>
+                    )}
+                  </div>
+                </div>
+                <button type="button" onClick={() => setRefresh(v => v + 1)} title="Volver a consultar los datos de la pestaña actual"
+                  className="p-2 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors shrink-0">
+                  <RefreshCw size={15} />
+                </button>
+              </div>
+
+              {/* Pestañas: pastillas en escritorio, selector en el celular */}
+              <div className="bg-white rounded-2xl border border-zinc-200 overflow-hidden">
+                <div className="px-3 py-3 border-b border-zinc-100">
+                  <div className="hidden md:flex flex-wrap gap-1.5">
+                    {TABS.map(({ key, label, icon: Icon }) => (
+                      <button key={key} type="button" onClick={() => setTab(key)}
+                        className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-colors ${tab === key ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+                        <Icon size={14} className={tab === key ? 'text-white' : 'text-brand-cyan'} /> {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="md:hidden">
+                    <Selector value={tab} onChange={e => setTab(e.target.value)} aria-label="Pestaña">
+                      {TABS.map(({ key, label }) => <option key={key} value={key}>{label}</option>)}
+                    </Selector>
+                  </div>
+                </div>
+                {cuerpoTab()}
+              </div>
+            </>
+          )}
         </div>
       </div>
     </div>

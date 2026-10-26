@@ -13,6 +13,7 @@ const { execFile, execFileSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 const logger = require('../utils/logger');
+const { entornoConTope, describirFallo } = require('../utils/topeMemoriaPython');
 
 const SCRIPT = path.join(__dirname, '..', 'python', 'quitar_fondo.py');
 const TIMEOUT_MS = 120000; // primera corrida descarga el modelo: darle aire
@@ -48,14 +49,24 @@ let cola = Promise.resolve();
  * Serializado (de a uno). Rechaza si el script falla — el caller decide el fallback.
  */
 function quitarFondo(inPath, outPath) {
+    const monitor = require('./colaProcesos');   // cola de procesos pesados del monitor
+    monitor.encolado('quitar-fondo');
     const tarea = () => new Promise((resolve, reject) => {
-        execFile(resolverPython(), [SCRIPT, inPath, outPath], { timeout: TIMEOUT_MS }, (err, stdout, stderr) => {
+        monitor.empezo('quitar-fondo', path.basename(String(inPath || '')));
+        // Tope de memoria (23/10/2026, utils/topeMemoriaPython): se calcula al arrancar cada una, con
+        // la memoria libre de ese momento. Si lo pasa, falla solo el script y queda la foto original.
+        const env = entornoConTope();
+        execFile(resolverPython(), [SCRIPT, inPath, outPath], { timeout: TIMEOUT_MS, env }, (err, stdout, stderr) => {
             if (err) {
-                return reject(new Error(`quitar_fondo: ${String(stderr || err.message).trim().substring(0, 300)}`));
+                monitor.termino('quitar-fondo', false);
+                // En una línea: si fue memoria (con el tope), si lo cortaron y lo último de stderr
+                return reject(new Error(`quitar_fondo: ${describirFallo(err, stderr, env)}`));
             }
             if (!fs.existsSync(outPath)) {
+                monitor.termino('quitar-fondo', false);
                 return reject(new Error('quitar_fondo: el script no generó la salida'));
             }
+            monitor.termino('quitar-fondo', true);
             resolve(outPath);
         });
     });

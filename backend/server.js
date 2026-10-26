@@ -366,6 +366,9 @@ const io = new Server(server, {
 });
 
 app.set('socketio', io);
+// Monitor del servidor (/admin/monitor): muestra cada 5 s desde que arranca, aunque nadie mire
+try { require('./services/monitorService').iniciar(io); }
+catch (e) { logger.error('❌ Error iniciando el monitor del servidor:', e.message); }
 
 // Avisos de órdenes: el portal de clientes recibe solo los de sus propias órdenes (ver el módulo).
 const avisosOrdenesPortal = require('./utils/avisosOrdenesPortal');
@@ -571,6 +574,22 @@ if (process.env.NODE_ENV !== 'test') {
                 startSolicitudesInsumoJob();
             } catch (e) {
                 logger.error("❌ [CRON] Error cargando SolicitudesInsumo:", e.message);
+            }
+
+            // Resumen diario del servidor por mail (ALERTAS_EMAIL) — 08:00 hs.
+            try {
+                const { startResumenDiarioServidorJob } = require('./jobs/resumenDiarioServidor.job');
+                startResumenDiarioServidorJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ResumenDiarioServidor:", e.message);
+            }
+
+            // Clientes inactivos: más de 60 días sin pedidos ni compras → INACTIVO y sin vendedor — 05:00 hs.
+            try {
+                const { startClientesInactivosJob } = require('./jobs/clientesInactivos.job');
+                startClientesInactivosJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ClientesInactivos:", e.message);
             }
 
             // Tela de cliente — detección de excedente por umbral (bandeja de avisos).

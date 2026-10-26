@@ -240,7 +240,7 @@ export default function PhotoMatchTab() {
                         <label className="flex flex-col items-center justify-center gap-2 border-2 border-dashed border-zinc-200 rounded-xl p-10 cursor-pointer hover:border-brand-cyan/50 hover:bg-brand-cyan/5 transition-colors">
                             <ImagePlus size={26} className="text-zinc-300" />
                             <span className="text-sm text-zinc-500 font-semibold">Subir foto (chart + muestra)</span>
-                            <span className="text-xs text-zinc-400">Luz pareja, sin reflejos, las 4 esquinas visibles</span>
+                            <span className="text-xs text-zinc-400 text-center">Luz pareja, sin reflejos, las 4 esquinas visibles</span>
                             <input type="file" accept="image/*" className="hidden" onChange={loadImage} />
                         </label>
                     ) : (

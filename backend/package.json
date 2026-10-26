@@ -16,7 +16,6 @@
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
     "express-rate-limit": "^8.2.1",
-    "express-validator": "^7.3.1",
     "google-auth-library": "^10.5.0",
     "googleapis": "^169.0.0",
     "helmet": "^8.1.0",
@@ -26,8 +25,6 @@
     "mssql": "^12.7.2",
     "multer": "^2.1.1",
     "node-cron": "^4.2.1",
-    "node-fetch": "^3.3.2",
-    "node-unrar-js": "^2.0.2",
     "nodemailer": "^10.0.10",
     "pdf-lib": "^1.17.1",
     "pdf-parse": "1.1.1",
@@ -43,7 +40,6 @@
     "winston-daily-rotate-file": "^5.0.0"
   },
   "devDependencies": {
-    "@vitejs/plugin-basic-ssl": "^2.1.4",
     "jest": "^30.3.0",
     "nodemon": "^3.0.1",
     "supertest": "^7.2.2"

@@ -24,6 +24,8 @@ const api = axios.create({
 });
 
 api.interceptors.request.use(config => {
+    // Versión del front (vite.config.js): el monitor del servidor cuenta quién quedó con una versión vieja
+    if (typeof __BUILD_ID__ !== 'undefined') config.headers['X-Front-Build'] = __BUILD_ID__;
     const userStr = localStorage.getItem('user');
     if (userStr) {
         try {

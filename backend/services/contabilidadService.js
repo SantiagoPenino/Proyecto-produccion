@@ -3059,55 +3059,6 @@ async function obtenerCicloActivo(CueIdCuenta, transaction = null) {
 }
 
 /**
- * getCicloMovimientos
- * Devuelve todos los movimientos de ordenes asociados a un ciclo.
- */
-async function getCicloMovimientos(CicIdCiclo) {
-  const pool = await getPool();
-  const res = await pool.request()
-    .input('CicIdCiclo', sql.Int, CicIdCiclo)
-    .query(`
-      SELECT m.MovIdMovimiento, m.MovTipo, m.MovConcepto, m.MovImporte, m.MovFecha,
-             m.OrdIdOrden, m.OReIdOrdenRetiro, m.PagIdPago, m.MovObservaciones, m.DocIdDocumento,
-             COALESCE(od.OrdCodigoOrden, erp.CodigoOrden) AS OrdCodigoOrden,
-             COALESCE(od.OrdNombreTrabajo, erp.DescripcionTrabajo) AS OrdNombreTrabajo,
-             ISNULL(od.OrdCantidad, 1) AS OrdCantidad,
-             ISNULL(od.OrdDescuentoAplicado, 0) AS OrdDescuentoAplicado,
-             od.OrdMaterialPlanilla,
-             od.MonIdMoneda AS OrdMonIdMoneda,
-             p.Descripcion AS ProNombre,
-             s.Articulo AS ProSubFamilia,
-             s.CodStock AS ProCodStock,
-              (
-                 SELECT d.ID AS DetalleID, a.CodArticulo, d.Cantidad, d.PrecioUnitario, d.Subtotal, d.LogPrecioAplicado, a.Descripcion,
-                        -- Moneda del Subtotal de ESTA línea (no la de la cabecera): ver sqlMonedaLinea
-                        ${sqlMonedaLinea('pc', 'd')} AS Moneda,
-                        pc.Moneda AS MonedaPedido,
-                        a.CodStock, sa.Articulo AS ArticuloNombre,
-                d.PrecioLista, d.DescuentoTipo, d.DescuentoPct, d.DescuentoImporte, d.DescuentoOrigen, d.RecargoPct, d.RecargoImporte, d.RecargoOrigen
-                 FROM dbo.PedidosCobranza pc WITH(NOLOCK)
-                 JOIN dbo.PedidosCobranzaDetalle d WITH(NOLOCK) ON pc.ID = d.PedidoCobranzaID
-                 LEFT JOIN dbo.Articulos a WITH(NOLOCK) ON a.ProIdProducto = d.ProIdProducto
-                 LEFT JOIN dbo.StockArt sa WITH(NOLOCK) ON a.CodStock = sa.CodStock
-                 WHERE LTRIM(RTRIM(pc.NoDocERP)) = COALESCE(od.OrdCodigoOrden, erp.CodigoOrden)
-                   AND d.OrdenID = m.OrdIdOrden
-                 FOR JSON PATH
-              ) AS DetallesJSON
-      FROM dbo.MovimientosCuenta m WITH(NOLOCK)
-      LEFT JOIN dbo.OrdenesDeposito od WITH(NOLOCK) ON m.OrdIdOrden = od.OrdIdOrden
-      LEFT JOIN dbo.Ordenes erp WITH(NOLOCK) ON erp.OrdenID = m.OrdIdOrden
-      LEFT JOIN dbo.Articulos p WITH(NOLOCK) ON od.ProIdProducto = p.ProIdProducto
-      LEFT JOIN dbo.StockArt s WITH(NOLOCK) ON p.CodStock = s.CodStock
-      WHERE m.CicIdCiclo = @CicIdCiclo
-        AND m.MovTipo IN ('ORDEN', 'PAGO', 'ANTICIPO')
-        AND m.DocIdDocumento IS NULL        -- excluir ya facturados individualmente (VTA_CAJA y su pago)
-        AND ABS(m.MovImporte) > 0           -- excluir órdenes cubiertas por plan ($0 sin deuda monetaria)
-      ORDER BY m.MovFecha DESC
-    `);
-  return res.recordset;
-}
-
-/**
  * abrirCicloPorCuenta
  * Abre un nuevo ciclo de crédito para una cuenta.
  * Calcula la fecha de cierre basándose en CueDiasCiclo.
@@ -4089,44 +4040,6 @@ async function cerrarCicloCompleto({
   }
 
   return { DocIdDocumento, SaldoFacturar: saldoFacturar, docNumero: docLabel, nuevoCiclo, consumoPrepago };
-}
-
-/**
- * cerrarCiclosVencidos
- * Busca ciclos ABIERTOS cuya fecha de cierre ya pasó y los marca como VENCIDO.
- * Luego los cierra automáticamente. Llamado por el CRON nocturno.
- *
- * @returns {Promise<{procesados: number, errores: number}>}
- */
-async function cerrarCiclosVencidos() {
-  const pool = await getPool();
-  let procesados = 0, errores = 0;
-
-  // Marcar como VENCIDO los que pasaron su fecha
-  await pool.request().query(`
-    UPDATE dbo.CiclosCredito
-    SET    CicEstado = 'VENCIDO'
-    WHERE  CicEstado = 'ABIERTO'
-      AND  CicFechaCierre < CAST(GETDATE() AS DATE)
-  `);
-
-  // Cerrar todos los VENCIDOS
-  const vencidos = await pool.request().query(`
-    SELECT CicIdCiclo FROM dbo.CiclosCredito WHERE CicEstado = 'VENCIDO'
-  `);
-
-  for (const c of vencidos.recordset) {
-    try {
-      await cerrarCicloCompleto({ CicIdCiclo: c.CicIdCiclo, UsuarioAlta: 1 });
-      procesados++;
-    } catch (e) {
-      logger.error(`[CICLO] Error cerrando CicIdCiclo=${c.CicIdCiclo}: ${e.message}`);
-      errores++;
-    }
-  }
-
-  logger.info(`[CICLO] cerrarCiclosVencidos → procesados: ${procesados}, errores: ${errores}`);
-  return { procesados, errores };
 }
 
 
@@ -5803,8 +5716,6 @@ module.exports = {
   abrirCicloPorCuenta,
   acumularEnCiclo,
   cerrarCicloCompleto,
-  cerrarCiclosVencidos,
-  getCicloMovimientos,
 
   // Hooks — llamar post-commit desde otros controladores
   hookOrdenCreada,

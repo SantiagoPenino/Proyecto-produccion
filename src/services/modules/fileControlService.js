@@ -45,8 +45,9 @@ export const fileControlService = {
         return response.data;
     },
 
-    getTiposFalla: async (areaId) => {
-        const response = await api.get('/production-file-control/tipos-falla', { params: { areaId } });
+    // uso: 'produccion' (default, al reportar una falla) o 'reposicion' (razones de Atención al Cliente)
+    getTiposFalla: async (areaId, uso) => {
+        const response = await api.get('/production-file-control/tipos-falla', { params: { areaId, ...(uso && { uso }) } });
         return response.data;
     },
 

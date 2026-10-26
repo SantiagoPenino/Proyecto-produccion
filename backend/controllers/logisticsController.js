@@ -3405,11 +3405,13 @@ exports.confirmRemitoDelivery = async (req, res) => {
 // que todo lo anterior a ~una semana desaparecía de la pantalla, también las encomiendas sin
 // confirmar (ej. REM-219352 del 11/09). Sin parámetros devuelve lo mismo que antes.
 //   ?tipo=ENCOMIENDA|PRODUCCION   ?estado=ACTIVOS   ?q=<remito, observación o N° de retiro>
+//   ?area=<AreaID> (23/10): solo lo que salió de esa área o va hacia ella. Sin area o 'TODOS', todo.
 exports.getActiveTransports = async (req, res) => {
     try {
         const tipo = String(req.query.tipo || '').toUpperCase();
         const soloActivos = String(req.query.estado || '').toUpperCase() === 'ACTIVOS';
         const q = String(req.query.q || '').trim().slice(0, 50);
+        const area = String(req.query.area || '').trim().slice(0, 100);
         // "RW-27161", "RT-27161" o "27161" → 27161: en las encomiendas el OrdenID del bulto es el
         // N° de OrdenesRetiro (ver createRemito).
         const nroRetiro = /^[A-Za-z]{0,3}-?\d{1,9}$/.test(q) ? parseInt(q.replace(/\D/g, ''), 10) : null;
@@ -3425,6 +3427,10 @@ exports.getActiveTransports = async (req, res) => {
         else if (tipo === 'PRODUCCION') filtros.push(`NOT ${esEncomienda}`);
         // Los mismos estados que el botón "En Viaje" filtraba en el navegador.
         if (soloActivos) filtros.push(`e.Estado IN ('EN_TRANSITO', 'EN_TRANSITO_PARCIAL', 'ESPERANDO_RETIRO')`);
+        if (area && area.toUpperCase() !== 'TODOS') {
+            request.input('Area', sql.NVarChar(100), area);
+            filtros.push(`(e.AreaOrigenID = @Area OR e.AreaDestinoID = @Area)`);
+        }
         if (q) {
             request.input('Q', sql.NVarChar(120), `%${q.replace(/[%_[]/g, '[$&]')}%`);
             const porTexto = `e.CodigoRemito LIKE @Q OR e.Observaciones LIKE @Q`;

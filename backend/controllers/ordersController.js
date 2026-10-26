@@ -3166,6 +3166,25 @@ exports.getEstadosConfig = async (req, res) => {
     } catch (e) { res.status(500).json({ error: e.message }); }
 };
 
+// Desglose por área de las tarjetas del Panel de Control (22/10/2026): cantidad por área y el código con
+// que se nombran sus órdenes (prefijo de CodigoOrden: SUB, DTF, XEUV, VEN...; el más usado), que el panel
+// muestra en vez del área interna. ConfigMapeoERP.CodOrden no sirve: TERMINAC no está (sus órdenes son
+// XEUV) y PRO dice PRO, pero sus órdenes son VEN.
+const PREFIJO_ORDEN_SQL = "LEFT(CodigoOrden, CHARINDEX('-', CodigoOrden + '-') - 1)";
+function desglosePorArea(filas) {
+    const perArea = {};
+    const mejor = {};
+    for (const r of filas) {
+        if (!r.AreaID) continue;
+        perArea[r.AreaID] = (perArea[r.AreaID] || 0) + r.count;
+        const p = String(r.Prefijo || '').trim();
+        if (p && (!mejor[r.AreaID] || r.count > mejor[r.AreaID].n)) mejor[r.AreaID] = { p, n: r.count };
+    }
+    const prefijos = {};
+    for (const [a, v] of Object.entries(mejor)) prefijos[a] = v.p;
+    return { perArea, prefijos };
+}
+
 exports.getActiveOrdersSummary = async (req, res) => {
     try {
         const { area } = req.query;
@@ -3178,26 +3197,24 @@ exports.getActiveOrdersSummary = async (req, res) => {
         let queryTotal = `SELECT COUNT(*) as count ${queryBase}`;
 
         // 2. Desglose por Área
-        let queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} GROUP BY AreaID`;
+        let queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`;
 
         if (area) {
             queryTotal += " AND AreaID = @Area";
-            queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID`; // Ajuste si hay filtro
+            queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`; // Ajuste si hay filtro
             request.input('Area', sql.VarChar, area);
         }
 
         const resTotal = await request.query(queryTotal);
         const resGroup = await request.query(queryGroup);
 
-        // Construir objeto perArea { "ECOUV": 5, "DTF": 2 }
-        const perArea = {};
-        resGroup.recordset.forEach(row => {
-            if (row.AreaID) perArea[row.AreaID] = row.count;
-        });
+        // perArea { "ECOUV": 5, "DF": 2 } y prefijos { "ECOUV": "EUV", "DF": "DTF" }
+        const { perArea, prefijos } = desglosePorArea(resGroup.recordset);
 
         res.json({
             totalGeneral: resTotal.recordset[0].count,
             perArea: perArea,
+            prefijos,
             pending: 0 // Legacy support if needed
         });
     } catch (e) {
@@ -3218,25 +3235,23 @@ exports.getCancelledOrdersSummary = async (req, res) => {
         let queryTotal = `SELECT COUNT(*) as count ${queryBase}`;
 
         // 2. Desglose por Área
-        let queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} GROUP BY AreaID`;
+        let queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`;
 
         if (area) {
             queryTotal += " AND AreaID = @Area";
-            queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID`;
+            queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`;
             request.input('Area', sql.VarChar, area);
         }
 
         const resTotal = await request.query(queryTotal);
         const resGroup = await request.query(queryGroup);
 
-        const perArea = {};
-        resGroup.recordset.forEach(row => {
-            if (row.AreaID) perArea[row.AreaID] = row.count;
-        });
+        const { perArea, prefijos } = desglosePorArea(resGroup.recordset);
 
         res.json({
             totalGeneral: resTotal.recordset[0].count,
-            perArea: perArea
+            perArea: perArea,
+            prefijos
         });
 
     } catch (e) {
@@ -3264,25 +3279,23 @@ exports.getFailedOrdersSummary = async (req, res) => {
         let queryTotal = `SELECT COUNT(*) as count ${queryBase}`;
 
         // 2. Desglose por Área
-        let queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} GROUP BY AreaID`;
+        let queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`;
 
         if (area) {
             queryTotal += " AND AreaID = @Area";
-            queryGroup = `SELECT AreaID, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID`;
+            queryGroup = `SELECT AreaID, ${PREFIJO_ORDEN_SQL} AS Prefijo, COUNT(*) as count ${queryBase} AND AreaID = @Area GROUP BY AreaID, ${PREFIJO_ORDEN_SQL}`;
             request.input('Area', sql.VarChar, area);
         }
 
         const resTotal = await request.query(queryTotal);
         const resGroup = await request.query(queryGroup);
 
-        const perArea = {};
-        resGroup.recordset.forEach(row => {
-            if (row.AreaID) perArea[row.AreaID] = row.count;
-        });
+        const { perArea, prefijos } = desglosePorArea(resGroup.recordset);
 
         res.json({
             totalGeneral: resTotal.recordset[0].count,
-            perArea: perArea
+            perArea: perArea,
+            prefijos
         });
     } catch (e) {
         logger.error("❌ Error Dash Failed:", e);

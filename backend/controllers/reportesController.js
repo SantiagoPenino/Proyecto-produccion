@@ -52,11 +52,20 @@ exports.getFiltros = async (req, res) => {
     try {
         const pool = await getPool();
         const [areas, mats, clientes] = await Promise.all([
+            // id = área interna (lo que filtra); nombre = el código de sus órdenes (22/10/2026, como el Panel de
+            // Control): el prefijo de CodigoOrden más usado en los últimos 90 días (SUB, DTF, XEUV, VEN...).
             pool.request().query(`
-                SELECT DISTINCT AreaID AS id, AreaID AS nombre
-                FROM dbo.Ordenes WITH(NOLOCK)
-                WHERE AreaID IS NOT NULL AND AreaID != ''
-                ORDER BY AreaID
+                SELECT id, nombre FROM (
+                    SELECT AreaID AS id,
+                           ISNULL(NULLIF(LEFT(CodigoOrden, CHARINDEX('-', CodigoOrden + '-') - 1), ''), AreaID) AS nombre,
+                           ROW_NUMBER() OVER (PARTITION BY AreaID ORDER BY
+                               SUM(CASE WHEN FechaIngreso > DATEADD(DAY, -90, GETDATE()) THEN 1 ELSE 0 END) DESC, COUNT(*) DESC) AS rn
+                    FROM dbo.Ordenes WITH(NOLOCK)
+                    WHERE AreaID IS NOT NULL AND AreaID != ''
+                    GROUP BY AreaID, ISNULL(NULLIF(LEFT(CodigoOrden, CHARINDEX('-', CodigoOrden + '-') - 1), ''), AreaID)
+                ) x
+                WHERE rn = 1
+                ORDER BY nombre
             `),
             pool.request().query(`
                 SELECT DISTINCT Material AS id, Material AS nombre

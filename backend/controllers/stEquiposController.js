@@ -271,7 +271,7 @@ exports.ficha = async (req, res) => {
                 SELECT TOP 300 s.SolId, s.Titulo, s.Categoria, s.Prioridad, s.Estado, s.Resultado, s.MaquinaNoTrabaja,
                        s.FechaSolicitud, s.FechaFin, s.TecnicoNombre, s.SolicitanteNombre, s.TrabajoRealizado,
                        ${SQL_PARADA} AS MinutosParada,
-                       DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaFin) AS MinutosResolucion
+                       DATEDIFF(MINUTE, s.FechaTomada, s.FechaFin) AS MinutosResolucion   -- de tomada a finalizada
                 FROM dbo.ST_Solicitudes s WHERE s.EquipoId = @E
                 ORDER BY CASE WHEN s.Estado = 'FINALIZADA' THEN 1 ELSE 0 END, s.FechaSolicitud DESC`),
             pool.request().input('E', sql.Int, id).query(`
@@ -282,7 +282,7 @@ exports.ficha = async (req, res) => {
                        SUM(CASE WHEN s.FechaSolicitud >= DATEADD(DAY, -90, GETDATE()) THEN ${SQL_PARADA} END) AS MinutosParada90,
                        SUM(CASE WHEN s.FechaSolicitud >= DATEADD(DAY, -365, GETDATE()) THEN ${SQL_PARADA} END) AS MinutosParada365,
                        AVG(CASE WHEN s.Estado = 'FINALIZADA' AND s.Resultado <> 'CANCELADA' AND s.FechaFin >= DATEADD(DAY, -365, GETDATE())
-                                THEN CAST(DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaFin) AS FLOAT) END) AS MinutosResolucionProm
+                                THEN CAST(DATEDIFF(MINUTE, s.FechaTomada, s.FechaFin) AS FLOAT) END) AS MinutosResolucionProm   -- de tomada a finalizada
                 FROM dbo.ST_Solicitudes s WHERE s.EquipoId = @E`),
             pool.request().input('E', sql.Int, id).query(`
                 SELECT c.CamId, CONVERT(VARCHAR(10), c.Fecha, 23) AS Fecha, c.Tipo, c.Descripcion, c.Motivo, c.SolId,

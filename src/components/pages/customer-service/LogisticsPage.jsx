@@ -3,7 +3,9 @@ import { useAuth } from '../../../context/AuthContext';
 import { logisticsService } from '../../../services/modules/logisticsService';
 import api from '../../../services/apiClient';
 import CreateDispatchModal from '../../modals/CreateDispatchModal';
-import { Toaster, toast } from 'react-hot-toast';
+import { toast } from 'sonner';
+import { Boxes, Download, Upload, ScanBarcode, Printer, Truck, Loader2, Trash2, PackageOpen } from 'lucide-react';
+import useConfirmar from '../../ui/useConfirmar';
 
 const LogisticsPage = () => {
     const { user } = useAuth();
@@ -19,6 +21,7 @@ const LogisticsPage = () => {
 
     const [areas, setAreas] = useState([]);
     const inputRef = useRef(null);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     // Cargar Áreas
     useEffect(() => {
@@ -137,9 +140,12 @@ const LogisticsPage = () => {
             // Suena a que esto es una RECEPCION DE TELA o PRENDAS del cliente.
             // Generamos comprobante de RECEPCIÓN.
 
-            if (confirm(`¿Confirmar recepción de ${validScans.length} bultos? Esto generará un comprobante.`)) {
-                await processReception(validScans);
-            }
+            const ok = await confirmar({
+                titulo: `¿Confirmar la recepción de ${validScans.length} bulto${validScans.length !== 1 ? 's' : ''}?`,
+                texto: 'Se genera el comprobante para entregarle al cliente.',
+                confirmar: 'Confirmar',
+            });
+            if (ok) await processReception(validScans);
         }
     };
 
@@ -257,131 +263,123 @@ const LogisticsPage = () => {
         setScans(scans.filter((_, i) => i !== idx));
     };
 
+    const esIngreso = mode === 'INGRESO';
+    const MODOS = [['INGRESO', 'Recepción', Download], ['EGRESO', 'Despacho', Upload]];
+
     return (
-        <div className="p-6 bg-slate-50 min-h-screen font-sans">
-            <Toaster position="top-right" />
-
-            {/* Header */}
-            <div className="bg-[#1e293b] text-white p-6 rounded-2xl shadow-lg mb-8 flex justify-between items-center flex-wrap gap-4">
-                <div>
-                    <h1 className="text-2xl font-black flex items-center gap-3">
-                        <span className="bg-blue-500 p-2 rounded-lg text-white text-lg"><i className="fa-solid fa-boxes-stacked"></i></span>
-                        Modulo de Atención
-                    </h1>
-                    <p className="text-slate-400 text-sm font-medium mt-1 ml-1">Ingreso y Egreso de Mercadería</p>
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
+            {/* Encabezado */}
+            <div className="flex flex-wrap items-center gap-3 mb-5">
+                <Boxes size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-0 flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Módulo de Atención</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Ingreso y egreso de mercadería</p>
                 </div>
-
-                <div className="flex bg-white/5 rounded-xl p-1 gap-1">
-                    <button
-                        onClick={() => setMode('INGRESO')}
-                        className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${mode === 'INGRESO' ? 'bg-emerald-500 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
-                    >
-                        <i className="fa-solid fa-download mr-2"></i> RECEPCIÓN
-                    </button>
-                    <button
-                        onClick={() => setMode('EGRESO')}
-                        className={`px-6 py-2 rounded-lg font-bold text-sm transition-all ${mode === 'EGRESO' ? 'bg-blue-500 text-white shadow-lg' : 'text-slate-400 hover:text-white hover:bg-white/10'}`}
-                    >
-                        <i className="fa-solid fa-upload mr-2"></i> DESPACHO
-                    </button>
+                <div className="flex w-full sm:w-auto rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+                    {MODOS.map(([k, label, Icono]) => (
+                        <button key={k} type="button" onClick={() => setMode(k)}
+                            className={`flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-colors ${mode === k ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+                            <Icono size={15} className={mode === k ? 'text-white' : 'text-brand-cyan'} /> {label}
+                        </button>
+                    ))}
                 </div>
             </div>
 
-            {/* Scanner Area */}
-            <div className="flex flex-col md:flex-row gap-6 items-start">
+            <div className="flex flex-col md:flex-row gap-4 items-start">
 
-                {/* Input Card */}
-                <div className="w-full md:w-1/3 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
-                    <label className="block text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">
-                        {mode === 'INGRESO' ? 'Escanear para Recibir' : 'Escanear para Despachar'}
-                    </label>
-
-                    <div className="relative mb-4">
-                        <i className="fa-solid fa-barcode absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 text-xl"></i>
-                        <input
-                            ref={inputRef}
-                            type="text"
-                            value={currentInput}
-                            onChange={e => setCurrentInput(e.target.value)}
-                            onKeyDown={handleScan}
-                            placeholder="Escanear etiqueta..."
-                            className="w-full pl-12 pr-4 py-4 bg-slate-50 border-2 border-slate-200 rounded-xl font-mono text-lg font-bold text-slate-800 focus:bg-white focus:border-blue-500 focus:ring-4 focus:ring-blue-500/10 transition-all outline-none"
-                            autoFocus
-                        />
+                {/* Escáner */}
+                <div className="w-full md:w-[380px] shrink-0 bg-white rounded-2xl border border-zinc-200 p-5 flex flex-col gap-4">
+                    <div>
+                        <label htmlFor="escaneo-atencion" className="block mb-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-400">
+                            {esIngreso ? 'Escanear para recibir' : 'Escanear para despachar'}
+                        </label>
+                        <div className="relative">
+                            <ScanBarcode size={22} className="absolute left-4 top-1/2 -translate-y-1/2 text-brand-cyan pointer-events-none" />
+                            <input
+                                id="escaneo-atencion"
+                                ref={inputRef}
+                                type="text"
+                                value={currentInput}
+                                onChange={e => setCurrentInput(e.target.value)}
+                                onKeyDown={handleScan}
+                                placeholder="Escanear etiqueta…"
+                                className="w-full pl-12 pr-4 py-3.5 bg-white border border-zinc-200 rounded-xl font-mono text-lg font-bold text-zinc-800 outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-4 focus:ring-brand-cyan/10 placeholder:text-zinc-300"
+                                autoFocus
+                            />
+                        </div>
                     </div>
 
-                    <div className="text-center p-4 bg-blue-50 rounded-xl border border-blue-100 mb-4">
-                        <div className="text-blue-800 font-black text-3xl">{scans.length}</div>
-                        <div className="text-blue-600 text-[10px] font-bold uppercase tracking-wider">Bultos en Cola</div>
+                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 px-4 py-3 flex items-baseline justify-center gap-2">
+                        <span className="text-3xl font-black tabular-nums text-zinc-900">{scans.length}</span>
+                        <span className="text-xs font-bold uppercase tracking-wider text-zinc-500">bulto{scans.length !== 1 ? 's' : ''} en cola</span>
                     </div>
 
                     <div className="flex flex-col gap-2">
                         <button
+                            type="button"
                             onClick={handleConfirm}
                             disabled={scans.length === 0 || loading}
-                            className={`w-full py-4 rounded-xl font-bold text-sm shadow-lg active:scale-95 transition-all text-white flex items-center justify-center gap-2
-                                ${scans.length === 0 ? 'bg-slate-300 cursor-not-allowed shadow-none' :
-                                    mode === 'INGRESO' ? 'bg-emerald-500 hover:bg-emerald-600 shadow-emerald-200' : 'bg-blue-500 hover:bg-blue-600 shadow-blue-200'}
-                            `}
+                            className="w-full py-3.5 rounded-xl text-sm font-bold text-white bg-brand-cyan hover:bg-brand-cyan/90 transition-colors flex items-center justify-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
                         >
-                            {loading ? <i className="fa-solid fa-circle-notch fa-spin"></i> :
-                                mode === 'INGRESO' ? <i className="fa-solid fa-print"></i> : <i className="fa-solid fa-truck-fast"></i>
-                            }
-                            {mode === 'INGRESO' ? 'CONFIRMAR Y GENERAR COMPROBANTE' : 'GENERAR REMITO DE SALIDA'}
+                            {loading ? <Loader2 size={16} className="animate-spin" /> : esIngreso ? <Printer size={16} /> : <Truck size={16} />}
+                            {esIngreso ? 'Confirmar y generar comprobante' : 'Generar remito de salida'}
                         </button>
-
                         <button
+                            type="button"
                             onClick={() => setScans([])}
                             disabled={scans.length === 0}
-                            className="w-full py-3 rounded-xl border border-slate-200 text-slate-500 font-bold text-xs hover:bg-red-50 hover:text-red-500 hover:border-red-200 transition-colors"
+                            className="w-full py-2.5 rounded-xl border border-zinc-200 bg-white text-xs font-bold text-zinc-500 transition-colors hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white disabled:hover:text-zinc-500 disabled:hover:border-zinc-200"
                         >
-                            LIMPIAR TODO
+                            Limpiar todo
                         </button>
                     </div>
                 </div>
 
-                {/* List Card */}
-                <div className="w-full md:w-2/3 bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden flex flex-col min-h-[500px]">
-                    <div className="px-6 py-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
-                        <span className="text-xs font-black text-slate-500 uppercase tracking-widest">Detalle de items escaneados</span>
-                        <span className="text-xs font-bold text-slate-400">{new Date().toLocaleDateString()}</span>
+                {/* Lo escaneado */}
+                <div className="w-full flex-1 min-w-0 bg-white rounded-2xl border border-zinc-200 overflow-hidden flex flex-col min-h-[420px]">
+                    <div className="px-5 py-3.5 border-b border-zinc-100 flex justify-between items-center gap-3">
+                        <span className="text-sm font-black uppercase tracking-wide text-zinc-800">Detalle de ítems escaneados</span>
+                        <span className="text-xs font-bold text-zinc-400 tabular-nums">{new Date().toLocaleDateString('es-UY')}</span>
                     </div>
 
-                    <div className="flex-1 overflow-auto p-0">
+                    <div className="flex-1 overflow-auto">
                         {scans.length === 0 ? (
-                            <div className="h-full flex flex-col items-center justify-center text-slate-300 p-10 opacity-70">
-                                <i className="fa-solid fa-basket-shopping text-6xl mb-4"></i>
-                                <span className="font-bold text-sm">Esperando lectura de etiquetas...</span>
+                            <div className="h-full min-h-[340px] flex flex-col items-center justify-center text-center p-10">
+                                <PackageOpen size={40} className="mb-3 text-brand-cyan" />
+                                <span className="text-sm font-bold text-zinc-700">Esperando la lectura de etiquetas</span>
+                                <span className="text-xs text-zinc-400 mt-1">Escaneá un bulto y aparece acá.</span>
                             </div>
                         ) : (
                             <table className="w-full text-left border-collapse">
-                                <thead className="bg-white sticky top-0 z-10 text-[10px] font-black uppercase text-slate-400">
+                                <thead className="bg-white sticky top-0 z-10 text-[10px] font-black uppercase tracking-wider text-zinc-400">
                                     <tr>
-                                        <th className="px-6 py-3 border-b border-slate-100 w-10">#</th>
-                                        <th className="px-6 py-3 border-b border-slate-100">Código</th>
-                                        <th className="px-6 py-3 border-b border-slate-100">Info Sistema</th>
-                                        <th className="px-6 py-3 border-b border-slate-100 w-10"></th>
+                                        <th className="px-5 py-3 border-b border-zinc-100 w-10">#</th>
+                                        <th className="px-5 py-3 border-b border-zinc-100">Código</th>
+                                        <th className="px-5 py-3 border-b border-zinc-100">Info del sistema</th>
+                                        <th className="px-5 py-3 border-b border-zinc-100 w-10"></th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-50 text-sm">
+                                <tbody className="divide-y divide-zinc-100 text-sm">
                                     {scans.map((scan, idx) => (
-                                        <tr key={idx} className="hover:bg-slate-50 transition-colors group">
-                                            <td className="px-6 py-3 text-slate-400 font-mono text-xs">{idx + 1}</td>
-                                            <td className="px-6 py-3 font-bold text-slate-700">{scan.code}</td>
-                                            <td className="px-6 py-3">
+                                        <tr key={idx} className="hover:bg-zinc-50 transition-colors">
+                                            <td className="px-5 py-3 text-zinc-400 font-mono text-xs">{idx + 1}</td>
+                                            <td className="px-5 py-3 font-mono font-bold text-zinc-800">{scan.code}</td>
+                                            <td className="px-5 py-3">
                                                 <div className="flex flex-col">
-                                                    <span className={`text-xs font-bold ${scan.isValid ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                    <span className={`text-xs font-bold ${scan.isValid ? 'text-emerald-600' : 'text-brand-magenta'}`}>
                                                         {scan.message}
                                                     </span>
-                                                    {scan.nextService && <span className="text-[10px] text-slate-400 mt-0.5">Destino Sugerido: {scan.nextService}</span>}
+                                                    {scan.nextService && <span className="text-[11px] text-zinc-400 mt-0.5">Destino sugerido: {scan.nextService}</span>}
                                                 </div>
                                             </td>
-                                            <td className="px-6 py-3 text-right">
+                                            <td className="px-5 py-3 text-right">
                                                 <button
+                                                    type="button"
                                                     onClick={() => removeScan(idx)}
-                                                    className="w-8 h-8 rounded-full flex items-center justify-center text-slate-300 hover:bg-red-50 hover:text-red-500 transition-colors"
+                                                    title="Sacar de la cola"
+                                                    className="w-8 h-8 rounded-lg inline-flex items-center justify-center text-zinc-400 hover:bg-brand-magenta/10 hover:text-brand-magenta transition-colors"
                                                 >
-                                                    <i className="fa-solid fa-trash-can"></i>
+                                                    <Trash2 size={15} />
                                                 </button>
                                             </td>
                                         </tr>
@@ -406,6 +404,7 @@ const LogisticsPage = () => {
                     // toast.success("Remito Generado Correctamente"); -> El modal ya maneja su flujo
                 }}
             />
+            {ventanaConfirmar}
         </div>
     );
 };

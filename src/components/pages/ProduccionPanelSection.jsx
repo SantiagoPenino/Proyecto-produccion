@@ -11,6 +11,8 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
 import api from '../../services/apiClient';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
 import ConfigDeliveryTimesModal from '../modals/config/ConfigDeliveryTimesModal';
 
 // ─── Estilos de la maqueta (scoped a .viz-root) ──────────────────────────────
@@ -20,7 +22,9 @@ const CSS = `
 .viz-root *{box-sizing:border-box;}
 /* Bloque fijo (encabezado + filtros). El contenedor de la página tiene padding de 16px (p-4): el margen
    negativo lo compensa para que el fondo tape lo que pasa por debajo al hacer scroll. */
-.viz-root .viz-sticky{position:sticky;top:-16px;z-index:60;background:#f8fafc;margin:-16px -16px 0;padding:16px 16px 2px;box-shadow:0 6px 12px -8px rgba(20,24,40,.18);}
+.viz-root .viz-sticky{position:sticky;top:-24px;z-index:60;background:#f8fafc;margin:-8px -24px 0;padding:8px 24px 2px;box-shadow:0 6px 12px -8px rgba(20,24,40,.18);}
+@media(min-width:1024px){ .viz-root .viz-sticky{margin:-8px 0 0;padding:8px 0 2px;} }
+@media(max-width:767px){ .viz-root .viz-sticky{position:static;margin:0;padding:0;box-shadow:none;} }
 .viz-root .hero{background:linear-gradient(105deg,#221d54 0%,#33298f 52%,#4a3cb2 100%);color:#fff;border-radius:16px;padding:14px 24px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:16px;box-shadow:0 8px 24px rgba(51,41,143,.18);}
 .viz-root .hero h1{font-size:22px;font-weight:800;letter-spacing:.4px;margin:0;}
 .viz-root .hero .sub{color:rgba(255,255,255,.72);font-size:12.5px;margin-top:4px;}
@@ -591,7 +595,8 @@ export default function ProduccionPanelSection() {
 
     useEffect(() => { fetchPanel(); }, [fetchPanel]);
 
-    useEffect(() => { const t = setInterval(() => setReloj(new Date()), 1000); return () => clearInterval(t); }, []);
+    // Cada 30 s (solo mueve el turno y la barra de la jornada): cada segundo redibujaba todo el panel
+    useEffect(() => { const t = setInterval(() => setReloj(new Date()), 30000); return () => clearInterval(t); }, []);
     useEffect(() => {
         const h = e => { if (e.key === 'Escape') setModal(null); };
         document.addEventListener('keydown', h); return () => document.removeEventListener('keydown', h);
@@ -709,6 +714,12 @@ export default function ProduccionPanelSection() {
     // Tiempos de entrega del sector / área (badge)
     const entregaPorArea = {};
     for (const e of (data?.entrega || [])) (entregaPorArea[e.area] = entregaPorArea[e.area] || []).push(e);
+    const hayEntrega = (data?.sector || data?.area) && Object.keys(entregaPorArea).length > 0;
+    const detalleEntrega = Object.entries(entregaPorArea).map(([area, lst]) => (
+        <span key={area}>{Object.keys(entregaPorArea).length > 1 ? <b>{area}: </b> : null}
+            {lst.map((e, i) => <span key={i}>{i > 0 ? ' · ' : ''}<b style={e.prioridad === 'Urgente' ? { color: '#f97316' } : undefined}>{e.prioridad} {e.texto}</b></span>)}
+        </span>
+    ));
 
     return (
         <div className="viz-root">
@@ -728,7 +739,47 @@ export default function ProduccionPanelSection() {
             </div>
 
             {/* ── Filtros: mismas filas que "Ventas por Área" (sin moneda ni artículo) + refresh ── */}
-            <div className="bg-white border border-slate-200 rounded-xl px-4 py-3 shadow-sm space-y-2.5 mb-4">
+            <div className="bg-white border border-slate-200 rounded-xl px-3 sm:px-4 py-3 shadow-sm space-y-2.5 mb-4">
+                {/* Celular: selectores en vez de pastillas */}
+                {/* Sin la clase `grid`: acá es la grilla de 12 columnas del panel (.viz-root .grid) */}
+                <div className="flex flex-col gap-2 sm:hidden">
+                    <div className="flex gap-2">
+                        <Selector filtro resaltar={false} className="flex-1" aria-label="Fecha" value={fechaPreset} onChange={e => setFechaPreset(e.target.value)}>
+                            {FECHA_PRESETS.map(p => <option key={p.value} value={p.value}>{p.value.endsWith('d') ? `Últimos ${p.label}` : p.label}</option>)}
+                        </Selector>
+                        <button onClick={fetchPanel} disabled={loading || !rangoKey} aria-label="Actualizar"
+                            className="flex items-center justify-center px-3 border border-zinc-200 bg-white text-zinc-600 rounded-xl shrink-0 disabled:opacity-50">
+                            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+                        </button>
+                    </div>
+                    {fechaPreset === 'custom' && (
+                        <div className="flex gap-2 [&>*]:flex-1">
+                            <SelectorFecha filtro value={fechaDesde} onChange={e => setFechaDesde(e.target.value)} placeholder="Desde" max={fechaHasta || undefined} />
+                            <SelectorFecha filtro value={fechaHasta} onChange={e => setFechaHasta(e.target.value)} placeholder="Hasta" min={fechaDesde || undefined} />
+                        </div>
+                    )}
+                    <div className="flex gap-2">
+                    {haySectores && (
+                        <Selector filtro resaltar={false} className="flex-1 min-w-0" aria-label="Ver por" value={verPor} onChange={e => { setVerPor(e.target.value); setAmbito('Todas'); }}>
+                            <option value="sector" descripcion="Un sector junta varias áreas (CENCO = Corte + Costura)">Por sector</option>
+                            <option value="area" descripcion="Detalle fino por área de producción">Por área</option>
+                        </Selector>
+                    )}
+                    <Selector filtro className="flex-1 min-w-0" aria-label={porSectorUI ? 'Sector' : 'Área'} value={ambito} onChange={e => setAmbito(e.target.value)}>
+                        <option value="Todas">{porSectorUI ? 'Todos los sectores' : 'Todas las áreas'}</option>
+                        {porSectorUI
+                            ? (data?.sectores || []).map(s => <option key={s.id} value={`S:${s.id}`} descripcion={s.areas?.length ? `Agrupa: ${s.areas.join(' + ')}` : undefined}>{s.nombre}</option>)
+                            : (data?.areas || []).map(a => <option key={a.nombre} value={`A:${a.nombre}`}>{a.nombre}</option>)}
+                    </Selector>
+                    </div>
+                    <Selector filtro resaltar={false} className="w-full" aria-label="Medir en" value={medida} onChange={e => setMedida(e.target.value)}>
+                        <option value="ordenes" descripcion="Cantidad de órdenes">Medir en órdenes</option>
+                        <option value="volumen" descripcion="Suma de la magnitud de las órdenes (metros / m² / unidades según el material). Con varios sectores las unidades no son comparables entre sí">Medir en volumen</option>
+                    </Selector>
+                    {hayEntrega && <span className="entrega">⏱ Entrega —{detalleEntrega}</span>}
+                </div>
+
+                <div className="hidden sm:block space-y-2.5">
                 <div className="flex items-center justify-between gap-3 flex-wrap">
                     <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-[11px] font-bold text-slate-500 w-11 shrink-0 tracking-wide">FECHA</span>
@@ -784,15 +835,7 @@ export default function ProduccionPanelSection() {
                         : (data?.areas || []).map(a => (
                             <Chip key={a.nombre} active={ambito === `A:${a.nombre}`} onClick={() => setAmbito(`A:${a.nombre}`)}>{a.nombre}</Chip>
                         ))}
-                    {(data?.sector || data?.area) && Object.keys(entregaPorArea).length > 0 && (
-                        <span className="entrega" style={{ marginLeft: 'auto' }}>⏱ Entrega —
-                            {Object.entries(entregaPorArea).map(([area, lst]) => (
-                                <span key={area}>{Object.keys(entregaPorArea).length > 1 ? <b>{area}: </b> : null}
-                                    {lst.map((e, i) => <span key={i}>{i > 0 ? ' · ' : ''}<b style={e.prioridad === 'Urgente' ? { color: '#f97316' } : undefined}>{e.prioridad} {e.texto}</b></span>)}
-                                </span>
-                            ))}
-                        </span>
-                    )}
+                    {hayEntrega && <span className="entrega" style={{ marginLeft: 'auto' }}>⏱ Entrega —{detalleEntrega}</span>}
                 </div>
 
                 {/* Fila MEDIR EN: Órdenes (cantidad) | Volumen (suma de Magnitud). Aplica a "por sector" y al top 10 de materiales. */}
@@ -809,6 +852,7 @@ export default function ProduccionPanelSection() {
                         ))}
                     </div>
                     <span className="text-[11px] text-slate-400">aplica a "Cantidades de producción por sector", "Fallas por tipo", "Tasa de defectos / reposición" y "Top 10 materiales"{medida === 'volumen' ? ' · con varios sectores las unidades (m, m², u) no son comparables entre sí' : ''}</span>
+                </div>
                 </div>
             </div>
             </div>
@@ -1045,7 +1089,7 @@ export default function ProduccionPanelSection() {
 
                                     <div className="cfg-sec">
                                         <div className="cfg-t">Tipos de falla por área</div>
-                                        <div className="cfg-hint">Catálogo que se ofrece al reportar una falla y que agrupa el panel "Fallas por tipo". Acá se pueden AGREGAR tipos (los existentes no se editan desde este panel).</div>
+                                        <div className="cfg-hint">Catálogo que se ofrece al reportar una falla y que agrupa el panel "Fallas por tipo". Acá se pueden AGREGAR tipos; para editarlos, desactivarlos, hacerlos generales o usarlos como razón de reposición, ir a Producción › Tipos de falla (/admin/tipos-falla).</div>
                                         {Object.entries((cfg.tiposFalla || []).reduce((acc, t) => { (acc[t.area] = acc[t.area] || []).push(t); return acc; }, {})).map(([area, lst]) => (
                                             <div className="cfg-srow" key={area}>
                                                 <span className="cfg-sname">{area}</span>

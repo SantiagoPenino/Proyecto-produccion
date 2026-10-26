@@ -10,7 +10,14 @@ USO:
   python3 igualador_color.py --lab 55 25 -30 --entrada /ruta/SWOP.icc --salida /ruta/miperfil.icc
   python3 igualador_color.py --lab 55 25 -30 --json
 """
-import subprocess, math, argparse, sys, json
+import subprocess, math, argparse, sys, json, os
+
+# Tope de memoria (23/10/2026): python/_tope_memoria.py, al lado de esta carpeta; sin el modulo corre sin tope
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)),"..","python"))
+try:
+    import _tope_memoria
+except ImportError:
+    _tope_memoria=None
 
 DEFAULT_ENTRADA="/mnt/user-data/uploads/uswebcoatedswop.icc"
 DEFAULT_SALIDA ="/mnt/user-data/uploads/fedar8H_XinF_50g_dryR__V360x1200_2Pass_.icc"
@@ -154,4 +161,11 @@ if __name__=="__main__":
     ap.add_argument("--salida",default=DEFAULT_SALIDA,help="perfil ICC de salida (tu impresora)")
     ap.add_argument("--json",action="store_true",dest="as_json",help="output JSON estructurado")
     args=ap.parse_args()
-    evaluar(tuple(args.lab),args.entrada,args.salida,args.as_json)
+    # PY_MAX_MEM_MB lo pone colorController: si lo pasa, falla solo este script (stderr + codigo 1)
+    if _tope_memoria:
+        _tope_memoria.aplicar()
+    try:
+        evaluar(tuple(args.lab),args.entrada,args.salida,args.as_json)
+    except MemoryError as e:
+        print(f"sin memoria suficiente para procesarlo ({str(e) or 'MemoryError'})",file=sys.stderr)
+        sys.exit(1)

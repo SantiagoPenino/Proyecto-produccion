@@ -1,6 +1,50 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, Children, isValidElement, Fragment } from 'react';
+import { Users, UserPlus, UserX, Search, Loader2, ShieldCheck, Building2, Mail, Pencil, Trash2, X, Save } from 'lucide-react';
+import { toast } from 'sonner';
 import { usersService, rolesService, areasService } from '../../services/api';
+import Selector from '../ui/Selector';
+import useConfirmar from '../ui/useConfirmar';
 
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ENTRADA = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 outline-none transition-colors hover:border-zinc-300 focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block mb-1.5 text-[11px] font-black uppercase tracking-widest text-zinc-400';
+
+// Valores de los <option> (también los que vienen de un .map).
+const valoresDe = (hijos) => {
+    const salida = [];
+    Children.forEach(hijos, (h) => {
+        if (!isValidElement(h)) return;
+        if (h.type === Fragment) { salida.push(...valoresDe(h.props.children)); return; }
+        if (h.type === 'option') salida.push(String(h.props.value ?? ''));
+    });
+    return salida;
+};
+
+// <select> del formulario con el Selector propio. El valor viaja en un input con el mismo name, así handleSave lo
+// sigue leyendo con FormData. Como el nativo, si el valor inicial no está entre las opciones vale la primera. Con
+// `required` el input no es hidden (esos no se validan): queda invisible debajo del botón para que el navegador
+// frene el envío sin rol, igual que con el <select required> de antes.
+const SelectorCampo = ({ name, defaultValue, required = false, children, ...props }) => {
+    const [valor, setValor] = useState(String(defaultValue ?? ''));
+    const valores = valoresDe(children);
+    const efectivo = valores.includes(valor) ? valor : (valores[0] ?? '');
+    return (
+        <div className="relative">
+            <Selector value={efectivo} onChange={(e) => setValor(e.target.value)} className="w-full" {...props}>{children}</Selector>
+            {required
+                ? <input name={name} value={efectivo} required onChange={() => {}} tabIndex={-1} aria-hidden="true"
+                    className="absolute left-3 bottom-0 w-px h-px opacity-0 pointer-events-none" />
+                : <input type="hidden" name={name} value={efectivo} />}
+        </div>
+    );
+};
+
+// Estética nueva (22/10/2026): fondo claro, tarjetas blancas con borde ordenadas (nombre y estado arriba, datos en un
+// recuadro, acciones al pie), íconos de Lucide en brand-cyan sin fondo, Selector propio en el filtro y en el
+// formulario, y confirmación/avisos del sistema (antes window.confirm y alert).
 const UsersPage = () => {
     const [usuarios, setUsuarios] = useState([]);
     const [roles, setRoles] = useState([]);
@@ -11,6 +55,7 @@ const UsersPage = () => {
     const [areas, setAreas] = useState([]);
     const [searchTerm, setSearchTerm] = useState('');
     const [filterArea, setFilterArea] = useState('');
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     const filteredUsuarios = usuarios.filter(u => {
         const matchesSearch = u.Nombre.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -75,7 +120,7 @@ const UsersPage = () => {
                 await usersService.update(editando.IdUsuario, itemData);
             } else {
                 if (!itemData.Contrasena) {
-                    alert("La contraseña es obligatoria para nuevos usuarios");
+                    toast.error("La contraseña es obligatoria para nuevos usuarios");
                     return;
                 }
                 await usersService.create(itemData);
@@ -84,70 +129,80 @@ const UsersPage = () => {
             setNuevoUsuario(null);
             cargarDatos();
         } catch (error) {
-            alert("Error al guardar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
+            toast.error("Error al guardar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
         }
     };
 
     const handleDelete = async (id) => {
-        if (window.confirm('¿Deseas eliminar este usuario?')) {
+        if (await confirmar({ titulo: '¿Deseas eliminar este usuario?', confirmar: 'Eliminar', peligro: true })) {
             try {
                 await usersService.delete(id);
                 cargarDatos();
             } catch (error) {
-                alert("Error al eliminar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
+                toast.error("Error al eliminar: " + (error.response?.data?.error || error.message || 'Error desconocido'));
             }
         }
     };
+
+    const cerrarModal = () => { setEditando(null); setNuevoUsuario(null); };
 
     const UserCard = ({ item }) => {
         const rolNombre = roles.find(r => r.IdRol === item.IdRol)?.NombreRol || 'Rol Desconocido';
 
         return (
-            <div className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 hover:shadow-md transition-all duration-200 flex flex-col justify-between group relative overflow-hidden">
-                {!item.Activo && <div className="absolute top-0 right-0 bg-red-100 text-red-600 text-[10px] font-bold px-2 py-1 rounded-bl-xl uppercase tracking-wider">Inactivo</div>}
-
-                <div className="flex justify-between items-start mb-4">
-                    <div className="flex items-center gap-3">
-                        <div className={`w-12 h-12 flex items-center justify-center rounded-2xl text-xl shadow-sm ${item.Activo ? 'bg-indigo-100 text-indigo-600' : 'bg-slate-100 text-slate-400'}`}>
-                            <i className="fa-solid fa-user"></i>
-                        </div>
-                        <div>
-                            <h3 className="text-base font-bold text-slate-800 leading-tight">{item.Nombre}</h3>
-                            <p className="text-xs text-slate-400 font-mono mt-0.5">@{item.Usuario}</p>
-                        </div>
+            <div className={`${CARD} p-4 flex flex-col gap-3 hover:border-zinc-300 transition-colors`}>
+                {/* Nombre y estado */}
+                <div className="flex items-start gap-3">
+                    <span className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-sm uppercase shrink-0 ${item.Activo ? 'bg-zinc-100 text-zinc-600' : 'bg-zinc-50 text-zinc-300'}`}>
+                        {(item.Nombre || item.Usuario || '?').trim().slice(0, 2)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                        <h3 className={`text-sm font-black leading-tight truncate ${item.Activo ? 'text-zinc-900' : 'text-zinc-400'}`} title={item.Nombre}>{item.Nombre}</h3>
+                        <p className="text-xs text-zinc-400 font-mono mt-0.5 truncate">@{item.Usuario}</p>
                     </div>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity z-10">
-                        <button
-                            onClick={() => setEditando(item)}
-                            className="w-8 h-8 flex items-center justify-center text-indigo-600 hover:bg-indigo-50 rounded-lg transition-all"
-                            title="Editar"
-                        >
-                            <i className="fa-solid fa-pencil"></i>
-                        </button>
-                        <button
-                            onClick={() => handleDelete(item.IdUsuario)}
-                            className="w-8 h-8 flex items-center justify-center text-rose-500 hover:bg-rose-50 rounded-lg transition-all"
-                            title="Eliminar"
-                        >
-                            <i className="fa-solid fa-trash"></i>
-                        </button>
+                    {!item.Activo && (
+                        <span className="shrink-0 text-[11px] font-bold px-2.5 py-1 rounded-full border bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20">Inactivo</span>
+                    )}
+                </div>
+
+                {/* Datos */}
+                <div className="rounded-xl bg-zinc-50 px-3 py-2.5 space-y-1.5 text-xs">
+                    {item.AreaUsuario && (
+                        <div className="flex items-center gap-2 min-w-0">
+                            <Building2 size={14} className="text-brand-cyan shrink-0" aria-hidden="true" />
+                            <span className="text-zinc-600 truncate">{item.AreaUsuario}</span>
+                        </div>
+                    )}
+                    <div className="flex items-center gap-2 min-w-0">
+                        <Mail size={14} className="text-brand-cyan shrink-0" aria-hidden="true" />
+                        <span className={`truncate ${item.Email ? 'text-zinc-600' : 'text-zinc-400 italic'}`} title={item.Email || ''}>{item.Email || 'Sin email'}</span>
                     </div>
                 </div>
 
-                <div className="space-y-2 mt-2">
-                    <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                        <i className="fa-solid fa-id-badge text-indigo-400 w-4 text-center"></i>
-                        <span className="font-semibold">{rolNombre}</span>
-                    </div>
-                    {item.AreaUsuario && (
-                        <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg">
-                            <i className="fa-solid fa-building text-indigo-400 w-4 text-center"></i>
-                            <span>{item.AreaUsuario}</span>
-                        </div>
-                    )}
-                    <div className="flex items-center gap-2 text-xs text-slate-600 bg-slate-50 p-2 rounded-lg truncate">
-                        <i className="fa-solid fa-envelope text-indigo-400 w-4 text-center"></i>
-                        <span>{item.Email || 'Sin email'}</span>
+                {/* Pie: el rol y las acciones */}
+                <div className="flex items-center justify-between gap-2 mt-auto">
+                    <span className="inline-flex items-center gap-1.5 min-w-0 text-xs font-bold text-zinc-700" title="Rol">
+                        <ShieldCheck size={14} className="text-brand-cyan shrink-0" aria-hidden="true" />
+                        <span className="truncate">{rolNombre}</span>
+                    </span>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                            type="button"
+                            onClick={() => setEditando(item)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-cyan text-white text-xs font-bold hover:bg-brand-cyan/90 transition-colors"
+                            title="Editar"
+                        >
+                            <Pencil size={13} /> Editar
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => handleDelete(item.IdUsuario)}
+                            className="w-[30px] h-[30px] inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-400 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 transition-colors"
+                            title="Eliminar"
+                            aria-label="Eliminar"
+                        >
+                            <Trash2 size={13} />
+                        </button>
                     </div>
                 </div>
             </div>
@@ -155,167 +210,170 @@ const UsersPage = () => {
     };
 
     return (
-        <div className="min-h-screen bg-slate-50 p-6 md:p-10 font-sans text-slate-900">
-            <div className="max-w-6xl mx-auto">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
 
-                <header className="flex flex-col md:flex-row md:items-center justify-between mb-8 bg-white p-6 rounded-3xl shadow-xl shadow-slate-200/50 border border-slate-100">
-                    <div className="mb-4 md:mb-0">
-                        <div className="flex items-center gap-4">
-                            <div className="w-14 h-14 flex items-center justify-center bg-indigo-600 rounded-2xl text-white shadow-lg shadow-indigo-200">
-                                <i className="fa-solid fa-users text-2xl"></i>
-                            </div>
-                            <div>
-                                <h1 className="text-2xl font-black text-slate-800 tracking-tight leading-none">Gestión de Usuarios</h1>
-                                <p className="text-slate-400 text-sm mt-1 font-medium italic">Administración de acceso y perfiles</p>
-                            </div>
-                        </div>
-                    </div>
-                    <button
-                        onClick={() => setNuevoUsuario(true)}
-                        className="flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-indigo-200 transition-all hover:-translate-y-0.5 active:scale-95"
-                    >
-                        <i className="fa-solid fa-user-plus"></i>
-                        <span>Nuevo Usuario</span>
-                    </button>
-                </header>
-
-                <div className="space-y-6">
-                    <div className="flex items-center justify-between px-2">
-                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2">
-                            <span className="w-2 h-2 bg-indigo-400 rounded-full animate-pulse"></span>
-                            Directorio de Usuarios
-                        </h3>
-                        {loading && <i className="fa-solid fa-circle-notch fa-spin text-indigo-500 text-lg"></i>}
-                    </div>
-
-                    <div className="flex flex-col sm:flex-row gap-4 mb-6">
-                        <div className="relative flex-1">
-                            <i className="fa-solid fa-search absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"></i>
-                            <input
-                                type="text"
-                                placeholder="Buscar usuarios..."
-                                value={searchTerm}
-                                onChange={(e) => setSearchTerm(e.target.value)}
-                                className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none transition-all"
-                            />
-                        </div>
-                        <div className="w-full sm:w-64">
-                            <select
-                                value={filterArea}
-                                onChange={(e) => setFilterArea(e.target.value)}
-                                className="w-full px-4 py-3 bg-white border border-slate-200 rounded-xl focus:border-indigo-500 focus:ring-2 focus:ring-indigo-100 outline-none transition-all cursor-pointer"
-                            >
-                                <option value="">Todas las Áreas</option>
-                                {areas.map(area => (
-                                    <option key={area.AreaID} value={area.AreaID}>
-                                        {area.Nombre}
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    </div>
-
-                    {!loading && filteredUsuarios.length === 0 ? (
-                        <div className="text-center py-20 bg-white rounded-3xl border-2 border-dashed border-slate-200">
-                            <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                                <i className="fa-solid fa-users-slash text-slate-300 text-3xl"></i>
-                            </div>
-                            <p className="text-slate-500 font-bold text-lg">No hay usuarios encontrados</p>
-                            <p className="text-slate-400 text-sm">Intenta ajustar los filtros</p>
-                        </div>
-                    ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6 pb-20">
-                            {filteredUsuarios.map(u => (
-                                <UserCard key={u.IdUsuario} item={u} />
-                            ))}
-                        </div>
-                    )}
+            {/* Encabezado */}
+            <div className="flex flex-wrap items-center gap-3 mb-5">
+                <Users size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-0 flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Gestión de Usuarios</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Administración de acceso y perfiles</p>
                 </div>
+                <button
+                    type="button"
+                    onClick={() => setNuevoUsuario(true)}
+                    className={`${BTN_PRINCIPAL} w-full sm:w-auto`}
+                >
+                    <UserPlus size={16} />
+                    <span>Nuevo Usuario</span>
+                </button>
+            </div>
 
-                {(editando || nuevoUsuario) && (
-                    <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[1200] animate-in fade-in duration-200">
-                        <div className="bg-white rounded-3xl shadow-2xl w-full max-w-lg overflow-hidden border border-slate-100 flex flex-col max-h-[90vh] animate-in zoom-in-95 duration-200">
-                            <div className="px-8 py-6 bg-slate-50 border-b border-slate-100 flex justify-between items-center shrink-0">
-                                <div>
-                                    <h2 className="text-xl font-black text-slate-800 tracking-tight">
+            {/* Filtros */}
+            <div className="flex flex-col sm:flex-row gap-2 sm:gap-3 mb-4">
+                <div className="relative flex-1 min-w-0">
+                    <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                    <input
+                        type="text"
+                        placeholder="Buscar usuarios..."
+                        value={searchTerm}
+                        onChange={(e) => setSearchTerm(e.target.value)}
+                        className={`${CAMPO} sm:py-2`}
+                    />
+                </div>
+                <div className="w-full sm:w-64">
+                    <Selector filtro className="w-full" value={filterArea} onChange={(e) => setFilterArea(e.target.value)} aria-label="Área" anchoLista={260}>
+                        <option value="">Todas las Áreas</option>
+                        {areas.map(area => (
+                            <option key={area.AreaID} value={area.AreaID}>
+                                {area.Nombre}
+                            </option>
+                        ))}
+                    </Selector>
+                </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 mb-3 px-1">
+                <h3 className="text-[11px] font-black uppercase tracking-widest text-zinc-400 flex items-center gap-2">
+                    Directorio de usuarios
+                    {loading && <Loader2 size={14} className="animate-spin text-brand-cyan" />}
+                </h3>
+                {!loading && (
+                    <span className="text-xs font-bold text-zinc-400 tabular-nums">
+                        {filteredUsuarios.length === usuarios.length ? `${usuarios.length} usuarios` : `${filteredUsuarios.length} de ${usuarios.length} usuarios`}
+                    </span>
+                )}
+            </div>
+
+            {!loading && filteredUsuarios.length === 0 ? (
+                <div className={`${CARD} flex flex-col items-center justify-center text-center py-16 px-4`}>
+                    <UserX size={40} className="mb-3 text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">No hay usuarios encontrados</p>
+                    <p className="text-xs text-zinc-400 mt-1">Intenta ajustar los filtros</p>
+                </div>
+            ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 sm:gap-4 pb-10">
+                    {filteredUsuarios.map(u => (
+                        <UserCard key={u.IdUsuario} item={u} />
+                    ))}
+                </div>
+            )}
+
+            {(editando || nuevoUsuario) && (
+                <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-3 sm:p-4" role="dialog" aria-modal="true" aria-labelledby="usuario-titulo">
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl w-full max-w-lg overflow-hidden flex flex-col max-h-[90vh]">
+                        <div className="px-5 py-4 border-b border-zinc-100 flex items-center justify-between gap-3 shrink-0">
+                            <div className="flex items-center gap-3 min-w-0">
+                                {editando ? <Pencil size={20} className="text-brand-cyan shrink-0" /> : <UserPlus size={20} className="text-brand-cyan shrink-0" />}
+                                <div className="min-w-0">
+                                    <h2 id="usuario-titulo" className="text-lg font-black text-zinc-800 leading-tight truncate">
                                         {editando ? 'Editar Usuario' : 'Nuevo Usuario'}
                                     </h2>
-                                    <p className="text-[10px] text-indigo-500 font-black uppercase tracking-widest mt-1">Credenciales y Acceso</p>
+                                    <p className="text-[11px] font-black uppercase tracking-widest text-zinc-400 mt-0.5">Credenciales y Acceso</p>
                                 </div>
-                                <button
-                                    onClick={() => { setEditando(null); setNuevoUsuario(null); }}
-                                    className="w-10 h-10 flex items-center justify-center hover:bg-white hover:text-rose-500 rounded-xl transition-all text-slate-400"
-                                >
-                                    <i className="fa-solid fa-xmark text-xl"></i>
-                                </button>
                             </div>
+                            <button
+                                type="button"
+                                onClick={cerrarModal}
+                                title="Cerrar"
+                                className="p-2 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors shrink-0"
+                            >
+                                <X size={18} />
+                            </button>
+                        </div>
 
-                            <form onSubmit={handleSave} className="p-8 space-y-4 overflow-y-auto">
-                                <div className="grid grid-cols-2 gap-4">
-                                    <div className="space-y-1.5 col-span-2">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Nombre Completo</label>
+                        <form onSubmit={handleSave} className="flex flex-col min-h-0 flex-1">
+                            <div className="p-5 overflow-y-auto">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                    <div className="sm:col-span-2">
+                                        <label htmlFor="usuario-nombre" className={ETIQUETA}>Nombre Completo</label>
                                         <input
+                                            id="usuario-nombre"
                                             name="Nombre"
                                             required
                                             defaultValue={editando?.Nombre || ''}
                                             placeholder="Ej: Juan Pérez"
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all font-bold text-slate-700 placeholder:text-slate-400 text-sm"
+                                            className={`${ENTRADA} font-bold`}
                                         />
                                     </div>
 
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Usuario</label>
+                                    <div>
+                                        <label htmlFor="usuario-usuario" className={ETIQUETA}>Usuario</label>
                                         <input
+                                            id="usuario-usuario"
                                             name="Usuario"
                                             required
                                             defaultValue={editando?.Usuario || ''}
                                             placeholder="juan.perez"
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all text-sm font-semibold text-slate-700"
+                                            className={`${ENTRADA} font-mono`}
                                         />
                                     </div>
 
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Contraseña</label>
+                                    <div>
+                                        <label htmlFor="usuario-contrasena" className={ETIQUETA}>Contraseña</label>
                                         <input
+                                            id="usuario-contrasena"
                                             name="Contrasena"
                                             type="password"
                                             placeholder={editando ? "Dejar en blanco si no cambia" : "Obligatoria"}
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all text-sm font-semibold text-slate-700"
+                                            className={ENTRADA}
                                         />
                                     </div>
 
-                                    <div className="space-y-1.5 col-span-2">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Correo Electrónico</label>
+                                    <div className="sm:col-span-2">
+                                        <label htmlFor="usuario-email" className={ETIQUETA}>Correo Electrónico</label>
                                         <input
+                                            id="usuario-email"
                                             name="Email"
                                             type="email"
                                             defaultValue={editando?.Email || ''}
                                             placeholder="juan@macrosoft.com"
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none transition-all text-sm font-semibold text-slate-700"
+                                            className={ENTRADA}
                                         />
                                     </div>
 
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Rol</label>
-                                        <select
+                                    <div>
+                                        <span className={ETIQUETA}>Rol</span>
+                                        <SelectorCampo
                                             name="IdRol"
                                             required
                                             defaultValue={editando?.IdRol || ''}
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none font-bold text-slate-700 text-sm cursor-pointer"
+                                            aria-label="Rol"
                                         >
                                             <option value="">-- Seleccionar --</option>
                                             {roles.map(r => (
                                                 <option key={r.IdRol} value={r.IdRol}>{r.NombreRol}</option>
                                             ))}
-                                        </select>
+                                        </SelectorCampo>
                                     </div>
 
-                                    <div className="space-y-1.5">
-                                        <label className="text-xs font-black text-slate-500 uppercase tracking-widest ml-1">Área</label>
-                                        <select
+                                    <div>
+                                        <span className={ETIQUETA}>Área</span>
+                                        <SelectorCampo
                                             name="AreaUsuario"
                                             defaultValue={editando?.AreaUsuario || ''}
-                                            className="w-full px-5 py-3 bg-slate-50 border-2 border-transparent focus:border-indigo-500 focus:bg-white rounded-xl outline-none font-bold text-slate-700 text-sm cursor-pointer uppercase"
+                                            aria-label="Área"
+                                            anchoLista={260}
                                         >
                                             <option value="">-- Sin Área Específica --</option>
                                             {areas.map(area => (
@@ -323,38 +381,36 @@ const UsersPage = () => {
                                                     {area.Nombre} ({area.AreaID})
                                                 </option>
                                             ))}
-                                        </select>
+                                        </SelectorCampo>
                                     </div>
 
-                                    <div className="col-span-2 pt-2">
-                                        <label className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl cursor-pointer hover:bg-slate-100 transition-colors">
+                                    <div className="sm:col-span-2">
+                                        <label className="flex items-center gap-3 px-3 py-2.5 rounded-xl border border-zinc-200 bg-zinc-50 cursor-pointer hover:bg-zinc-100 transition-colors">
                                             <input
                                                 type="checkbox"
                                                 name="Activo"
                                                 defaultChecked={editando ? editando.Activo : true}
-                                                className="w-5 h-5 text-indigo-600 rounded focus:ring-indigo-500"
+                                                className="w-4 h-4 rounded accent-brand-cyan cursor-pointer"
                                             />
-                                            <span className="font-bold text-slate-700 text-sm">Usuario Activo</span>
+                                            <span className="font-bold text-zinc-700 text-sm">Usuario Activo</span>
                                         </label>
                                     </div>
                                 </div>
+                            </div>
 
-                                <div className="pt-4">
-                                    <button
-                                        type="submit"
-                                        className="w-full relative group bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-4 rounded-2xl font-black text-base shadow-xl shadow-indigo-200 transition-all hover:-translate-y-0.5 active:scale-95 overflow-hidden"
-                                    >
-                                        <div className="flex items-center justify-center gap-2 relative z-10">
-                                            <i className="fa-solid fa-floppy-disk group-hover:rotate-12 transition-transform"></i>
-                                            <span>Guardar Usuario</span>
-                                        </div>
-                                    </button>
-                                </div>
-                            </form>
-                        </div>
+                            <div className="px-5 py-3 bg-zinc-50 border-t border-zinc-100 flex flex-wrap justify-end gap-2 shrink-0">
+                                <button type="button" onClick={cerrarModal} className={BTN_SECUNDARIO}>Cancelar</button>
+                                <button type="submit" className={BTN_PRINCIPAL}>
+                                    <Save size={15} />
+                                    <span>Guardar Usuario</span>
+                                </button>
+                            </div>
+                        </form>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
+
+            {ventanaConfirmar}
         </div>
     );
 };

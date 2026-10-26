@@ -87,8 +87,10 @@ const WmsLogisticsPage = lazyWithRetry(() => import('../pages/customer-service/W
 const TelaClienteEstadoCuenta = lazyWithRetry(() => import('../pages/customer-service/TelaClienteEstadoCuenta'));
 const TelaClienteInventarioPage = lazyWithRetry(() => import('../pages/TelaClienteInventarioPage'));
 const NomenclatorsABM = lazyWithRetry(() => import('../pages/admin/NomenclatorsABM')); // <-- ADDED
+const TiposFallaPage = lazyWithRetry(() => import('../pages/admin/TiposFallaPage')); // Tipos de falla y razones de reposición (23/10)
 const DesignersAdminPage = lazyWithRetry(() => import('../pages/DesignersAdminPage'));
 const SysAdminPage = lazyWithRetry(() => import('../pages/admin/SysAdminPage'));
+const MonitorServidorPage = lazyWithRetry(() => import('../pages/admin/MonitorServidorPage'));
 const LeadsCRMView = lazyWithRetry(() => import('../pages/ventas/LeadsCRMView'));
 const PedidoPrendaPage = lazyWithRetry(() => import('../pages/ventas/PedidoPrendaPage')); // Alta interna de pedidos de prendas
 // Spec 41 — Solicitudes de vendedores (solicitud previa al pedido) + bandeja común de Diseño
@@ -808,6 +810,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/admin/price-profiles" element={<PriceProfiles />} />
                 <Route path="/admin/price-catalog" element={<CustomerPriceCatalogPage />} />
                 <Route path="/admin/nomencladores" element={<NomenclatorsABM />} />
+                <Route path="/admin/tipos-falla" element={<TiposFallaPage />} />
                 <Route path="/nomencladores" element={<NomenclatorsABM />} />
                 <Route path="/admin/leads" element={<LeadsCRMView />} />
                 <Route path="/leads" element={<LeadsCRMView />} />
@@ -816,6 +819,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 <Route path="/caja/cuadre" element={<CuadreDiarioView />} />
                 <Route path="/caja/central-admin" element={<ReporteCajaCentralAdminView />} />
                 <Route path="/admin/consola" element={<SysAdminPage />} />
+                <Route path="/admin/monitor" element={<MonitorServidorPage />} />
                 {/* La ventana Cuentas se sacó el 16/10/2026: la reemplazó el Panel 360 */}
                 <Route path="/contabilidad/cuentas"          element={<Navigate to="/contabilidad/cliente-360" replace />} />
                 <Route path="/contabilidad/cliente-360"      element={<ClienteVista360 />} />
@@ -1004,7 +1008,7 @@ const MainAppContent = ({ menuItems = [] }) => {
                 </aside>
 
                 <main className="flex-1 overflow-hidden relative bg-slate-100 w-full">
-                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk', '/consultas/ordenes', '/admin/clientes-integration', '/ventas/presupuestos'].includes(location.pathname) || location.pathname.startsWith('/production/machine') ? 'p-0' : 'p-0 md:p-6'}`}>
+                    <div className={`absolute inset-0 overflow-y-auto scroll-smooth ${['/caja/transaccion', '/contabilidad/caja-admin', '/admin/helpdesk', '/atencion-cliente/helpdesk', '/consultas/ordenes', '/consultas/integral', '/logistica/orden-integral', '/admin/clientes-integration', '/ventas/presupuestos', '/admin/monitor'].includes(location.pathname) || location.pathname.startsWith('/production/machine') ? 'p-0' : 'p-0 md:p-6'}`}>
                         {/* Cambio de pantalla: la nueva entra con un fundido de CSS y la anterior se va al instante.
                             Antes era AnimatePresence mode="wait" (fundido de salida + fundido de entrada): medido
                             cuadro por cuadro (09/10), la pantalla saliente volvía a opacidad 1 un frame antes de
@@ -1111,6 +1115,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/ventas/solicitudes') return <SolicitudesVendedorPage />;
     if (menuItem.Ruta === '/ventas/bandeja-diseno') return <BandejaDisenoPage />;
     if (menuItem.Ruta === '/admin/nomencladores' || menuItem.Ruta === '/nomencladores') return <NomenclatorsABM />;
+    if (menuItem.Ruta === '/admin/tipos-falla') return <TiposFallaPage />;
     if (menuItem.Ruta === '/admin/products-integration') return <ProductsIntegration />;
     // [MARKETING 21/08] Rutas propias de marketing (menú por rol), con pantallas simples
     // propias. Las de admin quedan intactas.
@@ -1173,6 +1178,7 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/caja/verificar-pagos') return <VerificarPagosOnlineView />;
     if (menuItem.Ruta === '/admin/excepciones-deuda') return <ExcepcionesDeudaView />;
     if (menuItem.Ruta === '/admin/consola') return <SysAdminPage />;
+    if (menuItem.Ruta === '/admin/monitor') return <MonitorServidorPage />;
     if (menuItem.Ruta === '/contabilidad/cuentas')              return <ClienteVista360 />; // ventana vieja → 360
     if (menuItem.Ruta === '/contabilidad/cliente-360')          return <ClienteVista360 />;
     if (menuItem.Ruta === '/vendedores/cliente-360')            return <VendedorCliente360 />;

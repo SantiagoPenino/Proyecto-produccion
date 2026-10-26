@@ -1,9 +1,19 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+// Versión del front (23/10/2026): un id por build. Va en el bundle (__BUILD_ID__, que el cliente HTTP manda en el
+// header X-Front-Build) y en un <meta name="build-id"> del index.html, que lee el monitor del servidor: así se ve qué
+// navegadores siguen con una versión vieja después de un deploy.
+const BUILD_ID = new Date().toISOString()
+
 export default defineConfig({
+  define: {
+    __BUILD_ID__: JSON.stringify(BUILD_ID),
+  },
   plugins: [
-    react()
+    react(),
+    { name: 'build-id', transformIndexHtml: (html) => html.replace('</head>', `  <meta name="build-id" content="${BUILD_ID}">
+</head>`) },
   ],
   build: {
     outDir: 'backend/public',
@@ -24,7 +34,7 @@ export default defineConfig({
     drop: ['console', 'debugger'],
   },
   optimizeDeps: {
-    include: ['ag-grid-community', 'ag-grid-react', 'jspdf', 'jspdf-autotable', '@tanstack/react-query', '@tanstack/react-table', 'axios']
+    include: ['jspdf', 'jspdf-autotable', '@tanstack/react-query', '@tanstack/react-table', 'axios']
   },
   server: {
     host: true,  // Permite conexiones externas (celular en red local)

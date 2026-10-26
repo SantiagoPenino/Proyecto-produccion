@@ -1,7 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { toast } from 'sonner';
-import { Package, CheckCircle, ChevronDown, ChevronUp, RefreshCw, XCircle, Save, Edit2, PlayCircle, Clock, History, StickyNote, Send, Printer, Search, Truck, PackagePlus } from 'lucide-react';
+import { Package, CheckCircle, ChevronDown, ChevronUp, RefreshCw, XCircle, Save, Edit2, PlayCircle, Clock, History, StickyNote, Send, Printer, Search, Truck, PackagePlus, Loader2, SearchX, ArrowRight, MapPin } from 'lucide-react';
 import { wmsService } from '../../services/modules/wmsService';
+
+// Estética nueva (22/10/2026, como Reportes y Cotización): fondo claro, pestañas y buscador en una tarjeta, cada
+// pedido en una tarjeta blanca con borde (código y chips arriba con el estado a la derecha, cliente y fecha, pie con
+// el total y botones chicos), íconos Lucide en brand-cyan sin fondo y el color solo para el estado del pedido. La
+// lista se dibuja de a 50. Los diálogos de Finalizar / Cancelar pasan a z-[6000] (tapan la navbar). Lógica sin cambios.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_DESTRUCTIVO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-500 hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50 transition-colors whitespace-nowrap';
+const BTN_ICONO = 'w-9 h-9 shrink-0 inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-500 hover:text-brand-cyan hover:border-brand-cyan/40 hover:bg-brand-cyan/5 transition-colors';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const CAMPO_SIMPLE = 'px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const SEGMENTADO = 'inline-flex items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white';
+const segmento = (activo) => `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+    activo ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`;
+const ROTULO = 'text-[11px] font-black text-zinc-400 uppercase tracking-wide';
+const BADGE = 'text-[11px] font-bold px-2.5 py-1 rounded-full border';
+const ICONO_CAMPO = 'absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none';
+
+// Barra lateral de la tarjeta según el estado (solo presentación; antes ámbar / azul / índigo para el resto).
+const BARRA_ESTADO = {
+    'PENDIENTE': 'bg-amber-400',
+    'EN_PREPARACION': 'bg-brand-cyan',
+    'PREPARADO': 'bg-brand-cyan',
+    'RECIBIDO_DEPOSITO': 'bg-emerald-500',
+    'ENTREGADO': 'bg-zinc-300',
+    'CANCELADO': 'bg-rose-400',
+    'ENVIADO_PRODUCCION': 'bg-emerald-500',
+};
 
 // [WMS] Vista unificada de la pestaña "Recibir órdenes de venta" (Inventario):
 // todo el ciclo del pedido VEN en un solo lugar, con stepper por pedido.
@@ -31,6 +60,20 @@ const WmsReceiveSalesView = () => {
     const [historialSearch, setHistorialSearch] = useState('');
     const [loadingHistorial, setLoadingHistorial] = useState(false);
     const [procesoSearch, setProcesoSearch] = useState(''); // filtro en vivo por orden/cliente
+
+    // Tarjetas de a 50 (solo presentación): al acercarse al final se agregan 50 más. Vuelve a 50 al cambiar de
+    // pestaña, de filtro o con una búsqueda nueva del historial; el refresco automático de 30 s no la reinicia
+    // (si no, cada medio minuto se cortaría la lista que uno está mirando).
+    const [verPedidos, setVerPedidos] = useState(50);
+    useEffect(() => { setVerPedidos(50); }, [vista, procesoSearch, historial]);
+    const obsPedidos = useRef(null);
+    const centinelaPedidos = useCallback((nodo) => {
+        if (obsPedidos.current) obsPedidos.current.disconnect();
+        if (!nodo) return;
+        obsPedidos.current = new IntersectionObserver(([e]) => { if (e.isIntersecting) setVerPedidos(v => v + 50); },
+            { rootMargin: '0px 0px 600px 0px' });
+        obsPedidos.current.observe(nodo);
+    }, []);
 
     useEffect(() => {
         loadOrders();
@@ -270,18 +313,18 @@ const WmsReceiveSalesView = () => {
                     return (
                         <React.Fragment key={label}>
                             {i > 0 && (
-                                <div className={`h-0.5 w-6 sm:w-10 ${i <= current ? 'bg-indigo-400' : 'bg-slate-200'}`} />
+                                <div className={`h-0.5 w-6 sm:w-10 rounded-full ${i <= current ? 'bg-brand-cyan' : 'bg-zinc-200'}`} />
                             )}
                             <div className="flex flex-col items-center gap-1">
-                                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border-2 transition-colors ${
-                                    done ? 'bg-indigo-500 border-indigo-500 text-white'
-                                    : active ? 'bg-white border-indigo-500 text-indigo-600'
-                                    : 'bg-white border-slate-200 text-slate-400'
+                                <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-black border-2 transition-colors tabular-nums ${
+                                    done ? 'bg-brand-cyan border-brand-cyan text-white'
+                                    : active ? 'bg-white border-brand-cyan text-brand-cyan'
+                                    : 'bg-white border-zinc-200 text-zinc-400'
                                 }`}>
                                     {done ? <CheckCircle size={15} /> : i + 1}
                                 </div>
-                                <span className={`text-[9px] font-bold uppercase tracking-wide hidden sm:block ${
-                                    done || active ? 'text-indigo-600' : 'text-slate-400'
+                                <span className={`text-[9px] font-black uppercase tracking-wide hidden sm:block whitespace-nowrap ${
+                                    done || active ? 'text-brand-cyan' : 'text-zinc-400'
                                 }`}>{label}</span>
                             </div>
                         </React.Fragment>
@@ -324,13 +367,13 @@ const WmsReceiveSalesView = () => {
     };
 
     const ESTADO_BADGE = {
-        'PENDIENTE': { cls: 'bg-amber-50 text-amber-700', icon: <Clock size={14} />, label: 'Pendiente' },
-        'EN_PREPARACION': { cls: 'bg-blue-50 text-blue-700', icon: <PlayCircle size={14} />, label: 'En Preparación' },
-        'PREPARADO': { cls: 'bg-indigo-50 text-indigo-700', icon: <CheckCircle size={14} />, label: 'Preparado WMS' },
-        'RECIBIDO_DEPOSITO': { cls: 'bg-emerald-50 text-emerald-700', icon: <Truck size={14} />, label: 'En Depósito' },
-        'ENTREGADO': { cls: 'bg-slate-100 text-slate-600', icon: <CheckCircle size={14} />, label: 'Entregado' },
-        'CANCELADO': { cls: 'bg-red-50 text-red-600', icon: <XCircle size={14} />, label: 'Cancelado' },
-        'ENVIADO_PRODUCCION': { cls: 'bg-violet-50 text-violet-700', icon: <Send size={14} />, label: 'Enviado a Producción' },
+        'PENDIENTE': { cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Clock size={13} />, label: 'Pendiente' },
+        'EN_PREPARACION': { cls: 'bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20', icon: <PlayCircle size={13} />, label: 'En Preparación' },
+        'PREPARADO': { cls: 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/30', icon: <CheckCircle size={13} />, label: 'Preparado WMS' },
+        'RECIBIDO_DEPOSITO': { cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <Truck size={13} />, label: 'En Depósito' },
+        'ENTREGADO': { cls: 'bg-zinc-100 text-zinc-600 border-zinc-200', icon: <CheckCircle size={13} />, label: 'Entregado' },
+        'CANCELADO': { cls: 'bg-rose-50 text-rose-700 border-rose-200', icon: <XCircle size={13} />, label: 'Cancelado' },
+        'ENVIADO_PRODUCCION': { cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <Send size={13} />, label: 'Enviado a Producción' },
     };
 
     const activeCount = orders.length;
@@ -346,46 +389,48 @@ const WmsReceiveSalesView = () => {
     const destinoDialog = confirmDialog ? destinoPendiente(confirmDialog) : null;
 
     return (
-        <div className="p-6 bg-slate-50 min-h-screen relative">
+        <div className="p-3 md:p-6 bg-slate-50 min-h-full relative font-sans text-zinc-800">
 
             {/* Confirmation Dialog (Finalizar) */}
             {confirmDialog && (
-                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
-                        <div className="flex items-center gap-4 mb-4 text-emerald-600">
-                            <div className="bg-emerald-100 p-3 rounded-full">
-                                <CheckCircle size={24} />
+                <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl max-w-md w-full overflow-hidden">
+                        <div className="p-5">
+                            <div className="flex items-start gap-3 mb-4">
+                                <CheckCircle size={22} className="shrink-0 mt-0.5 text-brand-cyan" aria-hidden="true" />
+                                <h2 className="text-lg font-black text-zinc-800 leading-snug break-words min-w-0">¿Finalizar el pedido {confirmDialog.codigo}?</h2>
                             </div>
-                            <h2 className="text-xl font-bold text-slate-800">¿Finalizar el pedido {confirmDialog.codigo}?</h2>
+                            <div className="text-zinc-600 text-sm space-y-2">
+                                <p className="font-bold text-zinc-700">Al confirmar, en un solo paso:</p>
+                                <ul className="list-disc pl-5 space-y-1">
+                                    {confirmDialog.estado !== 'PREPARADO' && (
+                                        <li>Se descuenta el stock del WMS (rebaje de inventario) y se genera la etiqueta del bulto.</li>
+                                    )}
+                                    {destinoDialog ? (
+                                        <li>El pedido se envía a <strong className="text-zinc-800">{AREA_LABELS[destinoDialog] || destinoDialog}</strong> — todavía NO ingresa a Depósito ni se avisa al cliente.</li>
+                                    ) : (
+                                        <>
+                                            <li>El pedido ingresa a <strong className="text-zinc-800">Depósito</strong> (queda registrado y en cuenta del cliente).</li>
+                                            <li>Se programa el <strong className="text-zinc-800">aviso automático (WhatsApp)</strong> al cliente de que su pedido está pronto.</li>
+                                        </>
+                                    )}
+                                </ul>
+                            </div>
                         </div>
-                        <div className="text-slate-600 mb-6 text-sm space-y-2">
-                            <p className="font-bold text-slate-700">Al confirmar, en un solo paso:</p>
-                            <ul className="list-disc pl-5 space-y-1">
-                                {confirmDialog.estado !== 'PREPARADO' && (
-                                    <li>Se descuenta el stock del WMS (rebaje de inventario) y se genera la etiqueta del bulto.</li>
-                                )}
-                                {destinoDialog ? (
-                                    <li>El pedido se envía a <strong>{AREA_LABELS[destinoDialog] || destinoDialog}</strong> — todavía NO ingresa a Depósito ni se avisa al cliente.</li>
-                                ) : (
-                                    <>
-                                        <li>El pedido ingresa a <strong>Depósito</strong> (queda registrado y en cuenta del cliente).</li>
-                                        <li>Se programa el <strong>aviso automático (WhatsApp)</strong> al cliente de que su pedido está pronto.</li>
-                                    </>
-                                )}
-                            </ul>
-                        </div>
-                        <div className="flex gap-3 justify-end">
+                        <div className="flex flex-wrap justify-end gap-2 px-5 py-3 bg-zinc-50 border-t border-zinc-100">
                             <button
+                                type="button"
                                 onClick={() => setConfirmDialog(null)}
-                                className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+                                className={`${BTN_SECUNDARIO} flex-1 sm:flex-none`}
                             >
                                 Cancelar
                             </button>
                             <button
+                                type="button"
                                 onClick={() => handleFinalize(confirmDialog)}
-                                className="px-5 py-2.5 rounded-xl font-bold text-white bg-emerald-500 hover:bg-emerald-600 shadow-lg shadow-emerald-500/30 transition-all flex items-center gap-2"
+                                className={`${BTN_PRINCIPAL} flex-1 sm:flex-none`}
                             >
-                                <CheckCircle size={18} />
+                                <CheckCircle size={15} />
                                 Sí, Finalizar
                             </button>
                         </div>
@@ -395,30 +440,32 @@ const WmsReceiveSalesView = () => {
 
             {/* Cancel Dialog */}
             {cancelDialog && (
-                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl p-6 max-w-md w-full shadow-2xl">
-                        <div className="flex items-center gap-4 mb-4 text-red-600">
-                            <div className="bg-red-100 p-3 rounded-full">
-                                <XCircle size={24} />
+                <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl max-w-md w-full overflow-hidden">
+                        <div className="p-5">
+                            <div className="flex items-start gap-3 mb-3">
+                                <XCircle size={22} className="shrink-0 mt-0.5 text-rose-500" aria-hidden="true" />
+                                <h2 className="text-lg font-black text-zinc-800 leading-snug">¿Cancelar Pedido?</h2>
                             </div>
-                            <h2 className="text-xl font-bold text-slate-800">¿Cancelar Pedido?</h2>
+                            <p className="text-sm text-zinc-600">
+                                Estás a punto de CANCELAR el pedido <strong className="text-zinc-800">{cancelDialog.codigo}</strong>.
+                                Esta acción no se puede deshacer y el pedido será removido.
+                            </p>
                         </div>
-                        <p className="text-slate-600 mb-6">
-                            Estás a punto de CANCELAR el pedido <strong>{cancelDialog.codigo}</strong>.
-                            Esta acción no se puede deshacer y el pedido será removido.
-                        </p>
-                        <div className="flex gap-3 justify-end">
+                        <div className="flex flex-wrap justify-end gap-2 px-5 py-3 bg-zinc-50 border-t border-zinc-100">
                             <button
+                                type="button"
                                 onClick={() => setCancelDialog(null)}
-                                className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+                                className={`${BTN_SECUNDARIO} flex-1 sm:flex-none`}
                             >
                                 Volver
                             </button>
                             <button
+                                type="button"
                                 onClick={() => handleCancelOrder(cancelDialog.id)}
-                                className="px-5 py-2.5 rounded-xl font-bold text-white bg-red-500 hover:bg-red-600 shadow-lg shadow-red-500/30 transition-all flex items-center gap-2"
+                                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-rose-600 text-white text-sm font-bold hover:bg-rose-700 transition-colors flex-1 sm:flex-none"
                             >
-                                <XCircle size={18} />
+                                <XCircle size={15} />
                                 Sí, Cancelar
                             </button>
                         </div>
@@ -426,113 +473,118 @@ const WmsReceiveSalesView = () => {
                 </div>
             )}
 
-            <div className="max-w-5xl mx-auto">
+            <div className="space-y-4">
                 {/* Header */}
-                <div className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4">
-                    <div className="flex items-center gap-4">
-                        <div className="bg-gradient-to-tr from-indigo-500 to-indigo-400 p-4 rounded-2xl text-white shadow-lg shadow-indigo-200">
-                            <Package size={28} />
-                        </div>
-                        <div>
-                            <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Recibir Órdenes WMS</h1>
-                            <p className="text-slate-500 font-medium">Preparación, rebaje de inventario, ingreso a depósito y aviso al cliente — todo en un lugar</p>
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                        <Package size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                        <div className="min-w-0">
+                            <h1 className="text-xl md:text-2xl font-black text-zinc-800 uppercase tracking-tight">Recibir Órdenes WMS</h1>
+                            <p className="text-sm text-zinc-400">Preparación, rebaje de inventario, ingreso a depósito y aviso al cliente — todo en un lugar</p>
                         </div>
                     </div>
 
                     <button
+                        type="button"
                         onClick={loadOrders}
-                        className="self-start md:self-auto flex items-center gap-2 bg-white border border-slate-200 hover:bg-slate-100 text-slate-600 px-4 py-2 rounded-xl font-bold shadow-sm transition-colors"
+                        className={BTN_SECUNDARIO}
                     >
-                        <RefreshCw size={18} className={loading ? 'animate-spin' : ''} />
+                        <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
                         Actualizar
                     </button>
                 </div>
 
-                {/* Pestañas: En Proceso / Historial */}
-                <div className="flex items-center gap-2 mb-5">
-                    <button
-                        onClick={() => setVista('proceso')}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all ${
-                            vista === 'proceso' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                        }`}
-                    >
-                        <PlayCircle size={16} />
-                        En Proceso
-                        <span className={`px-2 py-0.5 rounded-full text-xs ${vista === 'proceso' ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'}`}>{activeCount}</span>
-                    </button>
-                    <button
-                        onClick={() => { setVista('historial'); loadHistorial(); }}
-                        className={`flex items-center gap-2 px-5 py-2.5 rounded-xl font-bold text-sm transition-all ${
-                            vista === 'historial' ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-600/30' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                        }`}
-                    >
-                        <History size={16} />
-                        Historial
-                    </button>
-                </div>
-
-                {/* Buscador en vivo de la vista En Proceso (por orden o cliente) */}
-                {vista === 'proceso' && (
-                    <div className="relative mb-5">
-                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                        <input
-                            type="text"
-                            value={procesoSearch}
-                            onChange={(e) => setProcesoSearch(e.target.value)}
-                            placeholder="Filtrar por código (VEN-...) o cliente..."
-                            className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-700 font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                        />
-                    </div>
-                )}
-
-                {/* Buscador del historial */}
-                {vista === 'historial' && (
-                    <div className="flex gap-2 mb-5">
-                        <div className="relative flex-1">
-                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                            <input
-                                type="text"
-                                value={historialSearch}
-                                onChange={(e) => setHistorialSearch(e.target.value)}
-                                onKeyDown={(e) => { if (e.key === 'Enter') loadHistorial(historialSearch); }}
-                                placeholder="Buscar por código (VEN-...) o cliente..."
-                                className="w-full pl-11 pr-4 py-3 bg-white border border-slate-200 rounded-xl text-slate-700 font-medium focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                            />
-                        </div>
+                {/* Pestañas (En Proceso / Historial) + buscador de la pestaña elegida */}
+                <div className={`${CARD} p-3 flex flex-col sm:flex-row sm:items-center gap-3`}>
+                    <div className={`${SEGMENTADO} self-start sm:self-auto shrink-0`}>
                         <button
-                            onClick={() => loadHistorial(historialSearch)}
-                            className="px-5 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2"
+                            type="button"
+                            onClick={() => setVista('proceso')}
+                            className={segmento(vista === 'proceso')}
                         >
-                            <Search size={16} />
-                            Buscar
+                            <PlayCircle size={14} />
+                            En Proceso
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] tabular-nums ${vista === 'proceso' ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-600'}`}>{activeCount}</span>
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { setVista('historial'); loadHistorial(); }}
+                            className={segmento(vista === 'historial')}
+                        >
+                            <History size={14} />
+                            Historial
                         </button>
                     </div>
-                )}
 
-                <div className="flex items-center justify-between mb-4 px-2">
-                    <h2 className="text-lg font-bold text-slate-700">{vista === 'proceso' ? 'Pedidos de Venta en Proceso' : 'Pedidos Terminados y Cancelados (últimos 50)'}</h2>
-                    <span className="bg-indigo-100 text-indigo-700 px-3 py-1 rounded-full text-sm font-bold">
+                    {/* Buscador en vivo de la vista En Proceso (por orden o cliente) */}
+                    {vista === 'proceso' && (
+                        <div className="relative flex-1 min-w-0">
+                            <Search size={15} className={ICONO_CAMPO} />
+                            <input
+                                type="text"
+                                value={procesoSearch}
+                                onChange={(e) => setProcesoSearch(e.target.value)}
+                                placeholder="Filtrar por código (VEN-...) o cliente..."
+                                aria-label="Filtrar pedidos en proceso"
+                                className={CAMPO}
+                            />
+                        </div>
+                    )}
+
+                    {/* Buscador del historial */}
+                    {vista === 'historial' && (
+                        <div className="flex gap-2 flex-1 min-w-0">
+                            <div className="relative flex-1 min-w-0">
+                                <Search size={15} className={ICONO_CAMPO} />
+                                <input
+                                    type="text"
+                                    value={historialSearch}
+                                    onChange={(e) => setHistorialSearch(e.target.value)}
+                                    onKeyDown={(e) => { if (e.key === 'Enter') loadHistorial(historialSearch); }}
+                                    placeholder="Buscar por código (VEN-...) o cliente..."
+                                    aria-label="Buscar en el historial"
+                                    className={CAMPO}
+                                />
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => loadHistorial(historialSearch)}
+                                className={`${BTN_PRINCIPAL} shrink-0`}
+                            >
+                                <Search size={15} />
+                                Buscar
+                            </button>
+                        </div>
+                    )}
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between gap-2 px-1">
+                    <h2 className="text-lg font-black text-zinc-800">{vista === 'proceso' ? 'Pedidos de Venta en Proceso' : 'Pedidos Terminados y Cancelados (últimos 50)'}</h2>
+                    <span className={`${BADGE} bg-white text-zinc-600 border-zinc-200 tabular-nums`}>
                         {vista === 'proceso' ? `${activeCount} en cola` : `${historial.length} encontrados`}
                     </span>
                 </div>
 
                 {/* Orders List */}
-                <div className="space-y-4">
+                <div className="space-y-3">
                     {(vista === 'historial' && loadingHistorial) ? (
-                        <div className="bg-white border border-slate-200 rounded-3xl p-12 text-center">
-                            <RefreshCw size={32} className="mx-auto text-indigo-400 animate-spin mb-3" />
-                            <p className="text-slate-500 font-medium">Buscando en el historial...</p>
+                        <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-3`}>
+                            <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                            <p className="text-sm text-zinc-400">Buscando en el historial...</p>
                         </div>
                     ) : listaVisible.length === 0 ? (
-                        <div className="bg-white border-2 border-dashed border-slate-200 rounded-3xl p-12 text-center">
-                            <CheckCircle size={48} className="mx-auto text-emerald-400 mb-4" />
-                            <h3 className="text-xl font-bold text-slate-700 mb-2">{vista === 'proceso' ? (filtroProceso && orders.length > 0 ? 'Sin coincidencias' : '¡Todo al día!') : 'Sin resultados'}</h3>
-                            <p className="text-slate-500">{vista === 'proceso'
+                        <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-2 px-4 text-center`}>
+                            {vista === 'proceso' && !(filtroProceso && orders.length > 0)
+                                ? <CheckCircle size={40} className="text-zinc-200" />
+                                : <SearchX size={40} className="text-zinc-200" />}
+                            <p className="font-bold text-zinc-500">{vista === 'proceso' ? (filtroProceso && orders.length > 0 ? 'Sin coincidencias' : '¡Todo al día!') : 'Sin resultados'}</p>
+                            <p className="text-sm text-zinc-400">{vista === 'proceso'
                                 ? (filtroProceso && orders.length > 0 ? 'Ningún pedido en proceso coincide con esa búsqueda.' : 'No hay pedidos de venta en proceso.')
                                 : 'No se encontraron pedidos terminados con esa búsqueda.'}</p>
                         </div>
                     ) : (
-                        listaVisible.map(order => {
+                        <>
+                        {listaVisible.slice(0, verPedidos).map(order => {
                             const isExpanded = expandedOrder === order.id;
                             const isProcessing = processingId === order.id;
                             const readOnly = vista === 'historial';
@@ -540,38 +592,36 @@ const WmsReceiveSalesView = () => {
                             const destinoOrder = destinoPendiente(order);
 
                             return (
-                                <div key={order.id} className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden hover:shadow-md transition-shadow">
+                                <div key={order.id} className={`${CARD} overflow-hidden flex items-stretch hover:border-zinc-300 transition-colors`}>
+                                    {/* Barra lateral de estado */}
+                                    <div className={`w-1.5 shrink-0 ${BARRA_ESTADO[order.estado] || 'bg-zinc-300'}`} />
+
+                                    <div className="flex-1 min-w-0">
                                     {/* Card Header (Always visible) */}
                                     <div
-                                        className="p-5 flex items-center justify-between cursor-pointer gap-4"
+                                        className="p-4 flex flex-col lg:flex-row lg:items-center gap-3 lg:gap-6 cursor-pointer"
                                         onClick={() => toggleExpand(order)}
                                     >
-                                        <div className="flex items-center gap-6 flex-1 min-w-0">
-                                            {/* Accent Bar */}
-                                            <div className={`w-1.5 h-12 rounded-full ${order.estado === 'PENDIENTE' ? 'bg-amber-400' : order.estado === 'EN_PREPARACION' ? 'bg-blue-500' : 'bg-indigo-500'}`}></div>
-
-                                            <div className="min-w-0">
-                                                <div className="flex items-center gap-3 mb-1">
-                                                    <span className="font-mono text-lg font-bold text-slate-800">{order.codigo}</span>
-                                                    <span className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold ${badge.cls}`}>
-                                                        {badge.icon}
-                                                        {badge.label}
-                                                    </span>
+                                        <div className="flex-1 min-w-0">
+                                            {/* Código + chips a la izquierda, estado a la derecha */}
+                                            <div className="flex items-start justify-between gap-2">
+                                                <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                                                    <span className="font-mono text-base font-black text-zinc-800 break-all mr-0.5">{order.codigo}</span>
                                                     {order.notasCount > 0 && (
                                                         <span
-                                                            className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-amber-100 text-amber-700"
+                                                            className={`${BADGE} inline-flex items-center gap-1 bg-amber-50 text-amber-700 border-amber-200 tabular-nums`}
                                                             title={`Este pedido tiene ${order.notasCount} nota(s) — abrilo para leerlas`}
                                                         >
-                                                            <StickyNote size={13} />
+                                                            <StickyNote size={12} />
                                                             {order.notasCount}
                                                         </span>
                                                     )}
                                                     {order.bultosCount > 0 && (
                                                         <span
-                                                            className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-slate-100 text-slate-600"
-                                                            title={`El pedido tiene ${order.bultosCount} bulto(s) con etiqueta — se imprimen con el botón 🖨`}
+                                                            className={`${BADGE} inline-flex items-center gap-1 bg-zinc-50 text-zinc-600 border-zinc-200 tabular-nums`}
+                                                            title={`El pedido tiene ${order.bultosCount} bulto(s) con etiqueta — se imprimen con el botón de imprimir`}
                                                         >
-                                                            <Package size={13} />
+                                                            <Package size={12} />
                                                             {order.bultosCount} {order.bultosCount === 1 ? 'bulto' : 'bultos'}
                                                         </span>
                                                     )}
@@ -582,64 +632,80 @@ const WmsReceiveSalesView = () => {
                                                         (order.areasDestino || []).map(a => (
                                                             <span
                                                                 key={a}
-                                                                className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-violet-600 text-white shadow-sm shadow-violet-300"
+                                                                className={`${BADGE} inline-flex items-center gap-1 font-black bg-brand-cyan text-white border-brand-cyan`}
                                                                 title={`¡OJO! Este pedido también tiene trabajo en ${AREA_LABELS[a] || a} (órdenes del mismo documento ${order.codigo}) — no es venta directa a depósito`}
                                                             >
-                                                                → {AREA_LABELS[a] || a}
+                                                                <ArrowRight size={12} />
+                                                                {AREA_LABELS[a] || a}
                                                             </span>
                                                         ))
                                                     ) : order.proximoServicioAncla && order.proximoServicioAncla.toUpperCase() !== 'DEPOSITO' ? (
                                                         <span
-                                                            className="flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-black bg-violet-600 text-white shadow-sm shadow-violet-300"
+                                                            className={`${BADGE} inline-flex items-center gap-1 font-black bg-brand-cyan text-white border-brand-cyan`}
                                                             title={`Este pedido todavía tiene que pasar por ${AREA_LABELS[order.proximoServicioAncla] || order.proximoServicioAncla} antes de Depósito — no ingresa directo`}
                                                         >
-                                                            → {AREA_LABELS[order.proximoServicioAncla] || order.proximoServicioAncla}
+                                                            <ArrowRight size={12} />
+                                                            {AREA_LABELS[order.proximoServicioAncla] || order.proximoServicioAncla}
                                                         </span>
                                                     ) : (
                                                         <span
-                                                            className="flex items-center gap-1 px-2 py-1 rounded-full text-xs font-bold bg-slate-50 text-slate-400 border border-slate-200"
+                                                            className={`${BADGE} inline-flex items-center gap-1 bg-white text-zinc-400 border-zinc-200`}
                                                             title="Venta directa: el pedido va solo a Depósito"
                                                         >
-                                                            → Depósito
+                                                            <ArrowRight size={12} />
+                                                            Depósito
                                                         </span>
                                                     )}
                                                 </div>
-                                                <p className="text-sm text-slate-500 font-medium truncate">
-                                                    {order.cliente} • {new Date(order.fecha).toLocaleDateString('es-UY', { hour: '2-digit', minute: '2-digit' })}
-                                                </p>
+                                                <span className={`${BADGE} shrink-0 whitespace-nowrap inline-flex items-center gap-1 ${badge.cls}`}>
+                                                    {badge.icon}
+                                                    {badge.label}
+                                                </span>
                                             </div>
+                                            <p className="mt-2 font-bold text-zinc-800 truncate" title={order.cliente}>{order.cliente}</p>
+                                            <p className="text-xs text-zinc-400 tabular-nums">
+                                                {new Date(order.fecha).toLocaleDateString('es-UY', { hour: '2-digit', minute: '2-digit' })}
+                                            </p>
                                         </div>
 
-                                        {/* Stepper (los cancelados no lo muestran) */}
-                                        {order.estado !== 'CANCELADO' && (
-                                            <div className="hidden md:block shrink-0">
+                                        {/* Stepper (los cancelados no lo muestran). La columna tiene ancho fijo
+                                            para que el stepper y el estado queden alineados entre tarjetas. */}
+                                        <div className="hidden lg:flex justify-center shrink-0 min-w-[23rem]">
+                                            {order.estado !== 'CANCELADO' && (
                                                 <Stepper estado={order.estado} order={order} />
-                                            </div>
-                                        )}
-
-                                        <div className="flex items-center gap-4 shrink-0">
-                                            <div className="text-right hidden sm:block">
-                                                <p className="text-xs text-slate-400 font-bold uppercase mb-0.5">Total</p>
-                                                <p className="font-bold text-slate-800">{order.moneda} ${order.total}</p>
-                                            </div>
-                                            {!readOnly && (
-                                                <button
-                                                    onClick={(e) => handleAddBulto(order, e)}
-                                                    className="bg-slate-50 hover:bg-amber-50 p-2.5 rounded-full text-slate-400 hover:text-amber-600 transition-colors"
-                                                    title="Agregar un bulto más al pedido (va en más de un paquete) — las etiquetas quedan 1/2, 2/2... y se abren para imprimir"
-                                                >
-                                                    <PackagePlus size={18} />
-                                                </button>
                                             )}
-                                            <button
-                                                onClick={(e) => handlePrintEtiquetas(order, e)}
-                                                className="bg-slate-50 hover:bg-indigo-50 p-2.5 rounded-full text-slate-400 hover:text-indigo-600 transition-colors"
-                                                title="Imprimir etiqueta del pedido (si todavía no existe, se genera en el momento)"
-                                            >
-                                                <Printer size={18} />
-                                            </button>
-                                            <div className="bg-slate-50 p-2 rounded-full text-slate-400 hover:text-slate-600 transition-colors">
-                                                {isExpanded ? <ChevronUp size={20} /> : <ChevronDown size={20} />}
+                                        </div>
+
+                                        {/* Pie: total a la izquierda, botones chicos a la derecha (en pantalla ancha, al costado) */}
+                                        <div className="flex items-center justify-between lg:justify-end gap-3 lg:gap-4 shrink-0 pt-3 lg:pt-0 border-t border-zinc-100 lg:border-0">
+                                            <div className="lg:text-right lg:min-w-[7.5rem]">
+                                                <p className={ROTULO}>Total</p>
+                                                <p className="font-black text-zinc-800 tabular-nums whitespace-nowrap">{order.moneda} ${order.total}</p>
+                                            </div>
+                                            <div className="flex items-center gap-1.5">
+                                                {!readOnly && (
+                                                    <button
+                                                        type="button"
+                                                        onClick={(e) => handleAddBulto(order, e)}
+                                                        className={BTN_ICONO}
+                                                        title="Agregar un bulto más al pedido (va en más de un paquete) — las etiquetas quedan 1/2, 2/2... y se abren para imprimir"
+                                                        aria-label="Agregar un bulto más al pedido"
+                                                    >
+                                                        <PackagePlus size={16} />
+                                                    </button>
+                                                )}
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => handlePrintEtiquetas(order, e)}
+                                                    className={BTN_ICONO}
+                                                    title="Imprimir etiqueta del pedido (si todavía no existe, se genera en el momento)"
+                                                    aria-label="Imprimir etiqueta del pedido"
+                                                >
+                                                    <Printer size={16} />
+                                                </button>
+                                                <div className="w-8 h-9 inline-flex items-center justify-center text-zinc-400" aria-hidden="true">
+                                                    {isExpanded ? <ChevronUp size={18} /> : <ChevronDown size={18} />}
+                                                </div>
                                             </div>
                                         </div>
                                     </div>
@@ -647,115 +713,129 @@ const WmsReceiveSalesView = () => {
                                     {/* Expanded Detail View — abierta SIN tope de alto: con max-h-[2000px] un
                                         pedido de ~23+ líneas (VEN-2451) recortaba el pie y el botón
                                         "Iniciar Preparación" quedaba invisible. */}
-                                    <div className={`overflow-hidden transition-all duration-300 border-t border-slate-100 ${isExpanded ? 'max-h-none opacity-100' : 'max-h-0 opacity-0'}`}>
-                                        <div className="p-6 bg-slate-50/50">
+                                    <div className={`overflow-hidden transition-all duration-300 ${isExpanded ? 'max-h-none opacity-100 border-t border-zinc-100' : 'max-h-0 opacity-0'}`}>
+                                        <div className="p-4 md:p-5 bg-zinc-50/60 space-y-4">
 
                                             {/* Stepper visible en mobile */}
                                             {order.estado !== 'CANCELADO' && (
-                                                <div className="md:hidden mb-4 flex justify-center">
+                                                <div className="lg:hidden flex justify-center">
                                                     <Stepper estado={order.estado} order={order} />
                                                 </div>
                                             )}
 
-                                            <div className="flex items-center justify-between mb-4">
-                                                <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider">Revisión de Artículos</h4>
+                                            <div>
+                                                <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                                                    <h4 className={ROTULO}>Revisión de Artículos</h4>
 
-                                                {!readOnly && (
-                                                    <button
-                                                        onClick={() => setCancelDialog(order)}
-                                                        className="flex items-center gap-1.5 text-red-500 hover:text-red-700 text-sm font-bold transition-colors"
-                                                    >
-                                                        <XCircle size={16} />
-                                                        Cancelar Pedido
-                                                    </button>
-                                                )}
-                                            </div>
+                                                    {!readOnly && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => setCancelDialog(order)}
+                                                            className={BTN_DESTRUCTIVO}
+                                                        >
+                                                            <XCircle size={15} />
+                                                            Cancelar Pedido
+                                                        </button>
+                                                    )}
+                                                </div>
 
-                                            <div className="bg-white rounded-xl border border-slate-200 divide-y divide-slate-100 mb-6">
-                                                {order.items.map((item, idx) => {
-                                                    const isEditing = editingItem?.pedidoId === order.id && editingItem?.wms_variante_id === item.wms_variante_id;
-                                                    return (
-                                                        <div key={idx} className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                                                            <div className="flex items-center gap-4 flex-1">
-                                                                {isEditing ? (
-                                                                    <div className="flex items-center gap-2">
-                                                                        <input
-                                                                            type="number"
-                                                                            min="0"
-                                                                            value={editingItem.nuevaCantidad}
-                                                                            onChange={(e) => setEditingItem({...editingItem, nuevaCantidad: Number(e.target.value)})}
-                                                                            className="w-20 px-3 py-2 bg-slate-50 border border-slate-300 rounded-lg text-slate-800 font-bold focus:ring-2 focus:ring-indigo-500 focus:outline-none"
-                                                                        />
-                                                                        <button
-                                                                            onClick={handleSaveQuantity}
-                                                                            className="p-2 bg-emerald-100 text-emerald-700 hover:bg-emerald-200 rounded-lg transition-colors"
-                                                                            title="Guardar Cantidad"
-                                                                        >
-                                                                            <Save size={18} />
-                                                                        </button>
-                                                                        <button
-                                                                            onClick={() => setEditingItem(null)}
-                                                                            className="p-2 bg-slate-100 text-slate-600 hover:bg-slate-200 rounded-lg transition-colors"
-                                                                            title="Cancelar Edición"
-                                                                        >
-                                                                            <XCircle size={18} />
-                                                                        </button>
-                                                                    </div>
-                                                                ) : (
-                                                                    <div className="flex items-center gap-3">
-                                                                        <div className="bg-slate-100 w-10 h-10 rounded-lg flex items-center justify-center font-bold text-slate-600">
-                                                                            x{item.cantidad}
-                                                                        </div>
-                                                                        {!readOnly && (
+                                                <div className="bg-white rounded-xl border border-zinc-200 divide-y divide-zinc-100">
+                                                    {order.items.map((item, idx) => {
+                                                        const isEditing = editingItem?.pedidoId === order.id && editingItem?.wms_variante_id === item.wms_variante_id;
+                                                        return (
+                                                            <div key={idx} className="px-3 sm:px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                                                <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                                    {isEditing ? (
+                                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                                            <input
+                                                                                type="number"
+                                                                                min="0"
+                                                                                value={editingItem.nuevaCantidad}
+                                                                                onChange={(e) => setEditingItem({...editingItem, nuevaCantidad: Number(e.target.value)})}
+                                                                                aria-label="Nueva cantidad"
+                                                                                className={`${CAMPO_SIMPLE} w-20 font-bold tabular-nums`}
+                                                                            />
                                                                             <button
-                                                                                onClick={() => setEditingItem({ pedidoId: order.id, wms_variante_id: item.wms_variante_id, nuevaCantidad: item.cantidad })}
-                                                                                className="text-slate-400 hover:text-indigo-500 transition-colors"
-                                                                                title="Editar Cantidad"
+                                                                                type="button"
+                                                                                onClick={handleSaveQuantity}
+                                                                                className="w-9 h-9 shrink-0 inline-flex items-center justify-center rounded-xl bg-brand-cyan text-white hover:bg-brand-cyan/90 transition-colors"
+                                                                                title="Guardar Cantidad"
+                                                                                aria-label="Guardar Cantidad"
                                                                             >
-                                                                                <Edit2 size={16} />
+                                                                                <Save size={15} />
                                                                             </button>
-                                                                        )}
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => setEditingItem(null)}
+                                                                                className="w-9 h-9 shrink-0 inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50 hover:text-zinc-700 transition-colors"
+                                                                                title="Cancelar Edición"
+                                                                                aria-label="Cancelar Edición"
+                                                                            >
+                                                                                <XCircle size={15} />
+                                                                            </button>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <div className="flex items-center gap-1.5 shrink-0">
+                                                                            <div className="min-w-[2.5rem] h-10 px-2 rounded-xl bg-zinc-50 border border-zinc-200 flex items-center justify-center font-black text-zinc-700 tabular-nums">
+                                                                                x{item.cantidad}
+                                                                            </div>
+                                                                            {!readOnly && (
+                                                                                <button
+                                                                                    type="button"
+                                                                                    onClick={() => setEditingItem({ pedidoId: order.id, wms_variante_id: item.wms_variante_id, nuevaCantidad: item.cantidad })}
+                                                                                    className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5 transition-colors"
+                                                                                    title="Editar Cantidad"
+                                                                                    aria-label="Editar Cantidad"
+                                                                                >
+                                                                                    <Edit2 size={15} />
+                                                                                </button>
+                                                                            )}
+                                                                        </div>
+                                                                    )}
+                                                                    <div className="min-w-0">
+                                                                        <p className="font-bold text-zinc-800 break-words">{item.nombre_variante}</p>
+                                                                        <p className="text-xs text-zinc-500 font-mono break-words">
+                                                                            SKU: {item.sku || 'N/A'}
+                                                                            {(item.ubicacion?.pasillo || item.ubicacion?.estante) && (
+                                                                                <span className="ml-2 inline-flex items-center gap-1 text-brand-cyan font-bold">
+                                                                                    <MapPin size={11} className="shrink-0" />
+                                                                                    UBICACIÓN: {[item.ubicacion?.pasillo, item.ubicacion?.estante].filter(Boolean).join(' / ')}
+                                                                                </span>
+                                                                            )}
+                                                                        </p>
                                                                     </div>
-                                                                )}
-                                                                <div>
-                                                                    <p className="font-bold text-slate-800">{item.nombre_variante}</p>
-                                                                    <p className="text-xs text-slate-500 font-mono">
-                                                                        SKU: {item.sku || 'N/A'}
-                                                                        {(item.ubicacion?.pasillo || item.ubicacion?.estante) && (
-                                                                            <span className="ml-2 text-indigo-500 font-bold">
-                                                                                UBICACIÓN: {[item.ubicacion?.pasillo, item.ubicacion?.estante].filter(Boolean).join(' / ')}
-                                                                            </span>
-                                                                        )}
-                                                                    </p>
                                                                 </div>
                                                             </div>
-                                                        </div>
-                                                    );
-                                                })}
+                                                        );
+                                                    })}
+                                                </div>
                                             </div>
 
                                             {/* Historial de estados (fechas) + Notas del pedido */}
-                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+                                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                                                 {/* Timeline */}
-                                                <div className="bg-white rounded-xl border border-slate-200 p-4">
-                                                    <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                                                        <History size={15} /> Historial del Pedido
+                                                <div className="bg-white rounded-xl border border-zinc-200 p-4">
+                                                    <h4 className={`${ROTULO} mb-3 flex items-center gap-1.5`}>
+                                                        <History size={14} className="text-brand-cyan" /> Historial del Pedido
                                                     </h4>
                                                     {!(eventosMap[order.id]) ? (
-                                                        <p className="text-sm text-slate-400">Cargando historial...</p>
+                                                        <p className="text-sm text-zinc-400 flex items-center gap-2">
+                                                            <Loader2 size={14} className="animate-spin text-brand-cyan" />
+                                                            Cargando historial...
+                                                        </p>
                                                     ) : (
                                                         <div className="space-y-0">
                                                             {eventosMap[order.id].filter(e => e.Tipo !== 'NOTA').map((ev, i, arr) => (
                                                                 <div key={i} className="flex gap-3">
                                                                     <div className="flex flex-col items-center">
-                                                                        <div className={`w-2.5 h-2.5 rounded-full mt-1.5 ${i === arr.length - 1 ? 'bg-indigo-500' : 'bg-slate-300'}`} />
-                                                                        {i < arr.length - 1 && <div className="w-px flex-1 bg-slate-200" />}
+                                                                        <div className={`w-2.5 h-2.5 rounded-full mt-1.5 ${i === arr.length - 1 ? 'bg-brand-cyan' : 'bg-zinc-300'}`} />
+                                                                        {i < arr.length - 1 && <div className="w-px flex-1 bg-zinc-200" />}
                                                                     </div>
-                                                                    <div className="pb-4">
-                                                                        <p className="text-sm font-bold text-slate-700 leading-tight">
+                                                                    <div className="pb-4 min-w-0">
+                                                                        <p className="text-sm font-bold text-zinc-700 leading-tight">
                                                                             {EVENTO_LABELS[(ev.Estado || '').trim()] || ev.Estado}
                                                                         </p>
-                                                                        <p className="text-xs text-slate-400 font-medium">
+                                                                        <p className="text-xs text-zinc-400 tabular-nums">
                                                                             {new Date(ev.Fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })}
                                                                             {ev.Usuario ? ` • ${ev.Usuario}` : ''}
                                                                         </p>
@@ -767,18 +847,18 @@ const WmsReceiveSalesView = () => {
                                                 </div>
 
                                                 {/* Notas */}
-                                                <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-col">
-                                                    <h4 className="text-sm font-bold text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-2">
-                                                        <StickyNote size={15} /> Notas del Pedido
+                                                <div className="bg-white rounded-xl border border-zinc-200 p-4 flex flex-col">
+                                                    <h4 className={`${ROTULO} mb-3 flex items-center gap-1.5`}>
+                                                        <StickyNote size={14} className="text-brand-cyan" /> Notas del Pedido
                                                     </h4>
                                                     <div className="flex-1 space-y-2 mb-3 max-h-48 overflow-y-auto">
                                                         {(eventosMap[order.id] || []).filter(e => e.Tipo === 'NOTA').length === 0 ? (
-                                                            <p className="text-sm text-slate-400">Sin notas todavía.</p>
+                                                            <p className="text-sm text-zinc-400">Sin notas todavía.</p>
                                                         ) : (
                                                             (eventosMap[order.id] || []).filter(e => e.Tipo === 'NOTA').map((n, i) => (
-                                                                <div key={i} className="bg-amber-50 border border-amber-100 rounded-lg p-3">
-                                                                    <p className="text-sm text-slate-700 whitespace-pre-wrap">{n.Nota}</p>
-                                                                    <p className="text-[11px] text-slate-400 font-medium mt-1">
+                                                                <div key={i} className="bg-zinc-50 border border-zinc-200 rounded-xl p-3">
+                                                                    <p className="text-sm text-zinc-700 whitespace-pre-wrap break-words">{n.Nota}</p>
+                                                                    <p className="text-[11px] text-zinc-400 mt-1 tabular-nums">
                                                                         {new Date(n.Fecha).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}
                                                                         {n.Usuario ? ` • ${n.Usuario}` : ''}
                                                                     </p>
@@ -793,42 +873,49 @@ const WmsReceiveSalesView = () => {
                                                             onChange={(e) => setNotaDrafts(prev => ({ ...prev, [order.id]: e.target.value }))}
                                                             onKeyDown={(e) => { if (e.key === 'Enter') handleAddNota(order.id); }}
                                                             placeholder="Escribir una nota (ej: faltó un talle, cliente pasa mañana)..."
-                                                            className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg text-sm text-slate-700 focus:ring-2 focus:ring-indigo-500 focus:outline-none"
+                                                            aria-label="Nueva nota del pedido"
+                                                            className={`${CAMPO_SIMPLE} flex-1 min-w-0`}
                                                         />
                                                         <button
+                                                            type="button"
                                                             onClick={() => handleAddNota(order.id)}
                                                             disabled={savingNota || !(notaDrafts[order.id] || '').trim()}
-                                                            className="px-3 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 text-white rounded-lg transition-colors"
+                                                            className="w-10 shrink-0 inline-flex items-center justify-center rounded-xl bg-brand-cyan text-white hover:bg-brand-cyan/90 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
                                                             title="Agregar nota"
+                                                            aria-label="Agregar nota"
                                                         >
-                                                            <Send size={16} />
+                                                            <Send size={15} />
                                                         </button>
                                                     </div>
                                                 </div>
                                             </div>
 
-                                            {/* Action Bar — el botón depende del paso del stepper */}
-                                            <div className="flex justify-end gap-3 pt-2 border-t border-slate-200">
+                                            {/* Action Bar — el botón depende del paso del stepper (sin barra vacía
+                                                en los estados que no tienen acción, ej. el historial) */}
+                                            {(order.estado === 'PENDIENTE' || order.estado === 'EN_PREPARACION' || order.estado === 'PREPARADO') && (
+                                            <div className="flex flex-wrap justify-end gap-2 pt-4 border-t border-zinc-200">
                                                 {order.estado === 'PENDIENTE' && (
                                                     <button
+                                                        type="button"
                                                         onClick={() => handleStartPreparation(order)}
                                                         disabled={isProcessing}
-                                                        className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-blue-600/30 transition-all flex items-center gap-2"
+                                                        className={`${BTN_PRINCIPAL} w-full sm:w-auto text-center`}
                                                     >
-                                                        <PlayCircle size={20} />
+                                                        <PlayCircle size={15} className="shrink-0" />
                                                         Iniciar Preparación
                                                     </button>
                                                 )}
                                                 {order.estado === 'EN_PREPARACION' && (
                                                     <button
+                                                        type="button"
                                                         onClick={() => setConfirmDialog(order)}
                                                         disabled={isProcessing}
-                                                        className="bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-emerald-600/30 transition-all flex items-center gap-2"
+                                                        className={`${BTN_PRINCIPAL} w-full sm:w-auto text-center`}
                                                         title={destinoOrder
                                                             ? `Descuenta el stock del WMS y envía el pedido a ${AREA_LABELS[destinoOrder] || destinoOrder} — todavía no ingresa a Depósito ni se avisa al cliente`
                                                             : "Descuenta el stock del WMS, ingresa el pedido a Depósito y programa el aviso al cliente"}
                                                     >
-                                                        <CheckCircle size={20} />
+                                                        <CheckCircle size={15} className="shrink-0" />
                                                         {destinoOrder
                                                             ? `Finalizar: Rebajar Inventario y Enviar a ${AREA_LABELS[destinoOrder] || destinoOrder}`
                                                             : 'Finalizar: Rebajar Inventario, Ingresar a Depósito y Avisar'}
@@ -836,14 +923,15 @@ const WmsReceiveSalesView = () => {
                                                 )}
                                                 {order.estado === 'PREPARADO' && (
                                                     <button
+                                                        type="button"
                                                         onClick={() => setConfirmDialog(order)}
                                                         disabled={isProcessing}
-                                                        className="bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold py-3 px-6 rounded-xl shadow-lg shadow-indigo-600/30 transition-all flex items-center gap-2"
+                                                        className={`${BTN_PRINCIPAL} w-full sm:w-auto text-center`}
                                                         title={destinoOrder
                                                             ? `Este pedido todavía tiene que pasar por ${AREA_LABELS[destinoOrder] || destinoOrder} — no ingresa a Depósito hasta que ese paso termine`
                                                             : "El stock ya fue descontado — solo ingresa a Depósito y programa el aviso"}
                                                     >
-                                                        <CheckCircle size={20} />
+                                                        <CheckCircle size={15} className="shrink-0" />
                                                         {destinoOrder && order.esReposicion
                                                             ? `Enviar a ${AREA_LABELS[destinoOrder] || destinoOrder}`
                                                             : destinoOrder
@@ -852,12 +940,20 @@ const WmsReceiveSalesView = () => {
                                                     </button>
                                                 )}
                                             </div>
+                                            )}
 
                                         </div>
                                     </div>
+                                    </div>
                                 </div>
                             );
-                        })
+                        })}
+                        {listaVisible.length > verPedidos && (
+                            <div ref={centinelaPedidos} className="py-3 text-center text-xs text-zinc-400">
+                                Mostrando {verPedidos} de {listaVisible.length}…
+                            </div>
+                        )}
+                        </>
                     )}
                 </div>
 

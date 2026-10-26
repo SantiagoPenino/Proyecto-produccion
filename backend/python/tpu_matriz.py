@@ -97,6 +97,10 @@ except ImportError:         # instalaciones viejas
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import svg_trazos           # lector propio de los SVG del catalogo (fitz no aplica clases CSS ni <pattern>)
+try:                        # tope de memoria (23/10/2026, ver _tope_memoria.py); sin el modulo corre sin tope
+    import _tope_memoria
+except ImportError:
+    _tope_memoria = None
 
 PT_POR_MM = 72.0 / 25.4
 DIAMETRO_REGISTRO_MM = 5.0
@@ -143,7 +147,13 @@ PIEZA_UNICA = False
 # brazos). El rectangulo no tiene medida fija: crece hasta donde lo deja la copia vecina, con al menos
 # RECUADRO_MARGEN_MIN_MM entre las piezas y el y RECUADRO_SEP_MM libres entre rectangulos vecinos (no se
 # tocan). Para que entre, las copias van a 2 x margen + sep entre cortes (12 mm) en vez de
-# SEP_CORTES_DEFAULT_MM. Si las piezas chicas no forman una fila clara va solo el rectangulo, con aviso.
+# SEP_CORTES_DEFAULT_MM. PIEZAS EN ARCO (22/10, escudo de la CBF, TPU-37070/37073): las 5 estrellas no
+# entran en una horizontal (la recta unia 3, a la del medio la entraba por las esquinas internas, y las
+# 2 de los costados quedaban sueltas). Ahora, si la recta no las cruza a todas, se unen de a una: punta
+# derecha de cada pieza con la punta izquierda de la siguiente, siguiendo el arco, y del borde del
+# rectangulo a la primera y de la ultima al borde (decision de Santiago). En fila recta sale igual que
+# antes. Si las piezas no tienen orden (encimadas en x, o un tramo pisaria otra pieza) va solo el
+# rectangulo y el aviso "Revisar el corte", que desde el 22/10 queda en la nota de la orden.
 # Arte de una sola pieza: sin rectangulo y a 5 mm, como antes. Un job puede apagarlo con "recuadro": false.
 RECUADRO_MARGEN_MIN_MM = 1.5
 RECUADRO_SEP_MM = 9.0
@@ -1431,18 +1441,123 @@ def _cruces_horizontal(pts, y):
     return sorted(xs)
 
 
+def _cruces_vertical(pts, x):
+    """y (ordenadas) donde la vertical `x` corta el contorno cerrado `pts`."""
+    ys = []
+    n = len(pts)
+    for k in range(n):
+        (xa, ya), (xb, yb) = pts[k], pts[(k + 1) % n]
+        if (xa <= x < xb) or (xb <= x < xa):
+            ys.append(ya + (x - xa) * (yb - ya) / (xb - xa))
+    return sorted(ys)
+
+
+def _punta(pts, lado):
+    """Punta de una pieza hacia un costado (lado -1 izquierda, +1 derecha): el punto de x extrema (en las
+    estrellas, la punta del brazo). Si hay varios casi a la misma x (un lado vertical), el del medio."""
+    ext = (max if lado > 0 else min)(x for x, _ in pts)
+    cerca = sorted((p for p in pts if abs(p[0] - ext) <= 0.05 * PT_POR_MM), key=lambda p: p[1])
+    return cerca[len(cerca) // 2]
+
+
+def _segmento_toca(a, b, pts, caja):
+    """¿El segmento a-b corta o toca el contorno cerrado `pts` (con su caja `caja`)?"""
+    if (max(a[0], b[0]) < caja[0] or min(a[0], b[0]) > caja[2]
+            or max(a[1], b[1]) < caja[1] or min(a[1], b[1]) > caja[3]):
+        return False
+
+    def orient(p, q, r):
+        v = (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+        return 0 if abs(v) < 1e-9 else (1 if v > 0 else -1)
+
+    def sobre(p, q, r):
+        return (min(p[0], q[0]) - 1e-9 <= r[0] <= max(p[0], q[0]) + 1e-9
+                and min(p[1], q[1]) - 1e-9 <= r[1] <= max(p[1], q[1]) + 1e-9)
+
+    n = len(pts)
+    for k in range(n):
+        c, d = pts[k], pts[(k + 1) % n]
+        o1, o2, o3, o4 = orient(a, b, c), orient(a, b, d), orient(c, d, a), orient(c, d, b)
+        if o1 != o2 and o3 != o4:
+            return True
+        if (o1 == 0 and sobre(a, b, c)) or (o2 == 0 and sobre(a, b, d)) or (o3 == 0 and sobre(c, d, a)) or (o4 == 0 and sobre(c, d, b)):
+            return True
+    return False
+
+
+def _lado_de_principal(caja, prin_pts, prin_caja):
+    """+1 si la pieza queda entera ARRIBA de la principal, -1 si queda entera abajo, 0 si no (al costado,
+    encajada...). Se mira la principal solo en las x que comparten: en el escudo de la CBF las estrellas
+    de los costados bajan mas que el techo de la caja del escudo, pero estan arriba de sus hombros."""
+    x0, y0, x1, y1 = caja
+    cy, pcy = (y0 + y1) / 2, (prin_caja[1] + prin_caja[3]) / 2
+    techo = piso = None
+    paso = max((x1 - x0) / 40, 0.05 * PT_POR_MM)
+    x = x0
+    while x <= x1 + 1e-9:
+        ys = _cruces_vertical(prin_pts, x)
+        if ys:
+            techo = ys[-1] if techo is None else max(techo, ys[-1])
+            piso = ys[0] if piso is None else min(piso, ys[0])
+        x += paso
+    # Sin x en comun (al costado de la principal): solo si queda entera arriba o abajo de su caja.
+    if cy > pcy and y0 > (prin_caja[3] if techo is None else techo):
+        return 1
+    if cy < pcy and y1 < (prin_caja[1] if piso is None else piso):
+        return -1
+    return 0
+
+
+def _linea_recta(grupo, contornos, cajas, rect, paso):
+    """Horizontal de borde a borde del rectangulo que cruza a TODAS las piezas del grupo sin tocar otra, a
+    la altura donde la fila es mas ancha (en las estrellas, las puntas de los brazos). Devuelve los tramos
+    entre pieza y pieza, o None si no hay altura que sirva."""
+    lo = max(cajas[k][1] for k in grupo)                 # alturas que cruzan a TODAS las del grupo
+    hi = min(cajas[k][3] for k in grupo)
+    ajenas = [cajas[k] for k in range(len(cajas)) if k not in grupo]
+    mejor = None
+    y = lo + paso / 2
+    while y < hi:
+        if not any(c[1] <= y <= c[3] for c in ajenas):
+            tramos = []
+            for k in grupo:
+                xs = _cruces_horizontal(contornos[k], y)
+                if len(xs) < 2:
+                    tramos = None
+                    break
+                tramos.append((xs[0], xs[-1]))
+            if tramos:
+                tramos.sort()
+                if all(a[1] < b[0] for a, b in zip(tramos, tramos[1:])):     # una al lado de la otra
+                    # la fila mas ancha (al 0,01 mm); si empatan, la altura mas centrada
+                    clave = (round(sum(b - a for a, b in tramos) / PT_POR_MM, 2), -abs(y - (lo + hi) / 2))
+                    if mejor is None or clave > mejor[0]:
+                        mejor = (clave, y, tramos)
+        y += paso
+    if mejor is None:
+        return None
+    _, y, tramos = mejor
+    bordes = [rect[0]] + [v for t in tramos for v in t] + [rect[2]]
+    return [[(xa, y), (xb, y)] for xa, xb in zip(bordes[0::2], bordes[1::2]) if xb - xa > 1e-6]
+
+
 def recuadro_de_corte(lista_islas, H_px, ppmm, pasoX, pasoY, margen_min_pt, sep_pt):
     """Cortes extra de UNA copia (ver RECUADRO_*), en pt de parche, para un arte de varias piezas.
 
     - rect: (x0, y0, x1, y1). Crece hasta dejar `sep_pt` con el rectangulo de la copia vecina (el paso
       de la imposicion menos la caja de las piezas), nunca a menos de `margen_min_pt` de las piezas.
-    - lineas: segmentos horizontales [(xa, y), (xb, y)] de izquierda a derecha. Por cada grupo de piezas
-      chicas que queda ENTERO arriba (o abajo) de la principal —la de mas area—, una linea de borde a
-      borde del rectangulo que las cruza a todas sin tocar otra pieza, a la altura donde la fila es mas
-      ancha (en las estrellas, las puntas de los brazos). Los tramos van entre pieza y pieza: el
-      contorno de cada pieza completa el corte.
-    - sueltas: piezas chicas que no quedaron en ninguna linea (al costado de la principal, en dos
-      filas, encajadas en otra...): el corte lleva solo el rectangulo y hay que revisarlo."""
+    - lineas: tramos [(xa, ya), (xb, yb)]. Por cada grupo de piezas chicas que queda ENTERO arriba (o
+      abajo) de la principal —la de mas area—:
+        · si una horizontal las cruza a todas sin tocar otra pieza: esa linea de borde a borde, a la
+          altura donde la fila es mas ancha (en las estrellas, las puntas de los brazos), como el TP-184;
+        · si no (piezas en arco): de a una, de la punta derecha de cada pieza a la punta izquierda de la
+          siguiente, y del borde del rectangulo a la primera y de la ultima al borde (horizontales).
+      Los tramos van entre pieza y pieza: el contorno de cada pieza completa el corte.
+    - sueltas: piezas chicas que no quedaron unidas (al costado de la principal, encimadas, o un tramo
+      pisaria otra pieza): el corte lleva solo el rectangulo para ellas y hay que revisarlo.
+    - forma: por grupo, 'fila' (horizontal), 'arco' (pieza a pieza), 'fila parcial' (si el arco no se
+      puede: la recta de antes con las piezas enteras arriba/abajo de la caja de la principal; las demas
+      quedan sueltas) o 'sin linea'."""
     contornos = [_corte_pt(i, H_px, ppmm) for i in lista_islas]
     cajas = [(min(x for x, _ in p), min(y for _, y in p), max(x for x, _ in p), max(y for _, y in p))
              for p in contornos]
@@ -1453,46 +1568,52 @@ def recuadro_de_corte(lista_islas, H_px, ppmm, pasoX, pasoY, margen_min_pt, sep_
     rect = (bx0 - mx, by0 - my, bx1 + mx, by1 + my)
 
     principal = max(range(len(lista_islas)), key=lambda k: lista_islas[k]["area_mm2"])
-    py0, py1 = cajas[principal][1], cajas[principal][3]
     otras = [k for k in range(len(cajas)) if k != principal]
-    grupos = ([k for k in otras if cajas[k][1] > py1],      # arriba de la principal
-              [k for k in otras if cajas[k][3] < py0])      # abajo
+    lado = {k: _lado_de_principal(cajas[k], contornos[principal], cajas[principal]) for k in otras}
+    grupos = ([k for k in otras if lado[k] == 1], [k for k in otras if lado[k] == -1])   # arriba, abajo
     paso = RECUADRO_PASO_LINEA_MM * PT_POR_MM
-    lineas, con_linea = [], set()
+    lineas, con_linea, formas = [], set(), []
     for grupo in grupos:
         if not grupo:
             continue
-        lo = max(cajas[k][1] for k in grupo)                 # alturas que cruzan a TODAS las del grupo
-        hi = min(cajas[k][3] for k in grupo)
-        ajenas = [cajas[k] for k in range(len(cajas)) if k not in grupo]
-        mejor = None
-        y = lo + paso / 2
-        while y < hi:
-            if not any(c[1] <= y <= c[3] for c in ajenas):
-                tramos = []
-                for k in grupo:
-                    xs = _cruces_horizontal(contornos[k], y)
-                    if len(xs) < 2:
-                        tramos = None
-                        break
-                    tramos.append((xs[0], xs[-1]))
-                if tramos:
-                    tramos.sort()
-                    if all(a[1] < b[0] for a, b in zip(tramos, tramos[1:])):     # una al lado de la otra
-                        # la fila mas ancha (al 0,01 mm); si empatan, la altura mas centrada
-                        clave = (round(sum(b - a for a, b in tramos) / PT_POR_MM, 2), -abs(y - (lo + hi) / 2))
-                        if mejor is None or clave > mejor[0]:
-                            mejor = (clave, y, tramos)
-            y += paso
-        if mejor is None:
+        # 1) Fila recta: una horizontal que cruce a todas (lo de siempre).
+        tramos = _linea_recta(grupo, contornos, cajas, rect, paso)
+        if tramos:
+            lineas.extend(tramos)
+            con_linea.update(grupo)
+            formas.append("fila")
             continue
-        _, y, tramos = mejor
-        bordes = [rect[0]] + [v for t in tramos for v in t] + [rect[2]]
-        for xa, xb in zip(bordes[0::2], bordes[1::2]):
-            if xb - xa > 1e-6:
-                lineas.append([(xa, y), (xb, y)])
-        con_linea.update(grupo)
-    return {"rect": rect, "lineas": lineas, "sueltas": len(otras) - len(con_linea),
+        # 2) Arco: de a una, punta con punta. Solo si estan una al lado de la otra (sin encimarse en x)
+        #    y ningun tramo toca otra pieza.
+        orden = sorted(grupo, key=lambda k: (cajas[k][0] + cajas[k][2]) / 2)
+        cadena = None
+        if all(cajas[b][0] > cajas[a][2] for a, b in zip(orden, orden[1:])):
+            izq = _punta(contornos[orden[0]], -1)
+            der = _punta(contornos[orden[-1]], 1)
+            cadena = [((rect[0], izq[1]), izq, {orden[0]})]
+            for a, b in zip(orden, orden[1:]):
+                cadena.append((_punta(contornos[a], 1), _punta(contornos[b], -1), {a, b}))
+            cadena.append((der, (rect[2], der[1]), {orden[-1]}))
+            if not all(not _segmento_toca(p, q, contornos[k], cajas[k])
+                       for p, q, propias in cadena for k in range(len(contornos)) if k not in propias):
+                cadena = None
+        if cadena:
+            lineas.extend([[p, q] for p, q, _ in cadena if abs(q[0] - p[0]) + abs(q[1] - p[1]) > 1e-6])
+            con_linea.update(grupo)
+            formas.append("arco")
+            continue
+        # 3) Como antes del 22/10: la recta con las piezas que quedan enteras arriba (o abajo) de la CAJA
+        #    de la principal; las demas quedan sueltas (aviso).
+        arriba = cajas[grupo[0]][1] > cajas[principal][1]
+        sub = [k for k in grupo if (cajas[k][1] > cajas[principal][3] if arriba else cajas[k][3] < cajas[principal][1])]
+        tramos = _linea_recta(sub, contornos, cajas, rect, paso) if sub else None
+        if tramos:
+            lineas.extend(tramos)
+            con_linea.update(sub)
+            formas.append("fila parcial")
+        else:
+            formas.append("sin linea")
+    return {"rect": rect, "lineas": lineas, "sueltas": len(otras) - len(con_linea), "forma": formas,
             "margen_x_mm": round(mx / PT_POR_MM, 1), "margen_y_mm": round(my / PT_POR_MM, 1)}
 
 
@@ -2073,12 +2194,15 @@ def generar(job, preview=None):
     # CutContour). Se escribe con los datos del propio generador —contornos de cada pieza y centros
     # de las marcas—, asi no hay que adivinar por tamano que es marca y que es pieza.
     recuadro = None
+    aviso_corte = None
     if con_recuadro:
         recuadro = recuadro_de_corte(lista_islas, H_px, ppmm, imp.pasoX, imp.pasoY,
                                      margen_rec_mm * PT_POR_MM, sep_rec_mm * PT_POR_MM)
         if recuadro["sueltas"]:
-            avisos.append(f"{recuadro['sueltas']} pieza(s) chica(s) no forman una fila arriba o abajo de la pieza principal: "
-                          f"el corte lleva el rectangulo pero no la linea que las separa. Revisar el corte.")
+            aviso_corte = (f"{recuadro['sueltas']} pieza(s) chica(s) del arte no se pudieron unir con la linea entre piezas "
+                           f"(estan al costado de la principal, encimadas o el tramo pisaria otra pieza): el corte lleva "
+                           f"el rectangulo sin esa linea para ellas. Revisar el corte.")
+            avisos.append(aviso_corte)
     ruta_corte = None
     for i in range(imp.paginas):
         filas, H, copias, registros = imp.pagina(i)
@@ -2128,7 +2252,9 @@ def generar(job, preview=None):
         "islas": len(lista_islas),
         "recuadro": None if not recuadro else {
             "margen_x_mm": recuadro["margen_x_mm"], "margen_y_mm": recuadro["margen_y_mm"],
-            "sep_mm": sep_rec_mm, "lineas": len(recuadro["lineas"]), "sueltas": recuadro["sueltas"]},
+            "sep_mm": sep_rec_mm, "lineas": len(recuadro["lineas"]), "sueltas": recuadro["sueltas"],
+            "forma": recuadro["forma"]},
+        "aviso_corte": aviso_corte,     # va a la nota de la orden (tpuMatrizService)
         "zonas": len(zonas),
         "tiles_textura": tiles1,
         "canaleta_zonas": {"pt": sep_zonas_pt, "zonas_que_ceden": len(canaleta), "contornos": canaleta_n,
@@ -2343,12 +2469,19 @@ def main():
     g.add_argument("job")
     g.add_argument("--preview", default=None, help="PNG de la primera plancha (40 dpi)")
     args = ap.parse_args()
+    # Tope de memoria (PY_MAX_MEM_MB, lo pone tpuMatrizService): si lo pasa, falla solo este script
+    if _tope_memoria:
+        _tope_memoria.aplicar()
     try:
         if args.cmd == "analizar":
             out = analizar(args.pdf)
         else:
             out = generar(_leer_json(args.job), preview=args.preview)
         print(json.dumps(out, ensure_ascii=False))
+    except MemoryError as e:
+        # str(MemoryError()) suele venir vacio: sin esto el error decia solo ""
+        print(json.dumps({"ok": False, "error": f"sin memoria suficiente para procesarlo ({str(e) or 'MemoryError'})"}, ensure_ascii=False))
+        sys.exit(1)
     except Exception as e:  # noqa
         print(json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))
         sys.exit(1)

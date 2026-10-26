@@ -510,7 +510,7 @@ const MaquinaFicha = ({ equipoId, meta, version = 0, onVolver, onAbrirMaquina, o
                             <Tarjeta titulo="Abiertas" valor={r.abiertas} alerta={r.abiertas > 0} />
                             <Tarjeta titulo="Fallas" valor={r.fallas90} nota={`90 días · ${r.fallas30} en 30 · ${r.fallas365} en el año`} />
                             <Tarjeta titulo="Parada" valor={fmtDuracion(r.minutosParada90) || '0 min'} nota={`90 días · ${fmtDuracion(r.minutosParada365) || '0 min'} en el año`} />
-                            <Tarjeta titulo="Resolución" valor={r.minutosResolucionProm != null ? fmtDuracion(r.minutosResolucionProm) : '—'} nota="promedio del año" />
+                            <Tarjeta titulo="Resolución" valor={r.minutosResolucionProm != null ? fmtDuracion(r.minutosResolucionProm) : '—'} nota="desde que se tomó · promedio del año" />
                         </div>
                         {/* Indicadores (parte 4): entre fallas y reparación con las fallas del último año que no se cancelaron;
                             disponibilidad con el horario del área en Planificación (stEquiposController.disponibilidadDe). */}

@@ -1,6 +1,15 @@
 import React, { useState, useEffect } from "react";
+import { createPortal } from "react-dom";
 import { inventoryService } from "../../../services/modules/inventoryService";
-import { X, User, Package, Calendar, AlertTriangle } from "lucide-react";
+import {
+    X, User, Package, Calendar, AlertTriangle, Loader2, ReceiptText, ClipboardList, BadgeCheck, Scissors,
+    Download, Factory, Recycle, Wrench, Undo2, Trash2,
+} from "lucide-react";
+
+// Estética nueva (22/10/2026, como el Inventario de tela): modal blanco, encima de la barra de arriba (z-[6000]; antes
+// z-50 y quedaba por debajo), íconos de Lucide en brand-cyan en vez de emojis, y el color solo para lo que es estado
+// (entra / sale stock, saldo bajo). La tabla de movimientos scrollea de costado en el celular.
+const CARD = "bg-white rounded-2xl border border-zinc-200";
 
 const fmtFecha = (d) => {
     if (!d) return "—";
@@ -10,29 +19,41 @@ const fmtFecha = (d) => {
     });
 };
 
+const ENTRA = "bg-emerald-50 text-emerald-700 border-emerald-200";
+const SALE = "bg-rose-50 text-rose-700 border-rose-200";
+const MEDIDA = "bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20";
+const AVISO = "bg-amber-50 text-amber-700 border-amber-200";
+const NEUTRO = "bg-zinc-100 text-zinc-600 border-zinc-200";
 const TIPO_CONFIG = {
-    INGRESO:             { label: "Ingreso",             color: "#16a34a", bg: "#dcfce7", icon: "📥" },
-    CONFIRMACION_MEDIDA: { label: "Confirmación Medida", color: "#2563eb", bg: "#dbeafe", icon: "✅" },
-    CONSUMO:             { label: "Consumo",             color: "#dc2626", bg: "#fee2e2", icon: "⚙️" },
-    CONSUMO_PRODUCCION:  { label: "Consumo Producción",  color: "#dc2626", bg: "#fee2e2", icon: "🏭" },
-    MERMA_REIMPRESION:   { label: "Merma Reimpresión",   color: "#ea580c", bg: "#ffedd5", icon: "♻️" },
-    AJUSTE_MANUAL:       { label: "Ajuste Manual",       color: "#7c3aed", bg: "#ede9fe", icon: "🔧" },
-    DEVOLUCION:          { label: "Devolución",          color: "#0891b2", bg: "#cffafe", icon: "↩️" },
+    INGRESO:             { label: "Ingreso",             cls: ENTRA,  Icono: Download },
+    CONFIRMACION_MEDIDA: { label: "Confirmación medida", cls: MEDIDA, Icono: BadgeCheck },
+    CONSUMO:             { label: "Consumo",             cls: SALE,   Icono: Scissors },
+    CONSUMO_PRODUCCION:  { label: "Consumo producción",  cls: SALE,   Icono: Factory },
+    CONSUMO_ORDEN:       { label: "Consumo orden",       cls: SALE,   Icono: Scissors },
+    MERMA_REIMPRESION:   { label: "Merma reimpresión",   cls: AVISO,  Icono: Recycle },
+    AJUSTE_DESECHO:      { label: "Desecho",             cls: AVISO,  Icono: Trash2 },
+    AJUSTE_MANUAL:       { label: "Ajuste manual",       cls: NEUTRO, Icono: Wrench },
+    DEVOLUCION:          { label: "Devolución",          cls: MEDIDA, Icono: Undo2 },
 };
-const getTipo = (t) => TIPO_CONFIG[t] || { label: t, color: "#64748b", bg: "#f1f5f9", icon: "📋" };
+// Tipos sin configurar: el código en texto legible ("LIBERACION_RESERVA" → "Liberacion reserva")
+const getTipo = (t) => TIPO_CONFIG[t] || {
+    label: t ? t.charAt(0) + t.slice(1).toLowerCase().replace(/_/g, " ") : "—", cls: NEUTRO, Icono: ClipboardList,
+};
 
-function KpiCard({ label, value, sub, color, icon }) {
+function KpiCard({ label, value, sub, cls, Icono }) {
     return (
-        <div className="flex flex-col gap-1 bg-white rounded-xl border border-slate-100 shadow-sm p-4">
-            <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-slate-400 uppercase tracking-wider">{label}</span>
-                <span className="text-lg">{icon}</span>
+        <div className={`${CARD} px-4 py-3 min-w-0`}>
+            <div className="flex items-center justify-between gap-2">
+                <span className="text-[11px] font-black text-zinc-400 uppercase tracking-wide truncate">{label}</span>
+                <Icono className="w-4 h-4 shrink-0 text-brand-cyan" />
             </div>
-            <div className="text-2xl font-black tabular-nums" style={{ color }}>{value}</div>
-            {sub && <div className="text-xs text-slate-400">{sub}</div>}
+            <div className={`mt-1 text-xl md:text-2xl font-black tabular-nums leading-tight ${cls}`}>{value}</div>
+            {sub && <div className="text-xs text-zinc-400 mt-0.5">{sub}</div>}
         </div>
     );
 }
+
+const COLUMNAS = { gridTemplateColumns: "110px 1fr 150px 100px 100px" };
 
 export default function EstadoTelaModal({ bobinaId, onClose }) {
     const [data, setData]       = useState(null);
@@ -70,184 +91,194 @@ export default function EstadoTelaModal({ bobinaId, onClose }) {
     const base = confirmados ?? declarados;
     const pctConsumido = base > 0 ? Math.round((consumidoReal / base) * 100) : 0;
 
-    return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
-             style={{ background: "rgba(15,23,42,0.75)" }}>
-            <div className="bg-slate-50 rounded-2xl shadow-2xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+    const claseSaldo = saldo <= 0 ? "text-rose-600" : saldo < (confirmados ?? declarados) * 0.2 ? "text-amber-600" : "text-emerald-600";
+
+    // En portal: si no, queda dentro de la capa de la página y no tapa la barra de arriba ni la lateral
+    return createPortal(
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center p-3 sm:p-4 bg-black/40">
+            <div className="bg-slate-50 rounded-2xl border border-zinc-200 shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden font-sans text-zinc-800">
 
                 {/* HEADER */}
-                <div className="bg-gradient-to-r from-slate-800 to-slate-700 text-white px-6 py-4 flex items-start justify-between flex-shrink-0">
-                    <div className="flex-1 min-w-0">
-                        <div className="text-xs font-semibold text-slate-400 uppercase tracking-widest mb-1">
-                            Estado de Cuenta — Tela de Cliente
-                        </div>
-                        {loading && <div className="text-slate-400 text-sm">Cargando...</div>}
-                        {bob && (
-                            <>
-                                <h2 className="text-xl font-black tracking-tight truncate">
-                                    {bob.DescripcionTela || bob.TipoTela}
-                                </h2>
-                                <div className="flex flex-wrap gap-3 mt-2 text-sm text-slate-300">
-                                    <span className="flex items-center gap-1">
-                                        <User className="w-3.5 h-3.5" />
-                                        {bob.NombreCliente || bob.ClienteID}
-                                    </span>
-                                    <span className="flex items-center gap-1">
-                                        <Package className="w-3.5 h-3.5" />
-                                        {bob.CodigoEtiqueta}
-                                    </span>
-                                    <span className="flex items-center gap-1">
-                                        <Calendar className="w-3.5 h-3.5" />
-                                        {fmtFecha(bob.FechaIngreso)}
-                                    </span>
-                                    <span className={`px-2 py-0.5 rounded-full text-xs font-bold ${
-                                        bob.Estado === "Pendiente"  ? "bg-amber-500/20 text-amber-300"  :
-                                        bob.Estado === "Disponible" ? "bg-green-500/20 text-green-300"  :
-                                                                      "bg-slate-500/20 text-slate-300"
-                                    }`}>
-                                        {bob.Estado === "Pendiente" ? "⏳" : bob.Estado === "Disponible" ? "✅" : "⚙️"} {bob.Estado}
-                                    </span>
+                <div className="bg-white border-b border-zinc-200 px-5 py-4 flex items-start justify-between gap-3 flex-shrink-0">
+                    <div className="flex items-start gap-3 flex-1 min-w-0">
+                        <ReceiptText className="w-7 h-7 shrink-0 text-brand-cyan mt-0.5" aria-hidden="true" />
+                        <div className="flex-1 min-w-0">
+                            <div className="text-[11px] font-black text-zinc-400 uppercase tracking-wide">
+                                Estado de cuenta — tela de cliente
+                            </div>
+                            {loading && (
+                                <div className="flex items-center gap-2 text-zinc-400 text-sm mt-1">
+                                    <Loader2 className="w-4 h-4 animate-spin text-brand-cyan" /> Cargando...
                                 </div>
-                            </>
-                        )}
+                            )}
+                            {bob && (
+                                <>
+                                    <h2 className="text-xl font-black text-zinc-800 tracking-tight truncate">
+                                        {bob.DescripcionTela || bob.TipoTela}
+                                    </h2>
+                                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 mt-1.5 text-sm text-zinc-500">
+                                        <span className="flex items-center gap-1">
+                                            <User className="w-3.5 h-3.5 text-brand-cyan" />
+                                            {bob.NombreCliente || bob.ClienteID}
+                                        </span>
+                                        <span className="flex items-center gap-1 font-mono">
+                                            <Package className="w-3.5 h-3.5 text-brand-cyan" />
+                                            {bob.CodigoEtiqueta}
+                                        </span>
+                                        <span className="flex items-center gap-1 tabular-nums">
+                                            <Calendar className="w-3.5 h-3.5 text-brand-cyan" />
+                                            {fmtFecha(bob.FechaIngreso)}
+                                        </span>
+                                        <span className={`px-2.5 py-0.5 rounded-full border text-[11px] font-bold ${
+                                            bob.Estado === "Pendiente"  ? AVISO :
+                                            bob.Estado === "Disponible" ? ENTRA :
+                                                                          NEUTRO
+                                        }`}>
+                                            {bob.Estado}
+                                        </span>
+                                    </div>
+                                </>
+                            )}
+                        </div>
                     </div>
-                    <button onClick={onClose}
-                        className="p-2 rounded-lg hover:bg-white/10 transition-colors text-slate-400 hover:text-white ml-4">
+                    <button type="button" onClick={onClose} aria-label="Cerrar"
+                        className="p-1.5 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
 
                 {error && (
-                    <div className="px-6 py-3 bg-red-50 border-b border-red-100 text-red-700 text-sm flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4" /> {error}
+                    <div className="px-5 py-3 bg-rose-50 border-b border-rose-200 text-rose-700 text-sm font-bold flex items-center gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0" /> {error}
                     </div>
                 )}
 
                 {bob && (
-                    <div className="flex-1 overflow-y-auto">
+                    <div className="flex-1 overflow-y-auto p-3 sm:p-4 space-y-3">
 
                         {/* KPIs */}
-                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-4 border-b border-slate-200">
-                            <KpiCard label="Declarados"  value={`${declarados.toFixed(2)} m`}
-                                color="#1e40af" icon="📋" sub="Al ingresar" />
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                            <KpiCard label="Declarados" value={`${declarados.toFixed(2)} m`}
+                                cls="text-zinc-800" Icono={ClipboardList} sub="Al ingresar" />
                             <KpiCard label="Confirmados"
                                 value={confirmados === null ? "Pendiente" : `${confirmados.toFixed(2)} m`}
-                                color={confirmados === null ? "#d97706" : "#16a34a"} icon="✅" sub="Medición real" />
-                            <KpiCard label="Consumido"   value={`${consumidoReal.toFixed(2)} m`}
-                                color={consumidoReal > 0 ? "#dc2626" : "#64748b"} icon="⚙️" sub={`${pctConsumido}% del total`} />
-                            <KpiCard label="Saldo"       value={`${saldo.toFixed(2)} m`}
-                                color={saldo <= 0 ? "#dc2626" : saldo < (confirmados ?? declarados) * 0.2 ? "#ea580c" : "#16a34a"}
-                                icon="📦" sub="Disponible hoy" />
+                                cls={confirmados === null ? "text-amber-600" : "text-zinc-800"} Icono={BadgeCheck} sub="Medición real" />
+                            <KpiCard label="Consumido" value={`${consumidoReal.toFixed(2)} m`}
+                                cls={consumidoReal > 0 ? "text-rose-600" : "text-zinc-400"} Icono={Scissors} sub={`${pctConsumido}% del total`} />
+                            <KpiCard label="Saldo" value={`${saldo.toFixed(2)} m`}
+                                cls={claseSaldo} Icono={Package} sub="Disponible hoy" />
                         </div>
 
                         {/* BARRA DE PROGRESO */}
-                        <div className="px-4 py-3 border-b border-slate-200 bg-white">
-                            <div className="flex justify-between text-xs text-slate-500 mb-1">
-                                <span>Consumo acumulado</span>
-                                <span>{pctConsumido}%</span>
+                        <div className={`${CARD} px-4 py-3`}>
+                            <div className="flex justify-between text-xs text-zinc-500 mb-1.5">
+                                <span className="font-semibold">Consumo acumulado</span>
+                                <span className="tabular-nums font-bold">{pctConsumido}%</span>
                             </div>
-                            <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
-                                <div className="h-full rounded-full transition-all duration-500"
-                                     style={{
-                                         width: `${Math.min(pctConsumido, 100)}%`,
-                                         background: pctConsumido >= 90 ? "#dc2626"
-                                                   : pctConsumido >= 60 ? "#ea580c" : "#16a34a"
-                                     }} />
+                            <div className="h-2 bg-zinc-100 rounded-full overflow-hidden">
+                                <div className={`h-full rounded-full transition-all duration-500 ${
+                                    pctConsumido >= 90 ? "bg-rose-500" : pctConsumido >= 60 ? "bg-amber-400" : "bg-emerald-500"
+                                }`} style={{ width: `${Math.min(pctConsumido, 100)}%` }} />
                             </div>
                         </div>
 
                         {/* TABLA */}
-                        <div className="p-4">
-                            <h3 className="text-xs font-bold text-slate-500 uppercase tracking-widest mb-3">
-                                Movimientos ({movs.length})
+                        <div>
+                            <h3 className="text-sm font-black text-zinc-800 mb-2">
+                                Movimientos <span className="text-xs font-normal text-zinc-400">{movs.length}</span>
                             </h3>
 
                             {movs.length === 0 ? (
-                                <div className="text-center py-10 text-slate-400 text-sm">
+                                <div className={`${CARD} flex flex-col items-center gap-2 py-10 text-zinc-400 text-sm`}>
+                                    <ClipboardList size={36} className="text-zinc-200" />
                                     Sin movimientos registrados aún.
                                 </div>
                             ) : (
-                                <div className="rounded-xl border border-slate-200 bg-white overflow-hidden">
-                                    {/* Header */}
-                                    <div className="grid text-[10px] font-bold uppercase tracking-wide text-slate-400 bg-slate-50 border-b border-slate-200 px-4 py-2"
-                                         style={{ gridTemplateColumns: "110px 1fr 110px 90px 90px" }}>
-                                        <span>Fecha</span>
-                                        <span>Detalle / Orden</span>
-                                        <span>Tipo</span>
-                                        <span className="text-right">Cantidad</span>
-                                        <span className="text-right">Saldo</span>
-                                    </div>
+                                <div className={`${CARD} overflow-hidden`}>
+                                    <div className="overflow-x-auto">
+                                        <div className="min-w-[640px]">
+                                            {/* Header */}
+                                            <div className="grid text-[10px] font-black uppercase tracking-wide text-zinc-400 bg-zinc-50 border-b border-zinc-200 px-4 py-2.5"
+                                                 style={COLUMNAS}>
+                                                <span>Fecha</span>
+                                                <span>Detalle / orden</span>
+                                                <span>Tipo</span>
+                                                <span className="text-right">Cantidad</span>
+                                                <span className="text-right">Saldo</span>
+                                            </div>
 
-                                    {/* Rows */}
-                                    <div className="divide-y divide-slate-100">
-                                        {movs.map((m, i) => {
-                                            const cfg  = getTipo(m.TipoMovimiento);
-                                            const cant = parseFloat(m.Cantidad) || 0;
-                                            return (
-                                                <div key={i}
-                                                     className="grid items-center px-4 py-2.5 hover:bg-slate-50 transition-colors text-sm"
-                                                     style={{ gridTemplateColumns: "110px 1fr 110px 90px 90px" }}>
-                                                    {/* Fecha */}
-                                                    <div className="text-[11px] font-mono text-slate-500">
-                                                        {new Date(m.Fecha).toLocaleDateString("es-UY", { day:"2-digit", month:"2-digit", year:"2-digit" })}
-                                                        <span className="block text-[10px] text-slate-400">
-                                                            {new Date(m.Fecha).toLocaleTimeString("es-UY", { hour:"2-digit", minute:"2-digit" })}
-                                                        </span>
-                                                    </div>
+                                            {/* Rows */}
+                                            <div className="divide-y divide-zinc-100">
+                                                {movs.map((m, i) => {
+                                                    const cfg  = getTipo(m.TipoMovimiento);
+                                                    const cant = parseFloat(m.Cantidad) || 0;
+                                                    return (
+                                                        <div key={i}
+                                                             className="grid items-center px-4 py-2.5 hover:bg-zinc-50 transition-colors text-sm"
+                                                             style={COLUMNAS}>
+                                                            {/* Fecha */}
+                                                            <div className="text-[11px] font-mono text-zinc-500 tabular-nums">
+                                                                {new Date(m.Fecha).toLocaleDateString("es-UY", { day:"2-digit", month:"2-digit", year:"2-digit" })}
+                                                                <span className="block text-[10px] text-zinc-400">
+                                                                    {new Date(m.Fecha).toLocaleTimeString("es-UY", { hour:"2-digit", minute:"2-digit" })}
+                                                                </span>
+                                                            </div>
 
-                                                    {/* Detalle: parsear Orden | Motivo y limpiar BOB-xxx */}
-                                                    <div className="min-w-0 pr-2">
-                                                        {(() => {
-                                                            const raw = m.Detalle || '';
-                                                            // Quitar prefijo "Ajuste BOB-xxx-xxx: " si existe
-                                                            const sinBob = raw.replace(/Ajuste\s+BOB-[\w-]+:\s*/gi, '');
-                                                            const hasPipe = sinBob.includes(' | ');
-                                                            const ordenPart = hasPipe ? sinBob.split(' | ')[0].trim() : '';
-                                                            const motivoPart = hasPipe ? sinBob.split(' | ').slice(1).join(' | ').trim() : sinBob;
-                                                            return (
-                                                                <>
-                                                                    {ordenPart && (
-                                                                        <span className="inline-block text-[10px] font-mono font-black text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded mb-0.5">
-                                                                            #{ordenPart}
-                                                                        </span>
-                                                                    )}
-                                                                    <div className="text-xs text-slate-700 truncate" title={motivoPart}>{motivoPart || '—'}</div>
-                                                                    {m.Usuario && (
-                                                                        <div className="text-[10px] text-slate-400">👤 {m.Usuario}</div>
-                                                                    )}
-                                                                </>
-                                                            );
-                                                        })()}
-                                                    </div>
+                                                            {/* Detalle: parsear Orden | Motivo y limpiar BOB-xxx */}
+                                                            <div className="min-w-0 pr-2">
+                                                                {(() => {
+                                                                    const raw = m.Detalle || '';
+                                                                    // Quitar prefijo "Ajuste BOB-xxx-xxx: " si existe
+                                                                    const sinBob = raw.replace(/Ajuste\s+BOB-[\w-]+:\s*/gi, '');
+                                                                    const hasPipe = sinBob.includes(' | ');
+                                                                    const ordenPart = hasPipe ? sinBob.split(' | ')[0].trim() : '';
+                                                                    const motivoPart = hasPipe ? sinBob.split(' | ').slice(1).join(' | ').trim() : sinBob;
+                                                                    return (
+                                                                        <>
+                                                                            {ordenPart && (
+                                                                                <span className="inline-block text-[10px] font-mono font-black text-brand-cyan bg-brand-cyan/5 border border-brand-cyan/20 px-1.5 py-0.5 rounded mb-0.5">
+                                                                                    #{ordenPart}
+                                                                                </span>
+                                                                            )}
+                                                                            <div className="text-xs text-zinc-700 truncate" title={motivoPart}>{motivoPart || '—'}</div>
+                                                                            {m.Usuario && (
+                                                                                <div className="flex items-center gap-1 text-[10px] text-zinc-400">
+                                                                                    <User className="w-3 h-3" /> {m.Usuario}
+                                                                                </div>
+                                                                            )}
+                                                                        </>
+                                                                    );
+                                                                })()}
+                                                            </div>
 
-                                                    {/* Tipo badge */}
-                                                    <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full text-[9px] font-bold w-fit"
-                                                          style={{ background: cfg.bg, color: cfg.color }}>
-                                                        {cfg.icon} {cfg.label}
-                                                    </span>
+                                                            {/* Tipo badge */}
+                                                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-bold w-fit ${cfg.cls}`}>
+                                                                <cfg.Icono className="w-3 h-3 shrink-0" /> {cfg.label}
+                                                            </span>
 
-                                                    {/* Cantidad */}
-                                                    <div className={`text-right font-bold tabular-nums text-sm ${cant >= 0 ? "text-green-600" : "text-red-600"}`}>
-                                                        {cant >= 0 ? "+" : ""}{cant.toFixed(2)} m
-                                                    </div>
+                                                            {/* Cantidad */}
+                                                            <div className={`text-right font-bold tabular-nums text-sm ${cant >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                                                                {cant >= 0 ? "+" : ""}{cant.toFixed(2)} m
+                                                            </div>
 
-                                                    {/* Saldo corrido */}
-                                                    <div className="text-right font-black tabular-nums text-sm text-slate-800">
-                                                        {parseFloat(m.SaldoCorrido).toFixed(2)} m
-                                                    </div>
-                                                </div>
-                                            );
-                                        })}
-                                    </div>
+                                                            {/* Saldo corrido */}
+                                                            <div className="text-right font-black tabular-nums text-sm text-zinc-800">
+                                                                {parseFloat(m.SaldoCorrido).toFixed(2)} m
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
 
-                                    {/* Total row */}
-                                    <div className="grid px-4 py-3 bg-slate-800 text-white items-center border-t-2 border-slate-700"
-                                         style={{ gridTemplateColumns: "110px 1fr 110px 90px 90px" }}>
-                                        <span className="text-xs font-bold text-slate-400 col-span-4">SALDO FINAL</span>
-                                        <span className="text-right font-black tabular-nums text-lg"
-                                              style={{ color: saldo <= 0 ? "#f87171" : "#4ade80" }}>
-                                            {saldo.toFixed(2)} m
-                                        </span>
+                                            {/* Total row */}
+                                            <div className="grid px-4 py-3 bg-zinc-50 items-center border-t border-zinc-200"
+                                                 style={COLUMNAS}>
+                                                <span className="text-[11px] font-black text-zinc-400 uppercase tracking-wide col-span-4">Saldo final</span>
+                                                <span className={`text-right font-black tabular-nums text-lg ${saldo <= 0 ? "text-rose-600" : "text-emerald-600"}`}>
+                                                    {saldo.toFixed(2)} m
+                                                </span>
+                                            </div>
+                                        </div>
                                     </div>
                                 </div>
                             )}
@@ -255,6 +286,7 @@ export default function EstadoTelaModal({ bobinaId, onClose }) {
                     </div>
                 )}
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 }

@@ -76,10 +76,18 @@ async function enviarTemplateWsp({ to, params }) {
         channel_uuid: payload.channel_uuid,
     }, null, 2));
 
-    const { data } = await axios.post(CALLBELL_SEND_URL, payload, {
-        headers: { Authorization: `Bearer ${CALLBELL_API_KEY}`, "Content-Type": "application/json" },
-        timeout: 15000,
-    });
+    const salud = require('../services/saludIntegraciones');   // monitor
+    let data;
+    try {
+        ({ data } = await axios.post(CALLBELL_SEND_URL, payload, {
+            headers: { Authorization: `Bearer ${CALLBELL_API_KEY}`, "Content-Type": "application/json" },
+            timeout: 15000,
+        }));
+    } catch (e) {
+        salud.falla('whatsapp', e.response?.data ? JSON.stringify(e.response.data) : e);
+        throw e;
+    }
+    salud.ok('whatsapp');
 
     logger.info('[WHATSAPP RESPUESTA CALLBELL]', JSON.stringify(data));
     return data;

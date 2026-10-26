@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const logger = require('./logger');
+const { entornoConTope, describirFallo } = require('./topeMemoriaPython');
 
 const execFileAsync = promisify(execFile);
 const SCRIPT = path.join(__dirname, '..', 'scripts', 'preflight', 'user_preflight.py');
@@ -42,6 +43,8 @@ async function runPreflight(buffer, filename, { servicio, anchoTelaCm = null, pr
     if (!servicio || !buffer) return null;
     const ext = path.extname(filename || '').toLowerCase() || '.pdf';
     const tmp = path.join(os.tmpdir(), `preflight_${Date.now()}_${Math.random().toString(36).slice(2)}${ext}`);
+    // Tope de memoria (23/10/2026, ./topeMemoriaPython): si lo pasa, falla solo el script (sin JSON)
+    const env = entornoConTope();
     try {
         fs.writeFileSync(tmp, buffer);
         const args = [SCRIPT, tmp, '--servicio', servicio, '--json'];
@@ -55,6 +58,7 @@ async function runPreflight(buffer, filename, { servicio, anchoTelaCm = null, pr
             timeout: 60000,
             maxBuffer: 10 * 1024 * 1024,
             windowsHide: true,
+            env,
         }).catch(err => {
             if (err && err.stdout) return { stdout: err.stdout };
             throw err;
@@ -67,7 +71,9 @@ async function runPreflight(buffer, filename, { servicio, anchoTelaCm = null, pr
             mensajeCliente: out.mensaje_cliente || '',
         };
     } catch (err) {
-        logger.warn(`[Preflight] Error analizando ${filename}: ${err.message}`);
+        // El script falló sin JSON (memoria, timeout, traceback): en una línea. Si no, el error tal cual.
+        const motivo = err && (err.code !== undefined || err.signal) ? describirFallo(err, err.stderr, env) : err.message;
+        logger.warn(`[Preflight] Error analizando ${filename}: ${motivo}`);
         return null;
     } finally {
         try { fs.unlinkSync(tmp); } catch (_) { }

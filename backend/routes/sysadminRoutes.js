@@ -13,10 +13,42 @@ const requireAdmin = (req, res, next) => {
     next();
 };
 
+// Latido del monitor externo (herramientas/monitor-externo, en una PC de la oficina): sin login, con la clave
+// MONITOR_EXTERNO_TOKEN en el header x-monitor-token. Va ANTES del router.use de abajo para que no pida sesión.
+const crypto = require('crypto');
+router.post('/monitor/latido-externo', (req, res) => {
+    const clave = process.env.MONITOR_EXTERNO_TOKEN || '';
+    if (clave.length < 16) return res.status(503).json({ error: 'Falta MONITOR_EXTERNO_TOKEN en el .env del servidor.' });
+    const a = crypto.createHash('sha256').update(String(req.headers['x-monitor-token'] || '')).digest();
+    const b = crypto.createHash('sha256').update(clave).digest();
+    if (!crypto.timingSafeEqual(a, b)) return res.status(401).json({ error: 'Clave inválida.' });
+    require('../services/monitorService').registrarLatidoExterno({ pc: req.body?.pc, version: req.body?.version, ip: req.ip });
+    res.json({ ok: true });
+});
+
 router.use(verifyToken, requireAdmin);
 
 // Phase 1
 router.get('/status', ctrl.getSystemStatus);
+// Monitor en tiempo real (/admin/monitor): la última muestra; con ?historia=1, también las últimas 2 h
+// Acciones del monitor (con confirmación en la pantalla; quedan en la auditoría): terminar un python de la lista de
+// procesos y cortar una sesión de SQL que bloquea o tiene una transacción dormida
+const accionMonitor = (fn) => async (req, res) => {
+    try { res.json({ ok: true, mensaje: await fn(req) }); }
+    catch (e) { res.status(e.status || 500).json({ error: e.message }); }
+};
+router.post('/monitor/terminar-proceso', accionMonitor(req => require('../services/monitorService').terminarProceso(req.body?.pid, req.user, req.ip)));
+router.post('/monitor/cortar-sesion', accionMonitor(req => require('../services/monitorService').cortarSesionSql(req.body?.sesion, req.user, req.ip)));
+
+// Historia guardada en disco (una muestra por minuto, 8 días): ?horas=24 o 168
+router.get('/monitor/historia', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(require('../services/monitorService').leerHistoria(req.query.horas));
+});
+router.get('/monitor', (req, res) => {
+    res.set('Cache-Control', 'no-store');
+    res.json(require('../services/monitorService').snapshot({ conHistoria: req.query.historia === '1' }));
+});
 router.get('/logs', ctrl.getLogFiles);
 router.get('/logs/:filename', ctrl.getLogContent);
 router.post('/clear-logs', ctrl.clearLogs);

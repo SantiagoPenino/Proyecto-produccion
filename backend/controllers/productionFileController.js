@@ -1587,16 +1587,21 @@ const postControlArchivo = async (req, res) => {
 /**
  * 4. Obtener Tipos de Falla (Catálogo)
  */
+// uso=produccion (default: lo que se ofrece al reportar una falla) o uso=reposicion (razones de la
+// reposición de Atención al Cliente). Solo los activos. Con areaId, los de esa área más los 'General'
+// (para todas las áreas; antes los General no salían en ninguna). Se administran en /admin/tipos-falla.
 const getTiposFalla = async (req, res) => {
     try {
         const { areaId } = req.query;
+        const uso = req.query.uso === 'reposicion' ? 'reposicion' : 'produccion';
         const pool = await getPool();
 
-        let query = "SELECT FallaID, Titulo, DescripcionDefault FROM TiposFallas";
+        let query = `SELECT FallaID, Titulo, DescripcionDefault, LTRIM(RTRIM(AreaID)) AS AreaID FROM TiposFallas
+                     WHERE Activo = 1 AND ${uso === 'reposicion' ? 'EnReposicion = 1' : 'EnProduccion = 1'}`;
         if (areaId) {
-            query += " WHERE AreaID = @AreaID";
+            query += " AND (AreaID = @AreaID OR AreaID = 'General')";
         }
-        query += " ORDER BY EsFrecuente DESC, Titulo ASC";
+        query += " ORDER BY CASE WHEN AreaID = 'General' THEN 1 ELSE 0 END, EsFrecuente DESC, Titulo ASC";
 
         const request = pool.request();
         if (areaId) request.input('AreaID', sql.VarChar, areaId);
@@ -2098,7 +2103,7 @@ const getCompletedOrdersForReplacement = async (req, res) => {
         let sqlQuery = `
             SELECT TOP 20 
                 O.OrdenID, O.CodigoOrden, C.IDCliente, O.Cliente, O.FechaIngreso, O.FechaEstimadaEntrega, 
-                O.Estado, O.Material, O.DescripcionTrabajo, O.NoDocERP
+                O.Estado, O.Material, O.DescripcionTrabajo, O.NoDocERP, LTRIM(RTRIM(O.AreaID)) AS AreaID
             FROM Ordenes O WITH (NOLOCK)
             LEFT JOIN Clientes C WITH (NOLOCK) ON C.CliIdCliente = O.CliIdCliente
             WHERE O.Estado IN ('ENTREGADO', 'FINALIZADO', 'DESPACHADO', 'PRONTO')
@@ -2130,7 +2135,7 @@ const getCompletedOrdersForReplacement = async (req, res) => {
  * Recibe lista de archivos a reponer de una orden ya terminada.
  */
 const createCustomerReplacementOrder = async (req, res) => {
-    const { originalOrderId, files, globalObservation } = req.body;
+    const { originalOrderId, files, globalObservation, razonId } = req.body;
     // Quién la crea sale del token (verifyToken en la ruta), nunca del body.
     const userId = req.user?.id;
     let transaction;
@@ -2160,6 +2165,24 @@ const createCustomerReplacementOrder = async (req, res) => {
 
         if (ordRes.recordset.length === 0) throw new Error("Orden original no encontrada");
         const originalOrder = ordRes.recordset[0];
+
+        // 1a. Razón principal (23/10/2026): un tipo de falla activo, marcado para reposiciones, del área de la
+        // orden o General. Es obligatoria si el área tiene razones cargadas (se administran en /admin/tipos-falla).
+        // Se guarda como TipoFalla de cada falla registrada y encabeza la nota de la -R.
+        const razonesRes = await new sql.Request(transaction)
+            .input('Area', sql.VarChar(20), String(originalOrder.AreaID || '').trim())
+            .query(`SELECT FallaID, Titulo FROM dbo.TiposFallas
+                    WHERE Activo = 1 AND EnReposicion = 1 AND (AreaID = @Area OR AreaID = 'General')`);
+        let razon = null;
+        if (razonId !== undefined && razonId !== null && razonId !== '') {
+            razon = razonesRes.recordset.find(r => r.FallaID === parseInt(razonId, 10)) || null;
+            if (!razon) throw new Error('La razón elegida ya no está disponible para esta área. Volvé a elegirla.');
+        } else if (razonesRes.recordset.length > 0) {
+            throw new Error('Elegí la razón principal de la reposición.');
+        }
+        const razonTexto = razon ? `Razón: ${String(razon.Titulo).trim()}` : '';
+        // Sin razones cargadas para el área queda el tipo 1 de siempre (antes era fijo para toda reposición).
+        const tipoFallaReposicion = razon ? razon.FallaID : 1;
 
         // 1b. Obtener datos originales de los archivos para validar límites (metros y copias)
         const fileIds = files.map(f => parseInt(f.id)).filter(id => !isNaN(id));
@@ -2217,10 +2240,9 @@ const createCustomerReplacementOrder = async (req, res) => {
         const loteInfo    = originalOrder.NombreRollo   ? `Lote: ${originalOrder.NombreRollo}`     : '';
         const contextInfo = [maquinaInfo, loteInfo].filter(Boolean).join(' | ');
         const globalObsBase = (globalObservation || '').trim(); // obs general de la falla ingresada por el usuario
-        // Ordenes.Nota = "[texto del usuario] | Máquina: X | Lote: Y"
-        const ordenNota = contextInfo
-            ? (globalObsBase ? `${globalObsBase} | ${contextInfo}` : contextInfo)
-            : (globalObsBase || 'Reposición Cliente');
+        // Ordenes.Nota = "Razón: R | [texto del usuario] | Máquina: X | Lote: Y"
+        const partesNota = [razonTexto, globalObsBase, contextInfo].filter(Boolean);
+        const ordenNota = partesNota.length ? partesNota.join(' | ') : 'Reposición Cliente';
 
         // EquipoID de la máquina original (para FallasProduccion)
         const equipoIdOriginal = originalOrder.EquipoID || null;
@@ -2331,11 +2353,12 @@ const createCustomerReplacementOrder = async (req, res) => {
                 fallaReq.input('Metros',   sql.Decimal(10,2), metersToReprint);
                 fallaReq.input('ObsFalla', sql.NVarChar,      obsParaFalla);
                 fallaReq.input('EquipoID', sql.Int,           equipoIdOriginal);
+                fallaReq.input('TipoFalla', sql.Int,          tipoFallaReposicion);
                 await fallaReq.query(`
                     INSERT INTO FallasProduccion
                         (OrdenID, ArchivoID, AreaID, FechaFalla, TipoFalla, CantidadFalla, EquipoID, Observaciones)
                     VALUES
-                        (@OldID, @FileID, @AreaID, GETDATE(), 1, @Metros, @EquipoID, @ObsFalla)
+                        (@OldID, @FileID, @AreaID, GETDATE(), @TipoFalla, @Metros, @EquipoID, @ObsFalla)
                 `);
             } catch (e) {
                 logger.warn(`FallasProduccion insert failed (metros=${metersToReprint}, equipo=${equipoIdOriginal}):`, e.message);
@@ -2474,7 +2497,7 @@ const createCustomerReplacementOrder = async (req, res) => {
                     const relIns = await new sql.Request(transaction)
                         .input('RelNewCode', sql.NVarChar, relNewCode)
                         .input('RelOldID', sql.Int, relId)
-                        .input('GlobalObs', sql.NVarChar, globalObservation || 'Reposición Cliente (Servicio)')
+                        .input('GlobalObs', sql.NVarChar, [razonTexto, (globalObservation || '').trim()].filter(Boolean).join(' | ') || 'Reposición Cliente (Servicio)')
                         .query(`
                             INSERT INTO dbo.Ordenes(
                                 CodigoOrden, Cliente, FechaIngreso, FechaEstimadaEntrega,
@@ -2510,7 +2533,7 @@ const createCustomerReplacementOrder = async (req, res) => {
         }
 
         await transaction.commit();
-        logger.info(`[Reposición] ${newCode} (OrdenID ${newOrderId}) creada desde ${originalOrder.CodigoOrden} por usuario ${userId}.`);
+        logger.info(`[Reposición] ${newCode} (OrdenID ${newOrderId}) creada desde ${originalOrder.CodigoOrden} por usuario ${userId}${razon ? ` · razón #${razon.FallaID} «${razon.Titulo}»` : ''}.`);
 
         // Miniaturas del clon (best-effort, fuera de la transacción): mismo archivo de Drive,
         // así que se copia el JPG ya rasterizado en vez de volver a bajar y rasterizar.

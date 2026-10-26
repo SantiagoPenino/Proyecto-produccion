@@ -269,6 +269,7 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
         }
 
         logger.info(`✅ [Drive] Archivo subido: ${fileName} -> ${file.data.webViewLink}`);
+        require('./saludIntegraciones').ok('drive');   // monitor
         return file.data.webViewLink;
 
 
@@ -290,6 +291,7 @@ exports.uploadToDrive = async (fileInput, fileName, areaName, retries = 2) => {
             }
         }
         logger.error(`❌ [DriveService] Error subiendo ${fileName}: ${exports.resumenError(error)}`);
+        require('./saludIntegraciones').falla('drive', exports.resumenError(error));   // monitor
         throw error;
     }
 };

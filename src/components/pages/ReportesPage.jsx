@@ -1,11 +1,24 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, memo } from 'react';
 import api from '../../services/apiClient';
 import {
-    Printer, FileSpreadsheet, ChevronRight, Search,
+    Printer, FileSpreadsheet, Search,
     BarChart2, Package, ClipboardList, RefreshCw,
-    AlertTriangle, XCircle, LayoutDashboard,
+    AlertTriangle, XCircle, LayoutDashboard, Loader2, X,
 } from 'lucide-react';
 import ProduccionPanelSection from './ProduccionPanelSection';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
+
+// Estética nueva (22/10/2026, como Panel de Control y Servicio Técnico): fondo claro, tarjetas blancas con
+// borde, íconos de Lucide en brand-cyan (sin un color por reporte), pestañas con la elegida en negro. En el
+// celular la lista de reportes y los filtros son selectores.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const ROTULO = 'text-[11px] font-black text-zinc-400 uppercase tracking-wide shrink-0';
+const FILA_CHIPS = 'flex items-center gap-2 flex-wrap';
+const chip = (activo) => `shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${
+    activo ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400'}`;
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
 
 // ─── Reportes disponibles ────────────────────────────────────────────────────
 const REPORTS = [
@@ -117,6 +130,13 @@ const FECHA_PRESETS = [
     { label: 'Personalizado', value: 'custom' },
 ];
 
+// value = lo que se guarda en el filtro (y define el turno que se manda); corto en la pestaña, largo en el selector
+const TURNOS = [
+    { value: 'Ambos',        corto: 'Ambos',          largo: 'Ambos turnos' },
+    { value: 'T1 · 00-14 h', corto: 'T1 · 00 a 14 h', largo: 'T1 · 00 a 14 h' },
+    { value: 'T2 · 14-24 h', corto: 'T2 · 14 a 24 h', largo: 'T2 · 14 a 24 h' },
+];
+
 function getDateRange(preset) {
     const now   = new Date();
     const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -199,13 +219,13 @@ const ESTADO_CLS = {
     'CON FALLA': 'bg-orange-100 text-orange-700',
     'En Proceso': 'bg-blue-100 text-blue-700',
     'En Máquina': 'bg-blue-100 text-blue-700',
-    'Pendiente': 'bg-slate-100 text-slate-500',
+    'Pendiente': 'bg-zinc-100 text-zinc-500',
 };
 
 function EstadoBadge({ estado }) {
-    if (!estado) return <span className="text-slate-400">—</span>;
+    if (!estado) return <span className="text-zinc-400">—</span>;
     const matchKey = Object.keys(ESTADO_CLS).find(k => k.toLowerCase() === estado.toLowerCase());
-    const cls = ESTADO_CLS[matchKey] || 'bg-slate-100 text-slate-600';
+    const cls = ESTADO_CLS[matchKey] || 'bg-zinc-100 text-zinc-600';
     return <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${cls}`}>{estado}</span>;
 }
 
@@ -219,11 +239,11 @@ function TipoBadge({ tipo }) {
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-700 w-fit block">
             Reposición
         </span>;
-    return <span className="text-slate-600">{tipo}</span>;
+    return <span className="text-zinc-600">{tipo}</span>;
 }
 
 function PrioridadBadge({ prioridad }) {
-    if (!prioridad) return <span className="text-slate-400">—</span>;
+    if (!prioridad) return <span className="text-zinc-400">—</span>;
     const p = prioridad.toUpperCase();
     if (p === 'U' || p === 'URGENTE')
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-700">URGENTE</span>;
@@ -231,48 +251,41 @@ function PrioridadBadge({ prioridad }) {
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-orange-100 text-orange-700">FALLA</span>;
     if (p === 'R' || p === 'REPOSICION' || p === 'REPOSICIÓN')
         return <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-violet-100 text-violet-700">REPOS.</span>;
-    return <span className="text-slate-500">{prioridad}</span>;
+    return <span className="text-zinc-500">{prioridad}</span>;
 }
 
 // ─── Componente KPI strip dinámico ────────────────────────────────────────────
+const mm = v => `${Number(v || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m`;
 function KpisStrip({ activeReport, totales }) {
     if (!totales || !Object.keys(totales).length) return null;
-
-    if (activeReport === 'fallas-reposiciones') return (
-        <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
-            <KpiChip label="Fallas"          value={Number(totales.totalFallas || 0).toLocaleString()} cls="text-orange-600" />
-            <KpiChip label="Reposiciones"    value={Number(totales.totalReposiciones || 0).toLocaleString()} cls="text-violet-600" />
-            <KpiChip label="Metros en falla" value={`${Number(totales.metrosFalla || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-orange-600" />
-            <KpiChip label="Metros repos."   value={`${Number(totales.metrosReposicion || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-violet-600" />
-        </div>
-    );
-
-    if (activeReport === 'cancelaciones') return (
-        <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
-            <KpiChip label="Total canceladas" value={Number(totales.total || 0).toLocaleString()} cls="text-red-600" />
-            <KpiChip label="Metros totales"   value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-slate-700" />
-            <KpiChip label="Con motivo"       value={Number(totales.conMotivo || 0).toLocaleString()} cls="text-emerald-600" />
-            <KpiChip label="Sin motivo"       value={Number(totales.sinMotivo || 0).toLocaleString()} cls="text-amber-600" />
-        </div>
-    );
-
-    if (activeReport === 'ordenes') return (
-        <div className="bg-white border-b border-slate-100 px-5 py-2 flex items-center gap-6 text-xs shrink-0 flex-wrap">
-            <KpiChip label="Total"       value={Number(totales.total || 0).toLocaleString()} cls="text-slate-700" />
-            <KpiChip label="Metros"      value={`${Number(totales.totalMetros || 0).toLocaleString('es-UY', { maximumFractionDigits: 2 })} m lin.`} cls="text-brand-cyan" />
-            <KpiChip label="Activas"     value={Number(totales.activas || 0).toLocaleString()} cls="text-amber-600" />
-            <KpiChip label="Completadas" value={Number(totales.completadas || 0).toLocaleString()} cls="text-emerald-600" />
-        </div>
-    );
-
-    return null;
-}
-
-function KpiChip({ label, value, cls }) {
+    let kpis = null;
+    if (activeReport === 'fallas-reposiciones') kpis = [
+        { label: 'Fallas', value: Number(totales.totalFallas || 0).toLocaleString('es-UY'), cls: 'text-orange-600' },
+        { label: 'Reposiciones', value: Number(totales.totalReposiciones || 0).toLocaleString('es-UY'), cls: 'text-violet-600' },
+        { label: 'Metros en falla', value: mm(totales.metrosFalla), cls: 'text-orange-600' },
+        { label: 'Metros de reposición', value: mm(totales.metrosReposicion), cls: 'text-violet-600' },
+    ];
+    if (activeReport === 'cancelaciones') kpis = [
+        { label: 'Canceladas', value: Number(totales.total || 0).toLocaleString('es-UY'), cls: 'text-rose-600' },
+        { label: 'Metros', value: mm(totales.totalMetros), cls: 'text-zinc-800' },
+        { label: 'Con motivo', value: Number(totales.conMotivo || 0).toLocaleString('es-UY'), cls: 'text-emerald-600' },
+        { label: 'Sin motivo', value: Number(totales.sinMotivo || 0).toLocaleString('es-UY'), cls: 'text-amber-600' },
+    ];
+    if (activeReport === 'ordenes') kpis = [
+        { label: 'Órdenes', value: Number(totales.total || 0).toLocaleString('es-UY'), cls: 'text-zinc-800' },
+        { label: 'Metros', value: mm(totales.totalMetros), cls: 'text-brand-cyan' },
+        { label: 'Activas', value: Number(totales.activas || 0).toLocaleString('es-UY'), cls: 'text-amber-600' },
+        { label: 'Completadas', value: Number(totales.completadas || 0).toLocaleString('es-UY'), cls: 'text-emerald-600' },
+    ];
+    if (!kpis) return null;
     return (
-        <div className="flex items-center gap-1.5">
-            <span className="text-slate-400">{label}:</span>
-            <span className={`font-bold ${cls}`}>{value}</span>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {kpis.map(k => (
+                <div key={k.label} className={`${CARD} px-4 py-3 min-w-0`}>
+                    <div className="text-[11px] font-black text-zinc-400 uppercase tracking-wide truncate">{k.label}</div>
+                    <div className={`mt-1 text-xl md:text-2xl font-black tabular-nums leading-tight ${k.cls}`}>{k.value}</div>
+                </div>
+            ))}
         </div>
     );
 }
@@ -281,11 +294,20 @@ function KpiChip({ label, value, cls }) {
 const METRO_KEYS = new Set(['Metros', 'MetrosAfectados', 'TotalMetros', 'PromedioMetros']);
 
 const TEXT_WRAP_KEYS = new Set(['Causa', 'Observaciones', 'DetallesCancelacion', 'MotivoCancelacion']);
+// En la tabla también bajan de renglón (si no, la tabla no entraba y el estado quedaba cortado a la derecha)
+const DOBLAN_KEYS = new Set(['Fecha', 'FechaIngreso', 'FechaCancelacion', 'UltimaOrden', 'Cliente', 'Material', 'TipoFalla', 'Area', 'CanceladoPor']);
+// El estado, si es la última columna, queda pegado a la derecha: si la tabla igual no entra (pantallas angostas),
+// el resto se scrollea por debajo
+const PEGADA = 'sticky right-0 shadow-[-8px_0_8px_-8px_rgba(0,0,0,0.12)]';
+const pegada = (c, cols) => c.key === 'Estado' && cols[cols.length - 1] === c;
+const claseCelda = (c, cols) => TEXT_WRAP_KEYS.has(c.key) ? 'max-w-[360px]'
+    : DOBLAN_KEYS.has(c.key) ? 'min-w-[90px]'
+    : pegada(c, cols) ? `whitespace-nowrap ${PEGADA} bg-white group-hover:bg-zinc-50` : 'whitespace-nowrap';
 
 function MotivoCancelBadge({ value, detalles }) {
     const combined = `${value || ''} ${detalles || ''}`.toLowerCase();
     const esPorCliente = combined.includes('client');
-    if (!value && !esPorCliente) return <span className="text-slate-400">—</span>;
+    if (!value && !esPorCliente) return <span className="text-zinc-400">—</span>;
     return (
         <span className="flex flex-col gap-0.5">
             {esPorCliente && (
@@ -293,7 +315,7 @@ function MotivoCancelBadge({ value, detalles }) {
                     Por cliente
                 </span>
             )}
-            {value && <span className={esPorCliente ? 'text-blue-700 font-medium text-[11px]' : 'text-slate-600 text-[11px]'}>{value}</span>}
+            {value && <span className={esPorCliente ? 'text-blue-700 font-medium text-[11px]' : 'text-zinc-600 text-[11px]'}>{value}</span>}
         </span>
     );
 }
@@ -309,11 +331,11 @@ function Cell({ col, value, row }) {
         </span>
     );
     if (TEXT_WRAP_KEYS.has(col.key)) return (
-        <span className="block text-slate-500 italic whitespace-normal leading-snug min-w-[160px]">
+        <span className="block text-zinc-500 whitespace-normal leading-snug min-w-[200px]">
             {value || '—'}
         </span>
     );
-    return <span className="text-slate-700">{value ?? '—'}</span>;
+    return <span className="text-zinc-700">{value ?? '—'}</span>;
 }
 
 // ─── Tabla pivot Órdenes por Día ─────────────────────────────────────────────
@@ -323,8 +345,8 @@ const mlin = v => Number(v || 0).toLocaleString('es-UY', { minimumFractionDigits
 function OrdenesPorDiaTable({ rows }) {
     if (!rows.length) return (
         <div className="flex flex-col items-center justify-center h-40 gap-2">
-            <FileSpreadsheet size={36} className="text-slate-200" />
-            <p className="text-slate-400 text-sm">Sin resultados</p>
+            <FileSpreadsheet size={36} className="text-zinc-200" />
+            <p className="text-zinc-400 text-sm">Sin resultados</p>
         </div>
     );
 
@@ -338,152 +360,219 @@ function OrdenesPorDiaTable({ rows }) {
     }), { T1_Ordenes:0, T1_Metros:0, T2_Ordenes:0, T2_Metros:0, Total_Ordenes:0, Total_Metros:0 });
 
     const TH = ({ children, cls='' }) =>
-        <th className={`px-3 py-2 text-center text-[10px] font-bold whitespace-nowrap border-b border-slate-200 ${cls}`}>{children}</th>;
+        <th className={`px-3 py-2 text-center text-[10px] font-bold whitespace-nowrap border-b border-zinc-200 ${cls}`}>{children}</th>;
     const TD = ({ children, cls='' }) =>
         <td className={`px-3 py-2 text-right text-xs whitespace-nowrap tabular-nums ${cls}`}>{children}</td>;
 
     return (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
+        <div className={`${CARD} overflow-hidden`}>
             <div className="overflow-x-auto">
                 <table className="w-full text-xs">
                     <thead>
                         <tr>
-                            <th rowSpan={2} className="px-3 py-2 text-left text-slate-500 font-bold text-[10px] border-b border-r border-slate-200 bg-slate-50 whitespace-nowrap">Día</th>
-                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-amber-700 bg-amber-50 border-b border-r border-slate-200">T 1</th>
-                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-blue-700 bg-blue-50 border-b border-r border-slate-200">T 2</th>
-                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-700 bg-slate-100 border-b border-r border-slate-200">TOTALES</th>
-                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-600 bg-slate-50 border-b border-r border-slate-200">% Órdenes</th>
-                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-slate-600 bg-slate-50 border-b border-slate-200">% Metros</th>
+                            <th rowSpan={2} className="px-3 py-2 text-left text-zinc-500 font-bold text-[10px] border-b border-r border-zinc-200 bg-zinc-50 whitespace-nowrap">Día</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-brand-cyan bg-cyan-50/60 border-b border-r border-zinc-200">T 1</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-cyan-700 bg-cyan-50 border-b border-r border-zinc-200">T 2</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-zinc-700 bg-zinc-100 border-b border-r border-zinc-200">TOTALES</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-zinc-600 bg-zinc-50 border-b border-r border-zinc-200">% Órdenes</th>
+                            <th colSpan={2} className="px-3 py-2 text-center text-[10px] font-bold text-zinc-600 bg-zinc-50 border-b border-zinc-200">% Metros</th>
                         </tr>
-                        <tr className="bg-slate-50">
-                            <TH cls="text-amber-700 bg-amber-50">Órdenes</TH>
-                            <TH cls="text-amber-700 bg-amber-50 border-r border-slate-200">m lin.</TH>
-                            <TH cls="text-blue-700 bg-blue-50">Órdenes</TH>
-                            <TH cls="text-blue-700 bg-blue-50 border-r border-slate-200">m lin.</TH>
-                            <TH cls="text-slate-700">Órdenes</TH>
-                            <TH cls="text-slate-700 border-r border-slate-200">Metros</TH>
-                            <TH cls="text-amber-600">T1</TH>
-                            <TH cls="text-blue-600 border-r border-slate-200">T2</TH>
-                            <TH cls="text-amber-600">T1</TH>
-                            <TH cls="text-blue-600">T2</TH>
+                        <tr className="bg-zinc-50">
+                            <TH cls="text-brand-cyan bg-cyan-50/60">Órdenes</TH>
+                            <TH cls="text-brand-cyan bg-cyan-50/60 border-r border-zinc-200">m lin.</TH>
+                            <TH cls="text-cyan-700 bg-cyan-50">Órdenes</TH>
+                            <TH cls="text-cyan-700 bg-cyan-50 border-r border-zinc-200">m lin.</TH>
+                            <TH cls="text-zinc-700">Órdenes</TH>
+                            <TH cls="text-zinc-700 border-r border-zinc-200">Metros</TH>
+                            <TH cls="text-brand-cyan">T1</TH>
+                            <TH cls="text-cyan-700 border-r border-zinc-200">T2</TH>
+                            <TH cls="text-brand-cyan">T1</TH>
+                            <TH cls="text-cyan-700">T2</TH>
                         </tr>
                     </thead>
-                    <tbody className="divide-y divide-slate-100">
+                    <tbody className="divide-y divide-zinc-100">
                         {rows.map((r, i) => (
-                            <tr key={i} className={`hover:bg-slate-50/70 ${i % 2 !== 0 ? 'bg-slate-50/40' : ''}`}>
-                                <td className="px-3 py-2 text-slate-700 font-medium border-r border-slate-100 whitespace-nowrap">{r.Dia}</td>
-                                <TD cls="text-amber-700">{r.T1_Ordenes}</TD>
-                                <TD cls="text-amber-700 border-r border-slate-100">{mlin(r.T1_Metros)}</TD>
-                                <TD cls="text-blue-700">{r.T2_Ordenes}</TD>
-                                <TD cls="text-blue-700 border-r border-slate-100">{mlin(r.T2_Metros)}</TD>
-                                <TD cls="text-slate-800 font-semibold">{r.Total_Ordenes}</TD>
-                                <TD cls="text-slate-800 font-semibold border-r border-slate-100">{mlin(r.Total_Metros)}</TD>
-                                <TD cls="text-amber-600">{pct(r.T1_Ordenes, r.Total_Ordenes)}</TD>
-                                <TD cls="text-blue-600 border-r border-slate-100">{pct(r.T2_Ordenes, r.Total_Ordenes)}</TD>
-                                <TD cls="text-amber-600">{pct(r.T1_Metros, r.Total_Metros)}</TD>
-                                <TD cls="text-blue-600">{pct(r.T2_Metros, r.Total_Metros)}</TD>
+                            <tr key={i} className={`hover:bg-zinc-50/70 ${i % 2 !== 0 ? 'bg-zinc-50/40' : ''}`}>
+                                <td className="px-3 py-2 text-zinc-700 font-medium border-r border-zinc-100 whitespace-nowrap">{r.Dia}</td>
+                                <TD cls="text-brand-cyan">{r.T1_Ordenes}</TD>
+                                <TD cls="text-brand-cyan border-r border-zinc-100">{mlin(r.T1_Metros)}</TD>
+                                <TD cls="text-cyan-700">{r.T2_Ordenes}</TD>
+                                <TD cls="text-cyan-700 border-r border-zinc-100">{mlin(r.T2_Metros)}</TD>
+                                <TD cls="text-zinc-800 font-semibold">{r.Total_Ordenes}</TD>
+                                <TD cls="text-zinc-800 font-semibold border-r border-zinc-100">{mlin(r.Total_Metros)}</TD>
+                                <TD cls="text-brand-cyan">{pct(r.T1_Ordenes, r.Total_Ordenes)}</TD>
+                                <TD cls="text-cyan-700 border-r border-zinc-100">{pct(r.T2_Ordenes, r.Total_Ordenes)}</TD>
+                                <TD cls="text-brand-cyan">{pct(r.T1_Metros, r.Total_Metros)}</TD>
+                                <TD cls="text-cyan-700">{pct(r.T2_Metros, r.Total_Metros)}</TD>
                             </tr>
                         ))}
                     </tbody>
                     <tfoot>
-                        <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold">
-                            <td className="px-3 py-2.5 text-slate-800 text-xs font-bold border-r border-slate-200">TOTALES</td>
-                            <TD cls="text-amber-700">{tot.T1_Ordenes}</TD>
-                            <TD cls="text-amber-700 border-r border-slate-200">{mlin(tot.T1_Metros)}</TD>
-                            <TD cls="text-blue-700">{tot.T2_Ordenes}</TD>
-                            <TD cls="text-blue-700 border-r border-slate-200">{mlin(tot.T2_Metros)}</TD>
-                            <TD cls="text-slate-900">{tot.Total_Ordenes}</TD>
-                            <TD cls="text-slate-900 border-r border-slate-200">{mlin(tot.Total_Metros)}</TD>
-                            <TD cls="text-amber-700">{pct(tot.T1_Ordenes, tot.Total_Ordenes)}</TD>
-                            <TD cls="text-blue-700 border-r border-slate-200">{pct(tot.T2_Ordenes, tot.Total_Ordenes)}</TD>
-                            <TD cls="text-amber-700">{pct(tot.T1_Metros, tot.Total_Metros)}</TD>
-                            <TD cls="text-blue-700">{pct(tot.T2_Metros, tot.Total_Metros)}</TD>
+                        <tr className="bg-zinc-100 border-t-2 border-zinc-300 font-bold">
+                            <td className="px-3 py-2.5 text-zinc-800 text-xs font-bold border-r border-zinc-200">TOTALES</td>
+                            <TD cls="text-brand-cyan">{tot.T1_Ordenes}</TD>
+                            <TD cls="text-brand-cyan border-r border-zinc-200">{mlin(tot.T1_Metros)}</TD>
+                            <TD cls="text-cyan-700">{tot.T2_Ordenes}</TD>
+                            <TD cls="text-cyan-700 border-r border-zinc-200">{mlin(tot.T2_Metros)}</TD>
+                            <TD cls="text-zinc-900">{tot.Total_Ordenes}</TD>
+                            <TD cls="text-zinc-900 border-r border-zinc-200">{mlin(tot.Total_Metros)}</TD>
+                            <TD cls="text-brand-cyan">{pct(tot.T1_Ordenes, tot.Total_Ordenes)}</TD>
+                            <TD cls="text-cyan-700 border-r border-zinc-200">{pct(tot.T2_Ordenes, tot.Total_Ordenes)}</TD>
+                            <TD cls="text-brand-cyan">{pct(tot.T1_Metros, tot.Total_Metros)}</TD>
+                            <TD cls="text-cyan-700">{pct(tot.T2_Metros, tot.Total_Metros)}</TD>
                         </tr>
                     </tfoot>
                 </table>
             </div>
-            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-400">
+            <div className="px-4 py-2 bg-zinc-50 border-t border-zinc-100 text-[11px] text-zinc-400">
                 {rows.length} días · órdenes que pasaron por Control de Calidad
             </div>
         </div>
     );
 }
 
-// ─── Tabla simple (otros reportes) ───────────────────────────────────────────
-function SimpleTable({ rows, cols }) {
+// ─── Registros: tarjetas en el celular, tabla en escritorio, de a 50 ──────────
+// Se dibuja una sola de las dos vistas (antes iban las dos y una quedaba oculta) y solo los primeros 50
+// registros; cuando el final de la lista se acerca a la pantalla se agregan 50 más. Con 90 días eran
+// más de 60.000 elementos en la página.
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
+const DE_A = 50;
+// El contenedor que scrollea de verdad (el del layout): el margen de 600 px se mide contra él. El envoltorio
+// de la tabla tiene overflow-x:auto (y por eso overflow-y:auto) pero no scrollea en vertical: no sirve.
+const contenedorConScroll = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        if (/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    return null;
+};
+function useDeAPoco(total) {
+    const [cuantos, setCuantos] = useState(DE_A);
+    const centinela = useRef(null);
+    useEffect(() => {
+        const el = centinela.current;
+        if (!el || cuantos >= total) return undefined;
+        // También si el aviso quedó arriba de la pantalla (un scroll rápido lo salteó)
+        const obs = new IntersectionObserver(([e]) => {
+            if (e.isIntersecting || (e.rootBounds && e.boundingClientRect.bottom < e.rootBounds.top)) setCuantos(c => c + DE_A);
+        },
+            { root: contenedorConScroll(el), rootMargin: '0px 0px 600px 0px' });
+        obs.observe(el);
+        return () => obs.disconnect();
+    }, [cuantos, total]);
+    return [Math.min(cuantos, total), centinela];
+}
+
+// Celular: un registro por tarjeta. Arriba el código (o la primera columna) y el estado; abajo el resto en
+// dos columnas, y los textos largos (causa, observaciones, detalles) a lo ancho.
+const CLAVE_TITULO = ['CodigoOrden', 'Material', 'Cliente'];
+function Tarjeta({ row, titulo, estado, resto }) {
     return (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                    <thead className="bg-slate-50 border-b border-slate-200">
-                        <tr>
-                            <th className="px-3 py-2.5 text-left text-slate-400 font-semibold w-8">#</th>
+        <li className="px-4 py-3">
+            <div className="flex items-start justify-between gap-2">
+                <span className="text-sm font-black text-zinc-800 break-all">{row[titulo?.key] ?? '—'}</span>
+                {estado && <span className="shrink-0"><Cell col={estado} value={row.Estado} row={row} /></span>}
+            </div>
+            <dl className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                {resto.map(c => (
+                    <div key={c.key} className={`min-w-0 ${TEXT_WRAP_KEYS.has(c.key) ? 'col-span-2' : ''}`}>
+                        <dt className="text-[10px] font-black uppercase tracking-wide text-zinc-400">{c.label}</dt>
+                        <dd className={`text-zinc-700 ${TEXT_WRAP_KEYS.has(c.key) ? 'line-clamp-4' : 'truncate'}`}>
+                            <Cell col={c} value={row[c.key]} row={row} />
+                        </dd>
+                    </div>
+                ))}
+            </dl>
+        </li>
+    );
+}
+
+const Registros = memo(function Registros({ rows, cols }) {
+    const conTabla = useConTabla();
+    const [cuantos, centinela] = useDeAPoco(rows.length);
+    const visibles = rows.slice(0, cuantos);
+    const faltan = rows.length - cuantos;
+    const aviso = `Mostrando ${cuantos.toLocaleString('es-UY')} de ${rows.length.toLocaleString('es-UY')}…`;
+
+    if (!conTabla) {
+        const titulo = cols.find(c => CLAVE_TITULO.includes(c.key)) || cols[0];
+        const estado = cols.find(c => c.key === 'Estado');
+        const resto = cols.filter(c => c !== titulo && c !== estado);
+        return (
+            <ul className="divide-y divide-zinc-100">
+                {visibles.map((row, i) => <Tarjeta key={i} row={row} titulo={titulo} estado={estado} resto={resto} />)}
+                {faltan > 0 && <li ref={centinela} className="px-4 py-3 text-center text-xs text-zinc-400">{aviso}</li>}
+            </ul>
+        );
+    }
+    return (
+        <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+                <thead className="bg-zinc-50 border-b border-zinc-200">
+                    <tr>
+                        <th className="px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 w-8">#</th>
+                        {cols.map(c => (
+                            <th key={c.key} className={`px-3 py-2.5 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap ${pegada(c, cols) ? `${PEGADA} bg-zinc-50` : ''}`}>{c.label}</th>
+                        ))}
+                    </tr>
+                </thead>
+                <tbody className="divide-y divide-zinc-50">
+                    {visibles.map((row, i) => (
+                        <tr key={i} className="group hover:bg-zinc-50 transition-colors">
+                            <td className="px-3 py-2 text-zinc-300 whitespace-nowrap">{i + 1}</td>
                             {cols.map(c => (
-                                <th key={c.key} className="px-3 py-2.5 text-left text-slate-500 font-semibold whitespace-nowrap">{c.label}</th>
+                                <td key={c.key} className={`px-3 py-2 ${claseCelda(c, cols)}`}>
+                                    <Cell col={c} value={row[c.key]} row={row} />
+                                </td>
                             ))}
                         </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-50">
-                        {rows.map((row, i) => (
-                            <tr key={i} className="hover:bg-slate-50/70 transition-colors">
-                                <td className="px-3 py-2 text-slate-300 whitespace-nowrap">{i + 1}</td>
-                                {cols.map(c => (
-                                    <td key={c.key} className={`px-3 py-2 ${TEXT_WRAP_KEYS.has(c.key) ? 'max-w-[280px]' : 'whitespace-nowrap'}`}>
-                                        <Cell col={c} value={row[c.key]} row={row} />
-                                    </td>
-                                ))}
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-            <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 text-[11px] text-slate-400">
+                    ))}
+                    {faltan > 0 && (
+                        <tr ref={centinela}><td colSpan={cols.length + 1} className="px-3 py-3 text-center text-zinc-400">{aviso}</td></tr>
+                    )}
+                </tbody>
+            </table>
+        </div>
+    );
+});
+
+// ─── Tabla simple (otros reportes) ───────────────────────────────────────────
+const SimpleTable = memo(function SimpleTable({ rows, cols }) {
+    return (
+        <div className={`${CARD} overflow-hidden`}>
+            <Registros rows={rows} cols={cols} />
+            <div className="px-4 py-2 bg-zinc-50 border-t border-zinc-100 text-[11px] text-zinc-400">
                 {rows.length.toLocaleString()} registros
             </div>
         </div>
     );
-}
+});
 
 // ─── Tabla agrupada con header de sección ────────────────────────────────────
-function GroupedTable({ title, rows, cols, headerCls, titleCls, dotCls }) {
+const GroupedTable = memo(function GroupedTable({ title, rows, cols, titleCls, dotCls }) {
     return (
-        <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-            <div className={`flex items-center gap-2 px-4 py-2.5 border-b ${headerCls}`}>
-                <span className={`w-2 h-2 rounded-full ${dotCls} shrink-0`} />
-                <span className={`font-bold text-xs ${titleCls}`}>{title}</span>
-                <span className="text-[11px] text-slate-400 ml-1">— {rows.length.toLocaleString()} registros</span>
+        <div className={`${CARD} overflow-hidden`}>
+            <div className="flex items-center gap-2 px-4 py-3 border-b border-zinc-200">
+                <span className={`w-2.5 h-2.5 rounded-full ${dotCls} shrink-0`} />
+                <span className={`font-black text-sm ${titleCls}`}>{title}</span>
+                <span className="text-xs text-zinc-400">{rows.length.toLocaleString('es-UY')} {rows.length === 1 ? 'registro' : 'registros'}</span>
             </div>
-            {rows.length === 0 ? (
-                <div className="px-4 py-5 text-center text-xs text-slate-400">Sin resultados</div>
-            ) : (
-                <div className="overflow-x-auto">
-                    <table className="w-full text-xs">
-                        <thead className="bg-slate-50 border-b border-slate-200">
-                            <tr>
-                                <th className="px-3 py-2.5 text-left text-slate-400 font-semibold w-8">#</th>
-                                {cols.map(c => (
-                                    <th key={c.key} className="px-3 py-2.5 text-left text-slate-500 font-semibold whitespace-nowrap">{c.label}</th>
-                                ))}
-                            </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-50">
-                            {rows.map((row, i) => (
-                                <tr key={i} className="hover:bg-slate-50/70 transition-colors">
-                                    <td className="px-3 py-2 text-slate-300 whitespace-nowrap">{i + 1}</td>
-                                    {cols.map(c => (
-                                        <td key={c.key} className={`px-3 py-2 ${TEXT_WRAP_KEYS.has(c.key) ? 'max-w-[280px]' : 'whitespace-nowrap'}`}>
-                                            <Cell col={c} value={row[c.key]} row={row} />
-                                        </td>
-                                    ))}
-                                </tr>
-                            ))}
-                        </tbody>
-                    </table>
-                </div>
-            )}
+            {rows.length === 0
+                ? <div className="px-4 py-5 text-center text-xs text-zinc-400">Sin resultados</div>
+                : <Registros rows={rows} cols={cols} />}
         </div>
     );
-}
+});
 
 // ─── Componente principal ─────────────────────────────────────────────────────
 export default function ReportesPage() {
@@ -500,6 +589,12 @@ export default function ReportesPage() {
     const [error, setError]             = useState(null);
     const [suggs, setSuggs]     = useState([]);
     const clienteBoxRef         = useRef(null);
+    // El reporte se pide cuando se deja de tipear el cliente (antes, una consulta por letra)
+    const [clienteBuscado, setClienteBuscado] = useState('');
+    useEffect(() => {
+        const t = setTimeout(() => setClienteBuscado(filters.clienteSearch), 400);
+        return () => clearTimeout(t);
+    }, [filters.clienteSearch]);
 
     useEffect(() => {
         api.get('/reportes/filtros').then(r => setOpciones(r.data)).catch(() => {});
@@ -513,7 +608,8 @@ export default function ReportesPage() {
 
     useEffect(() => {
         const handler = e => {
-            if (clienteBoxRef.current && !clienteBoxRef.current.contains(e.target)) setSuggs([]);
+            // Solo si hay sugerencias: un [] nuevo redibujaba toda la página (cientos de filas) en cada clic.
+            if (clienteBoxRef.current && !clienteBoxRef.current.contains(e.target)) setSuggs(s => (s.length ? [] : s));
         };
         document.addEventListener('mousedown', handler);
         return () => document.removeEventListener('mousedown', handler);
@@ -538,7 +634,7 @@ export default function ReportesPage() {
                 ...(dateRange.hasta && { fechaHasta: toISO(dateRange.hasta) }),
                 ...(filters.turno !== 'Ambos' && { turno: filters.turno === 'T1 · 00-14 h' ? '1' : '2' }),
                 ...(filters.material && { material: filters.material }),
-                ...(filters.clienteSearch && { clienteSearch: filters.clienteSearch }),
+                ...(clienteBuscado && { clienteSearch: clienteBuscado }),
                 pageSize: 500,
             };
 
@@ -562,11 +658,12 @@ export default function ReportesPage() {
         } finally {
             setLoading(false);
         }
-    }, [activeReport, filters]);
+    }, [activeReport, filters.area, filters.fechaPreset, filters.fechaDesde, filters.fechaHasta, filters.turno, filters.material, clienteBuscado]);
 
     useEffect(() => { fetchReport(); }, [fetchReport]);
 
     const handleReportChange = id => {
+        if (id === activeReport) return; // volver a tocar el elegido lo vaciaba (no se vuelve a pedir)
         setActiveReport(id);
         setData([]);
         setGroupedData(null);
@@ -579,173 +676,159 @@ export default function ReportesPage() {
     };
 
     const setF = patch => setFilters(f => ({ ...f, ...patch }));
+    // El selector devuelve texto: se vuelve al id de número que usan las pestañas
+    const elegirArea = v => setF({ area: opciones.areas.find(a => String(a.id) === v)?.id ?? 'Todas' });
+    const selectorMaterial = (
+        <Selector filtro className="w-full" aria-label="Material" value={filters.material} onChange={e => setF({ material: e.target.value })}>
+            <option value="">Todos los materiales</option>
+            {opciones.materiales.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
+        </Selector>
+    );
+    const fechasPersonalizadas = (<>
+        <SelectorFecha filtro value={filters.fechaDesde} onChange={e => setF({ fechaDesde: e.target.value })} placeholder="Desde" max={filters.fechaHasta || undefined} />
+        <SelectorFecha filtro value={filters.fechaHasta} onChange={e => setF({ fechaHasta: e.target.value })} placeholder="Hasta" min={filters.fechaDesde || undefined} />
+    </>);
     const cols = COLUMNS[activeReport] || [];
     const activeRep = REPORTS.find(r => r.id === activeReport);
 
-    return (
-        <div className="flex h-full bg-slate-50 overflow-hidden">
+    const areaSel = opciones.areas.find(a => a.id === filters.area);
+    const listaReportes = (claseItem) => REPORTS.map(r => {
+        const Icon = r.icon;
+        const active = activeReport === r.id;
+        return (
+            <button
+                key={r.id}
+                type="button"
+                onClick={() => handleReportChange(r.id)}
+                title={r.desc}
+                className={claseItem(active)}
+            >
+                <Icon size={15} className={`shrink-0 ${active ? '' : 'text-brand-cyan'}`} />
+                <span className="truncate">{r.label}</span>
+            </button>
+        );
+    });
 
-            {/* ── Sidebar ─────────────────────────────────────────────────── */}
-            <aside className="w-52 bg-white border-r border-slate-200 flex flex-col shrink-0 shadow-sm">
-                <div className="px-4 py-3.5 border-b border-slate-200">
-                    <div className="flex items-center gap-2">
-                        <FileSpreadsheet size={17} className="text-brand-cyan" />
-                        <span className="font-bold text-slate-800 text-sm">Reportes</span>
+    return (
+        <div className="p-3 md:p-6 font-sans text-zinc-800 space-y-4">
+
+            {/* ── Encabezado ─────────────────────────────────────────────── */}
+            <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3 min-w-0">
+                    <FileSpreadsheet size={30} className="shrink-0 text-brand-cyan" aria-hidden="true" />
+                    <div className="min-w-0">
+                        <h1 className="text-2xl font-black text-zinc-800 uppercase tracking-tight">Reportes</h1>
+                        <p className="text-sm text-zinc-400 truncate">{activeRep?.desc}</p>
                     </div>
                 </div>
+                {activeReport !== 'dashboard' && (
+                    <div className="flex items-center gap-2">
+                        <span className="text-xs text-zinc-400 hidden sm:inline">
+                            {loading ? 'Cargando…' : data.length > 0 ? `${data.length.toLocaleString('es-UY')} registros` : ''}
+                        </span>
+                        <button type="button" onClick={fetchReport} disabled={loading} className={BTN_SECUNDARIO} title="Actualizar" aria-label="Actualizar">
+                            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+                        </button>
+                        <button type="button" onClick={handlePrint} disabled={!data.length || loading} className={BTN_PRINCIPAL}>
+                            <Printer size={15} /> Imprimir PDF
+                        </button>
+                    </div>
+                )}
+            </div>
 
-                <nav className="flex-1 overflow-y-auto p-2 space-y-0.5">
-                    {REPORTS.map(r => {
-                        const Icon = r.icon;
-                        const active = activeReport === r.id;
-                        return (
-                            <button
-                                key={r.id}
-                                onClick={() => handleReportChange(r.id)}
-                                title={r.desc}
-                                className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-left transition-all group ${
-                                    active
-                                        ? 'bg-brand-cyan text-white shadow-md shadow-brand-cyan/20'
-                                        : 'text-slate-600 hover:bg-slate-100 hover:text-slate-800'
-                                }`}
-                            >
-                                <Icon
-                                    size={14}
-                                    className={active ? 'text-white shrink-0' : `${r.color} shrink-0 opacity-80`}
-                                />
-                                <span className="text-xs font-medium truncate flex-1">{r.label}</span>
-                                {active && <ChevronRight size={11} className="text-white/70 shrink-0" />}
-                            </button>
-                        );
-                    })}
+            {/* ── Reportes: selector en el celular ───────────────────────── */}
+            <div className="lg:hidden">
+                <Selector value={activeReport} onChange={e => handleReportChange(e.target.value)} aria-label="Reporte" className="font-semibold" altoMax={640}>
+                    {REPORTS.map(r => (
+                        <option key={r.id} value={r.id} descripcion={r.desc}>
+                            <span className="inline-flex items-center gap-2"><r.icon size={15} className="shrink-0 text-brand-cyan" />{r.label}</span>
+                        </option>
+                    ))}
+                </Selector>
+            </div>
+
+            <div className="lg:grid lg:grid-cols-[14rem_minmax(0,1fr)] lg:gap-4 lg:items-start">
+
+                {/* ── Lista de reportes (escritorio) ─────────────────────── */}
+                <nav className={`${CARD} hidden lg:flex flex-col gap-0.5 p-2 sticky top-0`}>
+                    {listaReportes(active => `w-full flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-left text-sm transition-colors ${
+                        active ? 'bg-zinc-900 text-white font-bold' : 'text-zinc-600 hover:bg-zinc-50 hover:text-zinc-800'}`)}
                 </nav>
 
-                <div className="px-3 py-2.5 border-t border-slate-100">
-                    <p className="text-[10px] text-slate-400 text-center">
-                        {activeReport === 'dashboard' ? 'Panel en vivo' : loading ? 'Cargando...' : data.length > 0 ? `${data.length.toLocaleString()} registros` : 'Sin datos'}
-                    </p>
-                </div>
-            </aside>
+                <div className="space-y-4 min-w-0">
 
-            {/* ── Contenido ───────────────────────────────────────────────── */}
-            <div className="flex-1 flex flex-col overflow-hidden">
+                    {/* ── Filtros (el dashboard trae los suyos) ──────────── */}
+                    {activeReport !== 'dashboard' && (
+                    <div className={`${CARD} p-3 md:p-4 space-y-3`}>
+                        {/* Celular: selectores */}
+                        <div className="grid grid-cols-2 gap-2 sm:hidden">
+                            <Selector filtro className="w-full" aria-label="Área" value={filters.area} onChange={e => elegirArea(e.target.value)}
+                                renderValor={o => (o?.value === 'Todas' ? o.contenido : `Área ${o?.texto ?? ''}`)}>
+                                <option value="Todas">Todas las áreas</option>
+                                {opciones.areas.map(a => <option key={a.id} value={a.id}>{a.nombre}</option>)}
+                            </Selector>
+                            <Selector filtro resaltar={false} className="w-full" aria-label="Fecha" value={filters.fechaPreset} onChange={e => setF({ fechaPreset: e.target.value })}>
+                                {FECHA_PRESETS.map(p => <option key={p.value} value={p.value}>{p.value.endsWith('d') ? `Últimos ${p.label}` : p.label}</option>)}
+                            </Selector>
+                            <Selector filtro className="w-full" aria-label="Turno" value={filters.turno} onChange={e => setF({ turno: e.target.value })}>
+                                {TURNOS.map(t => <option key={t.value} value={t.value}>{t.largo}</option>)}
+                            </Selector>
+                            {selectorMaterial}
+                            {filters.fechaPreset === 'custom' && <div className="col-span-2 grid grid-cols-2 gap-2">{fechasPersonalizadas}</div>}
+                        </div>
 
-                {/* ── Header filtros (el dashboard trae los suyos) ────────── */}
-                {activeReport !== 'dashboard' && (
-                <div className="bg-white border-b border-slate-200 px-5 py-3 shadow-sm shrink-0 space-y-2.5">
-
-                    {/* Fila 1: ÁREA + título + botones */}
-                    <div className="flex items-center justify-between gap-3 flex-wrap">
-                        <div className="flex items-center gap-3 flex-wrap">
-                            <div className="flex items-center gap-1.5">
-                                {activeRep && (() => { const I = activeRep.icon; return <I size={15} className={activeRep.color} />; })()}
-                                <span className="font-bold text-slate-700 text-sm">{activeRep?.label}</span>
+                        {/* Escritorio: pestañas */}
+                        <div className="hidden sm:block space-y-3">
+                            <div className={FILA_CHIPS}>
+                                <span className={`${ROTULO} w-16`}>Área</span>
+                                {[{ id: 'Todas', nombre: 'Todas' }, ...opciones.areas].map(a => (
+                                    <button key={a.id} type="button" onClick={() => setF({ area: a.id })} className={chip(filters.area === a.id)}>
+                                        {a.nombre}
+                                    </button>
+                                ))}
                             </div>
-                            <div className="h-4 w-px bg-slate-200" />
-                            <span className="text-[11px] font-bold text-slate-500 tracking-wide">ÁREA</span>
-                            {['Todas', ...opciones.areas.map(a => a.nombre)].map(a => (
-                                <button
-                                    key={a}
-                                    onClick={() => setF({ area: a })}
-                                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                                        filters.area === a
-                                            ? 'bg-brand-cyan text-white shadow-sm'
-                                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                    }`}
-                                >
-                                    {a}
-                                </button>
-                            ))}
-                        </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                            <button
-                                onClick={fetchReport}
-                                disabled={loading}
-                                className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-600 text-xs font-medium rounded-lg transition-all"
-                                title="Actualizar"
-                            >
-                                <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
-                            </button>
-                            <button
-                                onClick={handlePrint}
-                                disabled={!data.length || loading}
-                                className="flex items-center gap-2 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold rounded-lg transition-all shadow-sm"
-                            >
-                                <Printer size={13} />
-                                Imprimir PDF
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Fila 2: FECHA */}
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-[11px] font-bold text-slate-500 w-11 shrink-0 tracking-wide">FECHA</span>
-                        {FECHA_PRESETS.map(p => (
-                            <button
-                                key={p.value}
-                                onClick={() => setF({ fechaPreset: p.value })}
-                                className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                                    filters.fechaPreset === p.value
-                                        ? 'bg-brand-cyan text-white shadow-sm'
-                                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                }`}
-                            >
-                                {p.label}
-                            </button>
-                        ))}
-                        {filters.fechaPreset === 'custom' && (
-                            <div className="flex items-center gap-2 ml-1">
-                                <input type="date" value={filters.fechaDesde}
-                                    onChange={e => setF({ fechaDesde: e.target.value })}
-                                    className="text-xs border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-brand-cyan/30 outline-none" />
-                                <span className="text-slate-400 text-xs">—</span>
-                                <input type="date" value={filters.fechaHasta}
-                                    onChange={e => setF({ fechaHasta: e.target.value })}
-                                    className="text-xs border border-slate-300 rounded-lg px-2 py-1 focus:ring-2 focus:ring-brand-cyan/30 outline-none" />
+                            <div className={FILA_CHIPS}>
+                                <span className={`${ROTULO} w-16`}>Fecha</span>
+                                {FECHA_PRESETS.map(p => (
+                                    <button key={p.value} type="button" onClick={() => setF({ fechaPreset: p.value })} className={chip(filters.fechaPreset === p.value)}>
+                                        {p.label}
+                                    </button>
+                                ))}
                             </div>
-                        )}
-                    </div>
+                            {filters.fechaPreset === 'custom' && (
+                                <div className="flex gap-2 items-center pl-[4.5rem]">{fechasPersonalizadas}</div>
+                            )}
 
-                    {/* Fila 3: TURNO + MATERIAL + CLIENTE */}
-                    <div className="flex items-center gap-3 flex-wrap">
-                        <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-bold text-slate-500 shrink-0 tracking-wide">TURNO</span>
-                            {['Ambos', 'T1 · 00-14 h', 'T2 · 14-24 h'].map(t => (
-                                <button key={t} onClick={() => setF({ turno: t })}
-                                    className={`px-3 py-1 rounded-full text-xs font-medium transition-all ${
-                                        filters.turno === t ? 'bg-brand-cyan text-white shadow-sm' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                                    }`}>
-                                    {t}
-                                </button>
-                            ))}
+                            <div className={FILA_CHIPS}>
+                                <span className={`${ROTULO} w-16`}>Turno</span>
+                                {TURNOS.map(t => (
+                                    <button key={t.value} type="button" onClick={() => setF({ turno: t.value })} className={chip(filters.turno === t.value)}>
+                                        {t.corto}
+                                    </button>
+                                ))}
+                            </div>
                         </div>
 
-                        <div className="h-4 w-px bg-slate-200 hidden sm:block" />
-
-                        <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-bold text-slate-500 shrink-0 tracking-wide">MATERIAL</span>
-                            <select value={filters.material} onChange={e => setF({ material: e.target.value })}
-                                className="text-xs border border-slate-300 rounded-lg px-2 py-1.5 focus:ring-2 focus:ring-brand-cyan/30 outline-none bg-white min-w-[150px]">
-                                <option value="">Todos los materiales</option>
-                                {opciones.materiales.map(m => <option key={m.id} value={m.id}>{m.nombre}</option>)}
-                            </select>
-                        </div>
-
-                        <div className="h-4 w-px bg-slate-200 hidden sm:block" />
-
-                        <div className="flex items-center gap-2 relative" ref={clienteBoxRef}>
-                            <span className="text-[11px] font-bold text-slate-500 shrink-0 tracking-wide">CLIENTE</span>
-                            <div className="relative">
-                                <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-                                <input type="text" placeholder="Buscar cliente..." value={filters.clienteSearch}
+                        <div className="grid grid-cols-1 sm:flex sm:flex-wrap sm:items-center gap-2">
+                            <span className={`${ROTULO} w-16 hidden sm:block`}>Material</span>
+                            <div className="hidden sm:block sm:w-64">{selectorMaterial}</div>
+                            <div className="relative sm:w-64" ref={clienteBoxRef}>
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+                                <input type="text" placeholder="Buscar cliente…" aria-label="Cliente" value={filters.clienteSearch}
                                     onChange={e => setF({ clienteSearch: e.target.value, idCliente: null })}
-                                    className="text-xs border border-slate-300 rounded-lg pl-7 pr-2 py-1.5 focus:ring-2 focus:ring-brand-cyan/30 outline-none w-44" />
+                                    className="w-full border border-zinc-200 rounded-xl pl-9 pr-9 py-2 text-sm bg-white focus:outline-none focus:border-brand-cyan" />
+                                {filters.clienteSearch && (
+                                    <button type="button" onClick={() => setF({ clienteSearch: '' })}
+                                        className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-zinc-400 hover:text-zinc-700" title="Limpiar" aria-label="Limpiar cliente">
+                                        <X size={14} />
+                                    </button>
+                                )}
                                 {suggs.length > 0 && (
-                                    <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-xl shadow-xl z-50 min-w-full max-h-44 overflow-y-auto">
+                                    <div className="absolute top-full left-0 mt-1 bg-white border border-zinc-200 rounded-xl shadow-xl z-50 w-full max-h-52 overflow-y-auto py-1">
                                         {suggs.map(c => (
-                                            <button key={c.id}
-                                                className="w-full text-left px-3 py-2 text-xs hover:bg-brand-cyan/10 hover:text-brand-cyan transition-colors first:rounded-t-xl last:rounded-b-xl"
+                                            <button key={c.id} type="button"
+                                                className="w-full text-left px-3 py-2 text-sm hover:bg-zinc-50 transition-colors"
                                                 onClick={() => { setF({ clienteSearch: c.nombre }); setSuggs([]); }}>
                                                 {c.nombre}
                                             </button>
@@ -753,62 +836,41 @@ export default function ReportesPage() {
                                     </div>
                                 )}
                             </div>
-                            {filters.clienteSearch && (
-                                <button onClick={() => setF({ clienteSearch: '' })}
-                                    className="text-xs text-red-500 hover:text-red-700 font-bold leading-none" title="Limpiar">✕</button>
-                            )}
                         </div>
                     </div>
-                </div>
-                )}
+                    )}
 
-                {/* ── KPIs ───────────────────────────────────────────────── */}
-                {activeReport !== 'dashboard' && <KpisStrip activeReport={activeReport} totales={totales} />}
+                    {/* ── KPIs ───────────────────────────────────────────── */}
+                    {activeReport !== 'dashboard' && !loading && <KpisStrip activeReport={activeReport} totales={totales} />}
 
-                {/* ── Tabla / panel ──────────────────────────────────────── */}
-                <div className="flex-1 overflow-auto p-4">
+                    {/* ── Tabla / panel ──────────────────────────────────── */}
                     {activeReport === 'dashboard' ? (
                         <ProduccionPanelSection />
                     ) : loading ? (
-                        <div className="flex flex-col items-center justify-center h-full gap-3">
-                            <div className="animate-spin rounded-full h-10 w-10 border-b-2 border-brand-cyan" />
-                            <p className="text-sm text-slate-400">Cargando reporte...</p>
+                        <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-3`}>
+                            <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                            <p className="text-sm text-zinc-400">Cargando reporte…</p>
                         </div>
                     ) : error ? (
-                        <div className="flex flex-col items-center justify-center h-full gap-2">
-                            <p className="text-red-500 font-semibold text-sm">Error al cargar el reporte</p>
-                            <p className="text-slate-400 text-xs max-w-sm text-center">{error}</p>
-                            <button onClick={fetchReport}
-                                className="mt-2 px-4 py-1.5 bg-brand-cyan text-white text-xs rounded-lg font-medium">
-                                Reintentar
-                            </button>
+                        <div className={`${CARD} flex flex-col items-center justify-center py-12 gap-2 px-4`}>
+                            <p className="text-rose-600 font-bold text-sm">No se pudo cargar el reporte</p>
+                            <p className="text-zinc-400 text-xs max-w-sm text-center">{error}</p>
+                            <button type="button" onClick={fetchReport} className={`${BTN_PRINCIPAL} mt-2`}>Reintentar</button>
                         </div>
                     ) : data.length === 0 ? (
-                        <div className="flex flex-col items-center justify-center h-full gap-2">
-                            <FileSpreadsheet size={42} className="text-slate-200" />
-                            <p className="text-slate-400 text-sm">Sin resultados para los filtros seleccionados</p>
+                        <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-2 px-4`}>
+                            <FileSpreadsheet size={40} className="text-zinc-200" />
+                            <p className="text-zinc-400 text-sm text-center">
+                                Sin resultados{areaSel ? ` en ${areaSel.nombre}` : ''} para los filtros elegidos
+                            </p>
                         </div>
                     ) : activeReport === 'ordenes' ? (
                         <OrdenesPorDiaTable rows={data} />
                     ) : groupedData ? (
                         /* ── Vista agrupada: Fallas / Reposiciones ── */
-                        <div className="space-y-5">
-                            <GroupedTable
-                                title="Fallas"
-                                rows={groupedData.fallas}
-                                cols={cols}
-                                headerCls="bg-orange-50 border-orange-200"
-                                titleCls="text-orange-700"
-                                dotCls="bg-orange-500"
-                            />
-                            <GroupedTable
-                                title="Reposiciones"
-                                rows={groupedData.reposiciones}
-                                cols={cols}
-                                headerCls="bg-violet-50 border-violet-200"
-                                titleCls="text-violet-700"
-                                dotCls="bg-violet-500"
-                            />
+                        <div className="space-y-4">
+                            <GroupedTable title="Fallas" rows={groupedData.fallas} cols={cols} titleCls="text-orange-700" dotCls="bg-orange-500" />
+                            <GroupedTable title="Reposiciones" rows={groupedData.reposiciones} cols={cols} titleCls="text-violet-700" dotCls="bg-violet-500" />
                         </div>
                     ) : (
                         <SimpleTable rows={data} cols={cols} />

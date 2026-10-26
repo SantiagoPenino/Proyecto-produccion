@@ -57,7 +57,8 @@ async function datosPeriodo(pool, desde, hasta) {
                             SUM(CASE WHEN s.Resultado = 'NO_RESUELTA' THEN 1 ELSE 0 END) AS NoResueltas,
                             SUM(CASE WHEN s.Resultado = 'CANCELADA' THEN 1 ELSE 0 END) AS Canceladas,
                             AVG(CASE WHEN s.Resultado <> 'CANCELADA' AND s.FechaTomada IS NOT NULL THEN CAST(DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaTomada) AS FLOAT) END) AS RespuestaProm,
-                            AVG(CASE WHEN s.Resultado <> 'CANCELADA' THEN CAST(DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaFin) AS FLOAT) END) AS ResolucionProm
+                            -- Resolución: de tomada a finalizada (antes desde el pedido: era el total y no lo que tardó el técnico)
+                            AVG(CASE WHEN s.Resultado <> 'CANCELADA' AND s.FechaTomada IS NOT NULL THEN CAST(DATEDIFF(MINUTE, s.FechaTomada, s.FechaFin) AS FLOAT) END) AS ResolucionProm
                      FROM dbo.ST_Solicitudes s
                      WHERE s.Estado = 'FINALIZADA' AND s.TecnicoId IS NOT NULL AND ${EN_RANGO('s.FechaFin')}
                      GROUP BY s.TecnicoId`),
@@ -109,8 +110,8 @@ async function datosPeriodo(pool, desde, hasta) {
                         (SELECT COUNT(*) FROM dbo.ST_Solicitudes s WHERE s.Estado <> 'FINALIZADA') AS AbiertasAhora,
                         (SELECT AVG(CAST(DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaTomada) AS FLOAT)) FROM dbo.ST_Solicitudes s
                             WHERE s.FechaTomada IS NOT NULL AND ${EN_RANGO('s.FechaSolicitud')}) AS RespuestaProm,
-                        (SELECT AVG(CAST(DATEDIFF(MINUTE, s.FechaSolicitud, s.FechaFin) AS FLOAT)) FROM dbo.ST_Solicitudes s
-                            WHERE s.Estado = 'FINALIZADA' AND s.Resultado <> 'CANCELADA' AND ${EN_RANGO('s.FechaFin')}) AS ResolucionProm,
+                        (SELECT AVG(CAST(DATEDIFF(MINUTE, s.FechaTomada, s.FechaFin) AS FLOAT)) FROM dbo.ST_Solicitudes s   -- de tomada a finalizada
+                            WHERE s.Estado = 'FINALIZADA' AND s.Resultado <> 'CANCELADA' AND s.FechaTomada IS NOT NULL AND ${EN_RANGO('s.FechaFin')}) AS ResolucionProm,
                         (SELECT SUM(${SQL_PARADA}) FROM dbo.ST_Solicitudes s WHERE ${EN_RANGO('s.FechaSolicitud')}) AS MinutosParada,
                         (SELECT COUNT(*) FROM dbo.ST_Historial h WHERE h.Entidad = 'SOLICITUD' AND h.Accion = 'DERIVADA' AND ${EN_RANGO('h.Fecha')}) AS Derivaciones`),
         req().query(`SELECT ISNULL(u.Moneda, 'UYU') AS Moneda, COUNT(*) AS Usos, SUM(u.CostoTotal) AS Total

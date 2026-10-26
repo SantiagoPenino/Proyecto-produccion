@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { X, PackageCheck, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { X, PackageCheck, Trash2, Undo2, Loader2, Send } from "lucide-react";
 import { toast } from "sonner";
 import { telaClienteService } from "../../../services/modules/telaClienteService";
 
@@ -11,6 +12,9 @@ import { telaClienteService } from "../../../services/modules/telaClienteService
  * tótem o WebRetirosPage), igual que cualquier otra orden.
  * Usable desde la vista interna (TelaClienteInventarioPage). El portal usa su
  * propio flujo equivalente en RecursosView.jsx contra /web-recursos.
+ *
+ * Estética nueva (22/10/2026): modal blanco redondeado encima de la barra de arriba (z-[6000]; antes z-50),
+ * «Devolver» elegido en brand-cyan y «Descartar» en rojo, «Enviar a la bandeja» en brand-cyan.
  */
 const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess }) => {
     const [accion, setAccion] = useState("DEVOLVER");
@@ -31,33 +35,44 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
         }
     };
 
-    return (
-        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-            <div className="bg-white rounded-xl shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto">
-                <div className="flex items-center justify-between px-5 py-4 border-b border-slate-100">
-                    <h3 className="font-bold text-slate-800">Excedente de tela — {bobina.CodigoEtiqueta}</h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600"><X className="w-5 h-5" /></button>
+    // En portal: si no, queda dentro de la capa de la página y no tapa la barra de arriba ni la lateral
+    return createPortal(
+        <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-3 sm:p-4">
+            <div className="bg-white rounded-2xl border border-zinc-200 shadow-xl max-w-md w-full max-h-[90vh] overflow-y-auto font-sans text-zinc-800">
+                <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-zinc-100">
+                    <div className="flex items-start gap-3 min-w-0">
+                        <Undo2 className="w-6 h-6 shrink-0 text-brand-cyan mt-0.5" aria-hidden="true" />
+                        <div className="min-w-0">
+                            <h3 className="font-black text-zinc-800 leading-tight">Excedente de tela</h3>
+                            <span className="inline-block mt-1 font-mono text-xs font-bold bg-zinc-100 text-zinc-700 px-1.5 py-0.5 border border-zinc-200 rounded">{bobina.CodigoEtiqueta}</span>
+                        </div>
+                    </div>
+                    <button type="button" onClick={onClose} className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors" aria-label="Cerrar">
+                        <X className="w-5 h-5" />
+                    </button>
                 </div>
 
                 <div className="p-5 space-y-4">
-                    <p className="text-sm text-slate-500">
-                        Quedan <b>{(parseFloat(bobina.MetrosRestantes) || 0).toFixed(2)} m</b> de {bobina.DescripcionTela || bobina.TipoTela}.
+                    <p className="text-sm text-zinc-500">
+                        Quedan <b className="text-zinc-800 tabular-nums">{(parseFloat(bobina.MetrosRestantes) || 0).toFixed(2)} m</b> de {bobina.DescripcionTela || bobina.TipoTela}.
                         ¿Qué querés pedir para el cliente?
                     </p>
 
                     <div className="grid grid-cols-2 gap-2">
                         <button
+                            type="button"
                             onClick={() => setAccion("DEVOLVER")}
-                            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border-2 transition-colors ${
-                                accion === "DEVOLVER" ? "border-indigo-500 bg-indigo-50 text-indigo-700" : "border-slate-200 text-slate-500"
+                            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${
+                                accion === "DEVOLVER" ? "border-brand-cyan bg-brand-cyan/5 text-brand-cyan" : "border-zinc-200 text-zinc-500 hover:border-zinc-300"
                             }`}
                         >
                             <PackageCheck className="w-4 h-4" /> Devolver
                         </button>
                         <button
+                            type="button"
                             onClick={() => setAccion("DESCARTAR")}
-                            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-lg text-sm font-bold border-2 transition-colors ${
-                                accion === "DESCARTAR" ? "border-red-500 bg-red-50 text-red-700" : "border-slate-200 text-slate-500"
+                            className={`flex items-center justify-center gap-1.5 py-2.5 rounded-xl text-sm font-bold border-2 transition-colors ${
+                                accion === "DESCARTAR" ? "border-rose-300 bg-rose-50 text-rose-700" : "border-zinc-200 text-zinc-500 hover:border-zinc-300"
                             }`}
                         >
                             <Trash2 className="w-4 h-4" /> Descartar
@@ -65,41 +80,44 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
                     </div>
 
                     {accion === "DEVOLVER" && (
-                        <p className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                        <p className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2">
                             Cómo se la devolvemos (retiro en el local o encomienda) y la dirección se definen recién cuando el cliente la retira, igual que cualquier otro pedido.
                         </p>
                     )}
 
                     {accion === "DESCARTAR" && (
-                        <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                        <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
                             Al aprobarse, la bobina se cierra directo — no genera bulto ni entrega. Dejá constancia de que el cliente autorizó el descarte abajo.
                         </p>
                     )}
 
                     <div>
-                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1.5">Observaciones (opcional)</label>
+                        <label className="block text-[11px] font-black text-zinc-400 uppercase tracking-wide mb-1.5">Observaciones (opcional)</label>
                         <textarea
                             value={observaciones}
                             onChange={e => setObservaciones(e.target.value)}
                             rows={2}
-                            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-400"
+                            className="w-full border border-zinc-200 rounded-xl px-3 py-2 text-sm text-zinc-800 placeholder:text-zinc-400 outline-none transition-colors focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
                             placeholder="Ej: cliente lo confirmó por WhatsApp el 17/09"
                         />
                     </div>
                 </div>
 
-                <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-100">
-                    <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm font-semibold text-slate-500 hover:bg-slate-100">Cancelar</button>
+                <div className="flex justify-end gap-2 px-5 py-4 border-t border-zinc-100">
+                    <button type="button" onClick={onClose} className="inline-flex items-center px-4 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors">Cancelar</button>
                     <button
+                        type="button"
                         onClick={submit}
                         disabled={loading}
-                        className="px-4 py-2 rounded-lg text-sm font-bold text-white bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50"
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white bg-brand-cyan hover:bg-brand-cyan/90 transition-colors disabled:opacity-40"
                     >
+                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                         {loading ? "Enviando..." : "Enviar a la bandeja"}
                     </button>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body,
     );
 };
 
