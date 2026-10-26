@@ -558,7 +558,9 @@ exports.reportClientError = async (req, res) => {
         .filter(l => /:\d+:\d+\)?$/.test(l))           // solo los pasos (Chrome "at f (url:l:c)", Safari "f@url:l:c")
         .slice(0, 3).join(' ← ').substring(0, 600);
     const donde = [source ? `en=${String(source).substring(0, 200)}` : null, pasos ? `stack=${pasos}` : null].filter(Boolean).join(' | ');
-    logger.error(`[FRONTEND_ERROR] ${entry.message} | url=${url} | user=${userId} | ip=${ip}${donde ? ` | ${donde}` : ''}`);
+    // El navegador va al final (26/10): un «Unhandled Promise: undefined» no trae mensaje ni stack, y
+    // sin el navegador no había forma de saber si venía de la app o de algo inyectado (Instagram, etc.).
+    logger.error(`[FRONTEND_ERROR] ${entry.message} | url=${url} | user=${userId} | ip=${ip}${donde ? ` | ${donde}` : ''}${entry.userAgent ? ` | nav=${entry.userAgent}` : ''}`);
 
     // #15 — Error accumulation alert check
     const recentErrors = global.__frontendErrors.filter(e =>
