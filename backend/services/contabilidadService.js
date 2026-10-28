@@ -2271,7 +2271,21 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
         (SELECT TOP 1 LTRIM(RTRIM(m.MovConcepto)) FROM dbo.MovimientosCuenta m WITH(NOLOCK)
            WHERE m.DocIdDocumento = dc.DocIdDocumento AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
-           ORDER BY m.MovIdMovimiento) AS OrdenSample
+           ORDER BY m.MovIdMovimiento) AS OrdenSample,
+        -- SOLO DGI: el comprobante "externo" (E-Factura Externa / E-Ticket Externo) y la
+        -- nota de crédito que lo referencia existen solo para emitir el CFE de la "NC Factura
+        -- Externa": generarNotaCreditoExterna no les registra movimiento, deuda ni asiento.
+        -- En el estado de cuenta no tienen que sumar ni restar: el corrido daba "a favor"
+        -- falso cuando el período dejaba afuera al comprobante externo y adentro a su NC
+        -- (caso Fundación Caleidoscopio NC-63/NC-64, 28-10-2026: $ 5.030,02 que no existían).
+        -- El NOT EXISTS es el candado: si alguno tuviera movimiento, sí movió la cuenta.
+        CASE WHEN (dc.DocTipo LIKE '%Extern%'
+                   OR EXISTS (SELECT 1 FROM dbo.DocumentosContables r WITH(NOLOCK)
+                              WHERE r.DocIdDocumento = dc.DocIdDocumentoRef AND r.DocTipo LIKE '%Extern%'))
+              AND NOT EXISTS (SELECT 1 FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+                              WHERE m.DocIdDocumento = dc.DocIdDocumento
+                                AND (m.MovAnulado IS NULL OR m.MovAnulado = 0))
+             THEN 1 ELSE 0 END AS SoloDgi
       FROM dbo.DocumentosContables dc WITH(NOLOCK)
       LEFT JOIN dbo.Monedas mo WITH(NOLOCK) ON mo.MonIdMoneda = dc.MonIdMoneda
       WHERE dc.CliIdCliente = @cli
@@ -2357,6 +2371,7 @@ async function getResumenDocumentos(CliIdCliente, desde = null, hasta = null) {
       fecha: d.Emision,
       total, pagado, pendiente, estado,
       reciboPago,
+      soloDgi: !!d.SoloDgi,
     };
   });
 

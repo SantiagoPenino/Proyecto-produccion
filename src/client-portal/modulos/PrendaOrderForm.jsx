@@ -66,6 +66,7 @@ import { idArchivo } from './order-form/utils/idArchivo';
 import TpuTechnicalUI, { medidaMaximaTPU, errorMedidaCm, aCm, fmtCm } from './order-form/components/TpuTechnicalUI';
 import EcouvTerminacionesUI from './EcouvTerminacionesUI';
 import PrendaClienteSelector from './order-form/components/PrendaClienteSelector';
+import { precioPorCantidad } from '../../utils/escalasPrecio';   // [ESCALAS] precios por cantidad (27/10)
 
 const ServiceAccordion = ({ title, subtitle, isActive, onToggle, children, icon: Icon, main = false, optional = false }) => {
     return (
@@ -474,7 +475,9 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
 
     // [F1] Precio establecido por defecto para el producto del catálogo: unidades × precio de catálogo,
     // en su moneda. Deja de recalcularse cuando el vendedor lo toca a mano.
-    const sugeridoCatalogo = principalProd?.precio != null && parseFloat(garmentQuantity) > 0 ? Math.round(principalProd.precio * parseFloat(garmentQuantity) * 100) / 100 : null;
+    // [ESCALAS 27/10] con precios por cantidad, el c/u de la escala de esa cantidad (lo mismo que cobra el pedido)
+    const sugeridoCatalogo = principalProd?.precio != null && parseFloat(garmentQuantity) > 0
+        ? Math.round((precioPorCantidad(principalProd.precio, principalProd.escalas, parseFloat(garmentQuantity)).precio ?? principalProd.precio) * parseFloat(garmentQuantity) * 100) / 100 : null;
     useEffect(() => {
         if (tipoFabricacion !== 'TERMINADO' || !principalProd || sugeridoCatalogo == null || !precioAuto) return;
         setPrecioPersonalizado(String(sugeridoCatalogo));
@@ -522,6 +525,7 @@ const PrendaOrderForm = ({ serviceId: propServiceId = 'sublimacion' }) => {
                     molde: cfg.Molde, um: cfg.UM,
                     cantidadMinima: cfg.CantidadMinima || null, cantidadFija: cfg.CantidadFija || null,
                     precio: prodSel?.Precio != null ? Number(prodSel.Precio) : null,
+                    escalas: prodSel?.Escalas || null,   // [ESCALAS 27/10] precios por cantidad
                     moneda: prodSel?.MonIdMoneda === 2 ? 'USD' : 'UYU',
                 });
                 // El producto del catálogo se cobra a precio establecido por defecto (cantidad × catálogo)

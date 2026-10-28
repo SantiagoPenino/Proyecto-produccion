@@ -129,16 +129,19 @@ async function resolverRetirosLote(pool, tcaIds) {
     const map = new Map();
     if (!ids.length) return map;
 
+    // El prefijo es el REAL del retiro (OrdenesRetiro.FormaRetiro: RT de caja, RW web, RL);
+    // antes salía siempre "RW-" y un RT-34808 se veía como RW-34808.
     const res = await pool.request().query(`
-        SELECT TcaIdTransaccion,
-               STRING_AGG('RW-' + CAST(TdeReferenciaId AS VARCHAR(20)), ', ')
-                   WITHIN GROUP (ORDER BY TdeReferenciaId) AS Retiros
+        SELECT t.TcaIdTransaccion,
+               STRING_AGG(COALESCE(LTRIM(RTRIM(r.FormaRetiro)), 'RW') + '-' + CAST(t.TdeReferenciaId AS VARCHAR(20)), ', ')
+                   WITHIN GROUP (ORDER BY t.TdeReferenciaId) AS Retiros
         FROM (SELECT DISTINCT TcaIdTransaccion, TdeReferenciaId
               FROM dbo.TransaccionDetalle WITH(NOLOCK)
               WHERE TcaIdTransaccion IN (${ids.join(',')})
                 AND TdeTipoReferencia = 'ORDEN_RETIRO'
                 AND TdeReferenciaId IS NOT NULL) t
-        GROUP BY TcaIdTransaccion
+        LEFT JOIN dbo.OrdenesRetiro r WITH(NOLOCK) ON r.OReIdOrdenRetiro = t.TdeReferenciaId
+        GROUP BY t.TcaIdTransaccion
     `);
     res.recordset.forEach(r => map.set(r.TcaIdTransaccion, r.Retiros));
     return map;
@@ -193,11 +196,11 @@ exports.getDocumentosCFE = async (req, res) => {
             request.input('fechaHasta', sql.Date, fechaHasta);
         }
         if (textoBuscar) {
-            // 'RW-21510' (o RT-21510, el prefijo viejo de caja) → retiro exacto por id.
+            // 'RW-21510', 'RT-21510' o 'RL-21510' (el prefijo depende de cómo se armó el retiro) → retiro exacto por id.
             // Cualquier otro texto → nro interno (ET-4049 / 4049) u orden: en las líneas
             // guardadas (OrdCodigoOrden / DcdDscItem) y en TransaccionDetalle para los
             // docs legacy sin líneas (ahí la orden está en TdeCodigoReferencia).
-            const mRw = textoBuscar.match(/^R[WT]-?(\d+)$/i);
+            const mRw = textoBuscar.match(/^R[WTL]-?(\d+)$/i);
             if (mRw) {
                 baseQuery += ` AND d.TcaIdTransaccion IN (
                     SELECT TcaIdTransaccion FROM dbo.TransaccionDetalle WITH(NOLOCK)
@@ -1404,7 +1407,7 @@ exports.editarFactura = async (req, res) => {
 
         const docRes = await transaction.request()
             .input('id', sql.Int, id)
-            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero, DocFechaEmision, MonIdMoneda FROM DocumentosContables WHERE DocIdDocumento = @id');
+            .query('SELECT DocTipo, CfeEstado, DocPagado, AsiIdAsiento, TcaIdTransaccion, DocTotal, DocSerie, DocNumero, DocFechaEmision, MonIdMoneda, CliIdCliente, CicIdCiclo FROM DocumentosContables WHERE DocIdDocumento = @id');
 
         if (docRes.recordset.length === 0) {
             await transaction.rollback();
@@ -1547,6 +1550,71 @@ exports.editarFactura = async (req, res) => {
             }
             if (yaCobrada) {
                 logger.warn(`[CFE-EDIT] Doc #${id} (${doc.DocSerie}-${doc.DocNumero}) cobrado por ${Number(Imputado).toFixed(2)} se revierte a pendiente — confirmado por usuario ${req.user?.id || '?'}.`);
+            }
+        }
+
+        // ─────────────────────────────────────────────
+        // CAMBIO DE CLIENTE: la cuenta corriente tiene que seguir a la factura.
+        // Cambiar SOLO el cliente movía la cabecera y nada más: el cargo y la deuda se
+        // quedaban en la cuenta del cliente anterior, y si la factura había nacido en
+        // Consumidor Final (que no tiene cuenta corriente) no se creaban nunca. Casos reales:
+        // ET-12951 (nació en Consumidor Final, pasó a CORUSER y quedó sin deuda ni cargo) y
+        // FA-2859 (cierre de ciclo de TU CAMPAÑA USER pasado a IMPRENTA ROJO: la deuda quedó
+        // en la cuenta de TU CAMPAÑA USER). Acá solo se frena lo que no se puede mudar bien;
+        // la mudanza se hace más abajo, antes de la estrategia de movimientos.
+        const oldCliId = parseInt(doc.CliIdCliente, 10) || CONSUMIDOR_FINAL_ID;
+        const newCliId = parseInt(CliIdCliente, 10) || CONSUMIDOR_FINAL_ID;
+        const esClienteReal = (cid) => cid > 0 && cid !== CONSUMIDOR_FINAL_ID && cid !== 100101;
+        const clienteCambio = oldCliId !== newCliId;
+        if (clienteCambio) {
+            let frenoCliente = null;
+            if (esNotaCreditoDebito) {
+                frenoCliente = 'Una nota de crédito o débito va al mismo cliente que el documento que corrige: no se le puede cambiar el cliente.';
+            } else if (!newPaid && !esClienteReal(newCliId)) {
+                frenoCliente = 'Una factura a crédito necesita un cliente con cuenta corriente: Consumidor Final no tiene, y la deuda no la podría cobrar nadie. Elegí el cliente que la va a pagar (si el CFE tiene que salir a nombre de otro, usá "Facturar a un tercero").';
+            } else {
+                const ctaCteRes = await transaction.request()
+                    .input('docId', sql.Int, parseInt(id))
+                    .input('tcaId', sql.Int, doc.TcaIdTransaccion || null)
+                    .input('newCli', sql.Int, newCliId)
+                    .query(`
+                        SELECT
+                          DeCiclo = CASE WHEN EXISTS (
+                              SELECT 1 FROM dbo.MovimientosCuenta m
+                              WHERE m.DocIdDocumento = @docId AND m.MovTipo IN ('CIERRE_CICLO','ORDEN','ORDEN_ANTICIPO')
+                                AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)) THEN 1 ELSE 0 END,
+                          Imputado = ISNULL((
+                              SELECT SUM(dd.DDeImporteOriginal - dd.DDeImportePendiente) FROM dbo.DeudaDocumento dd
+                              WHERE dd.DocIdDocumento = @docId
+                                AND dd.DDeEstado NOT IN ('CANCELADA','ANULADA','CANCELADO','ANULADO')), 0),
+                          Imputaciones = (
+                              SELECT COUNT(*) FROM dbo.ImputacionPago ip
+                              JOIN dbo.DeudaDocumento dd ON dd.DDeIdDocumento = ip.DDeIdDocumento
+                              WHERE dd.DocIdDocumento = @docId),
+                          -- Cobro de caja del cliente anterior que no quedó atado al documento
+                          -- (se ata por PagIdPago): no se puede mudar junto con la factura.
+                          CobroCajaAjeno = CASE WHEN @tcaId IS NULL THEN 0 ELSE (
+                              SELECT COUNT(*) FROM dbo.MovimientosCuenta mc
+                              JOIN dbo.Pagos p ON p.PagIdPago = mc.PagIdPago
+                              JOIN dbo.CuentasCliente cc ON cc.CueIdCuenta = mc.CueIdCuenta
+                              WHERE p.PagTcaIdTransaccion = @tcaId
+                                AND (mc.MovAnulado IS NULL OR mc.MovAnulado = 0)
+                                AND (mc.DocIdDocumento IS NULL OR mc.DocIdDocumento <> @docId)
+                                AND cc.CliIdCliente <> @newCli) END
+                    `);
+                const { DeCiclo, Imputado: imputadoCli, Imputaciones, CobroCajaAjeno } = ctaCteRes.recordset[0];
+                if (doc.CicIdCiclo || DeCiclo) {
+                    frenoCliente = 'Esta factura es el cierre de un ciclo (o incluye órdenes) del cliente anterior: sus órdenes y su cargo son de esa cuenta y no se pueden mudar desde acá. Si el CFE tiene que salir a nombre de otra empresa, usá "Facturar a un tercero": cambia a quién se le emite, no quién debe.';
+                } else if (Number(imputadoCli) > 0.01 || Number(Imputaciones) > 0) {
+                    frenoCliente = 'La factura ya tiene cobros imputados del cliente anterior. Anulá primero esos cobros y después cambiale el cliente.';
+                } else if (Number(CobroCajaAjeno) > 0) {
+                    frenoCliente = 'La factura tiene un cobro de caja del cliente anterior. Anulá primero ese cobro y después cambiale el cliente.';
+                }
+            }
+            if (frenoCliente) {
+                await transaction.rollback();
+                logger.warn(`[CFE-EDIT] Doc #${id}: cambio de cliente ${oldCliId} → ${newCliId} rechazado. ${frenoCliente}`);
+                return res.status(400).json({ error: frenoCliente });
             }
         }
 
@@ -1727,6 +1795,149 @@ exports.editarFactura = async (req, res) => {
                             (DocIdDocumento, OrdCodigoOrden, DcdNomItem, DcdDscItem, DcdCantidad, DcdPrecioUnitario, DcdSubtotal, DcdImpuestos, DcdTotal, DcdTotalDescuentos, DcdDescuentoStr, DcdDescuentoPct, DcdTotalRecargos, DcdRecargoPct, DcdRecargoStr, DcdDescuentoOrigen)
                         VALUES (@docId, @ordCod, @nom, @dsc, @cant, @precio, @sub, @imp, @tot, @desc, @descStr, @descPct, @rec, @recPct, @recStr, @descOrig)
                     `);
+            }
+        }
+
+        // ── Cambio de cliente: la cuenta corriente se muda con la factura ───────────
+        // Se deja la factura como si hubiese NACIDO con el cliente nuevo (mismo tipo, monto,
+        // moneda y condición de pago que tenía); la estrategia de abajo aplica después los
+        // cambios de esta edición igual que siempre. Los casos que no se pueden mudar bien
+        // (ciclo, órdenes, cobros, notas) ya se frenaron arriba.
+        if (clienteCambio) {
+            if (esClienteReal(newCliId)) {
+                // 1. Lo que la factura tiene en cuentas de OTRO cliente (movimientos y deudas)
+                //    pasa a la cuenta del cliente nuevo de la MISMA moneda.
+                const ajenasRes = await transaction.request()
+                    .input('docId',  sql.Int, parseInt(id))
+                    .input('newCli', sql.Int, newCliId)
+                    .query(`
+                        SELECT cc.CueIdCuenta, cc.MonIdMoneda,
+                               TotalMovs = ISNULL((
+                                 SELECT SUM(m.MovImporte) FROM dbo.MovimientosCuenta m
+                                 WHERE m.DocIdDocumento = @docId AND m.CueIdCuenta = cc.CueIdCuenta
+                                   AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+                                   AND m.MovTipo NOT IN ('ORDEN','ORDEN_ANTICIPO')), 0)
+                        FROM dbo.CuentasCliente cc
+                        WHERE cc.CliIdCliente <> @newCli
+                          AND (EXISTS (SELECT 1 FROM dbo.MovimientosCuenta m
+                                       WHERE m.DocIdDocumento = @docId AND m.CueIdCuenta = cc.CueIdCuenta
+                                         AND (m.MovAnulado IS NULL OR m.MovAnulado = 0))
+                            OR EXISTS (SELECT 1 FROM dbo.DeudaDocumento dd
+                                       WHERE dd.DocIdDocumento = @docId AND dd.CueIdCuenta = cc.CueIdCuenta
+                                         AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')))
+                    `);
+                for (const { CueIdCuenta: ctaVieja, MonIdMoneda: monCta, TotalMovs } of ajenasRes.recordset) {
+                    const monMud = parseInt(monCta, 10) === 2 ? 2 : 1;
+                    const ctaNueva = await contabilidadService.obtenerOCrearCuenta(newCliId, monMud === 2 ? 'DINERO_USD' : 'DINERO_UYU', {
+                        MonIdMoneda: monMud, UsuarioAlta: req.user.id
+                    }, transaction);
+                    await transaction.request()
+                        .input('docId', sql.Int, parseInt(id))
+                        .input('vieja', sql.Int, ctaVieja)
+                        .input('nueva', sql.Int, ctaNueva)
+                        .query(`
+                            UPDATE dbo.MovimientosCuenta SET CueIdCuenta = @nueva
+                            WHERE DocIdDocumento = @docId AND CueIdCuenta = @vieja
+                              AND (MovAnulado IS NULL OR MovAnulado = 0);
+                            UPDATE dbo.DeudaDocumento SET CueIdCuenta = @nueva
+                            WHERE DocIdDocumento = @docId AND CueIdCuenta = @vieja
+                              AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO');
+                        `);
+                    const totalMud = Number(TotalMovs) || 0;
+                    if (Math.abs(totalMud) > 0.001) {
+                        await transaction.request()
+                            .input('vieja', sql.Int, ctaVieja)
+                            .input('nueva', sql.Int, ctaNueva)
+                            .input('total', sql.Decimal(18, 4), totalMud)
+                            .query(`
+                                UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual - @total WHERE CueIdCuenta = @vieja;
+                                UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @total WHERE CueIdCuenta = @nueva;
+                            `);
+                    }
+                    logger.info(`[CFE-EDIT] Doc #${id}: cliente ${oldCliId} → ${newCliId}. Movimientos y deuda pasados de la cuenta ${ctaVieja} a la ${ctaNueva} (${totalMud.toFixed(2)}).`);
+                }
+
+                // 2. Nació en Consumidor Final (sin cuenta corriente): se crean el cargo y la
+                //    deuda (o el pago, si era contado) como los crea crearFacturaManual.
+                if (!esClienteReal(oldCliId)) {
+                    const cargoRes = await transaction.request()
+                        .input('docId', sql.Int, parseInt(id))
+                        .query(`
+                            SELECT COUNT(*) AS N FROM dbo.MovimientosCuenta
+                            WHERE DocIdDocumento = @docId AND MovImporte < 0
+                              AND MovTipo IN ('VTA_CAJA','VENTA','CARGO','CIERRE_CICLO')
+                              AND (MovAnulado IS NULL OR MovAnulado = 0)
+                        `);
+                    if (!cargoRes.recordset[0].N) {
+                        const monNac = parseInt(doc.MonIdMoneda, 10) === 2 ? 2 : 1;
+                        const ctaNac = await contabilidadService.obtenerOCrearCuenta(newCliId, monNac === 2 ? 'DINERO_USD' : 'DINERO_UYU', {
+                            MonIdMoneda: monNac, UsuarioAlta: req.user.id
+                        }, transaction);
+                        const cicNac = (await contabilidadService.obtenerCicloActivo(ctaNac, transaction))?.CicIdCiclo || null;
+                        const tipoNac  = String(doc.DocTipo || '').trim();
+                        const refNac   = `${String(doc.DocSerie || '').trim()}-${doc.DocNumero}`;
+                        const totalNac = Number(doc.DocTotal) || 0;
+                        const fechaNac = doc.DocFechaEmision ? new Date(doc.DocFechaEmision) : null;
+                        const obsNac   = `Factura pasada de Consumidor Final al cliente ${newCliId} al editarla`;
+
+                        await contabilidadService.registrarMovimiento({
+                            CueIdCuenta: ctaNac,
+                            MovTipo: 'VTA_CAJA',
+                            MovConcepto: `Venta ${tipoNac}: ${refNac}${DocCliNombre ? ' (' + DocCliNombre + ')' : ''}`.substring(0, 500),
+                            MovImporte: -totalNac,
+                            MovUsuarioAlta: req.user.id,
+                            DocIdDocumento: parseInt(id),
+                            CicIdCiclo: cicNac,
+                            MovFecha: fechaNac,
+                            MovObservaciones: obsNac
+                        }, transaction);
+                        if (oldPaid) {
+                            await contabilidadService.registrarMovimiento({
+                                CueIdCuenta: ctaNac,
+                                MovTipo: 'PAGO',
+                                MovConcepto: `Pago (${tipoNac}): ${refNac}`,
+                                MovImporte: totalNac,
+                                MovUsuarioAlta: req.user.id,
+                                DocIdDocumento: parseInt(id),
+                                CicIdCiclo: cicNac,
+                                MovFecha: fechaNac,
+                                MovObservaciones: obsNac
+                            }, transaction);
+                        } else {
+                            await contabilidadService.crearDeudaDocumento({
+                                CueIdCuenta:    ctaNac,
+                                DocIdDocumento: parseInt(id),
+                                Importe:        totalNac,
+                            }, transaction);
+                        }
+                        logger.info(`[CFE-EDIT] Doc #${id}: nació en Consumidor Final y pasó al cliente ${newCliId}: cargo ${oldPaid ? 'y pago' : 'y deuda'} creados en la cuenta ${ctaNac} por ${totalNac.toFixed(2)}.`);
+                    }
+                }
+            } else {
+                // 3. Pasa a Consumidor Final (solo llega acá una factura contado): Consumidor
+                //    Final no tiene cuenta corriente, así que lo que la factura tenía en la
+                //    cuenta del cliente anterior se anula (cargo y pago se cancelan entre sí).
+                const movsViejosRes = await transaction.request()
+                    .input('docId', sql.Int, parseInt(id))
+                    .query(`
+                        SELECT MovIdMovimiento FROM dbo.MovimientosCuenta
+                        WHERE DocIdDocumento = @docId AND (MovAnulado IS NULL OR MovAnulado = 0)
+                    `);
+                for (const { MovIdMovimiento } of movsViejosRes.recordset) {
+                    await contabilidadService.anularMovimiento(MovIdMovimiento,
+                        `Factura pasada del cliente ${oldCliId} a Consumidor Final al editarla`, transaction);
+                }
+                // Si era a crédito y ahora es contado, su deuda (sin cobros: eso se frenó arriba)
+                // deja de existir, igual que al anular la factura.
+                const deudasCanc = await transaction.request()
+                    .input('docId', sql.Int, parseInt(id))
+                    .query(`
+                        UPDATE dbo.DeudaDocumento SET DDeEstado = 'CANCELADA', DDeImportePendiente = 0
+                        WHERE DocIdDocumento = @docId AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')
+                    `);
+                if (movsViejosRes.recordset.length || deudasCanc.rowsAffected[0]) {
+                    logger.info(`[CFE-EDIT] Doc #${id}: cliente ${oldCliId} → Consumidor Final. ${movsViejosRes.recordset.length} movimiento(s) anulados, ${deudasCanc.rowsAffected[0]} deuda(s) cancelada(s).`);
+                }
             }
         }
 

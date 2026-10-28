@@ -18,10 +18,84 @@ exports.getCheques = async (req, res) => {
   try {
     const { estado, tipo } = req.query;
     const pool = await getPool();
+    // Además del cheque: quién lo entregó (cliente) y qué pagó, para que la cartera diga algo
+    // más que número y banco. "Qué pagó" sale del cobro donde se usó (Pagos.PagIdCheque):
+    // las deudas a las que se imputó, los retiros y la venta de esa transacción de caja, y
+    // su recibo. Un cobro puede juntar varios cheques: se informa "N de M".
     let query = `
-      SELECT c.*, b.NombreBanco 
-      FROM TesoreriaCheques c 
+      SELECT c.*, b.NombreBanco,
+             -- Cliente del cheque; si no se cargó al recibirlo, el del cobro donde se usó
+             LTRIM(RTRIM(COALESCE(cl.Nombre, clCob.Nombre)))       AS ClienteNombre,
+             LTRIM(RTRIM(COALESCE(cl.IDCliente, clCob.IDCliente))) AS ClienteCodigo,
+             CASE WHEN cl.CliIdCliente IS NULL AND clCob.CliIdCliente IS NOT NULL THEN 1 ELSE 0 END AS ClienteDelCobro,
+             pg.PagIdPago                AS CobroPagId,
+             pg.PagTcaIdTransaccion      AS CobroTcaId,
+             pg.PagFechaPago             AS CobroFecha,
+             cob.ChequesDelCobro, ord.OrdenEnCobro,
+             rec.Recibos, imp.DocsPagados, ret.Retiros, vta.DocsVenta
+      FROM TesoreriaCheques c
       JOIN TesoreriaBancos b ON c.IdBanco = b.IdBanco
+      LEFT JOIN Clientes cl WITH(NOLOCK) ON cl.CliIdCliente = c.IdClienteOrigen
+      OUTER APPLY (
+        SELECT TOP 1 p.PagIdPago, p.PagTcaIdTransaccion, p.PagFechaPago
+        FROM Pagos p WITH(NOLOCK)
+        WHERE p.PagIdCheque = c.IdCheque AND ISNULL(p.PagTipoMovimiento, '') <> 'ANULADO'
+        ORDER BY p.PagIdPago DESC
+      ) pg
+      LEFT JOIN TransaccionesCaja tcaCob WITH(NOLOCK) ON tcaCob.TcaIdTransaccion = pg.PagTcaIdTransaccion
+      LEFT JOIN Clientes clCob WITH(NOLOCK) ON clCob.CliIdCliente = tcaCob.TcaClienteId
+      OUTER APPLY (
+        SELECT COUNT(*) AS ChequesDelCobro
+        FROM Pagos p2 WITH(NOLOCK)
+        WHERE pg.PagTcaIdTransaccion IS NOT NULL AND p2.PagTcaIdTransaccion = pg.PagTcaIdTransaccion
+          AND p2.PagIdCheque IS NOT NULL AND ISNULL(p2.PagTipoMovimiento, '') <> 'ANULADO'
+      ) cob
+      OUTER APPLY (
+        -- Qué número de cheque es este dentro del cobro (1 de 6, 2 de 6…)
+        SELECT COUNT(*) AS OrdenEnCobro
+        FROM Pagos p3 WITH(NOLOCK)
+        WHERE pg.PagTcaIdTransaccion IS NOT NULL AND p3.PagTcaIdTransaccion = pg.PagTcaIdTransaccion
+          AND p3.PagIdCheque IS NOT NULL AND p3.PagIdCheque <= c.IdCheque
+          AND ISNULL(p3.PagTipoMovimiento, '') <> 'ANULADO'
+      ) ord
+      OUTER APPLY (
+        SELECT STRING_AGG(x.Doc, ', ') AS Recibos FROM (
+          SELECT DISTINCT LTRIM(RTRIM(d.DocSerie)) + '-' + LTRIM(RTRIM(d.DocNumero)) AS Doc
+          FROM DocumentosContables d WITH(NOLOCK)
+          WHERE pg.PagTcaIdTransaccion IS NOT NULL AND d.TcaIdTransaccion = pg.PagTcaIdTransaccion
+            AND LTRIM(RTRIM(d.DocSerie)) IN ('RC', 'RA') AND d.DocEstado NOT LIKE 'ANULAD%') x
+      ) rec
+      OUTER APPLY (
+        -- Deudas a las que se imputó el cobro (pago de deudas): el documento, o la orden si
+        -- todavía no estaba facturada.
+        SELECT STRING_AGG(x.Doc, ', ') AS DocsPagados FROM (
+          SELECT DISTINCT COALESCE(LTRIM(RTRIM(d.DocSerie)) + '-' + LTRIM(RTRIM(d.DocNumero)),
+                                   'Orden ' + LTRIM(RTRIM(o.CodigoOrden))) AS Doc
+          FROM ImputacionPago ip WITH(NOLOCK)
+          JOIN DeudaDocumento dd WITH(NOLOCK) ON dd.DDeIdDocumento = ip.DDeIdDocumento
+          LEFT JOIN DocumentosContables d WITH(NOLOCK) ON d.DocIdDocumento = dd.DocIdDocumento
+          LEFT JOIN Ordenes o WITH(NOLOCK) ON o.OrdenID = dd.OrdIdOrden
+          WHERE pg.PagIdPago IS NOT NULL AND ip.PagIdPago = pg.PagIdPago) x
+        WHERE x.Doc IS NOT NULL
+      ) imp
+      OUTER APPLY (
+        -- Retiros cobrados en esa transacción de caja, con su prefijo real (RT/RW/RL)
+        SELECT STRING_AGG(COALESCE(LTRIM(RTRIM(r.FormaRetiro)), 'RW') + '-' + CAST(x.Id AS VARCHAR(20)), ', ')
+                   WITHIN GROUP (ORDER BY x.Id) AS Retiros
+        FROM (SELECT DISTINCT td.TdeReferenciaId AS Id
+              FROM TransaccionDetalle td WITH(NOLOCK)
+              WHERE pg.PagTcaIdTransaccion IS NOT NULL AND td.TcaIdTransaccion = pg.PagTcaIdTransaccion
+                AND td.TdeTipoReferencia = 'ORDEN_RETIRO' AND td.TdeReferenciaId IS NOT NULL) x
+        LEFT JOIN OrdenesRetiro r WITH(NOLOCK) ON r.OReIdOrdenRetiro = x.Id
+      ) ret
+      OUTER APPLY (
+        -- Venta emitida en la misma transacción (factura / e-ticket de caja), sin recibos
+        SELECT STRING_AGG(x.Doc, ', ') AS DocsVenta FROM (
+          SELECT DISTINCT LTRIM(RTRIM(d.DocSerie)) + '-' + LTRIM(RTRIM(d.DocNumero)) AS Doc
+          FROM DocumentosContables d WITH(NOLOCK)
+          WHERE pg.PagTcaIdTransaccion IS NOT NULL AND d.TcaIdTransaccion = pg.PagTcaIdTransaccion
+            AND LTRIM(RTRIM(d.DocSerie)) NOT IN ('RC', 'RA') AND d.DocEstado NOT LIKE 'ANULAD%') x
+      ) vta
       WHERE 1=1
     `;
     const request = pool.request();

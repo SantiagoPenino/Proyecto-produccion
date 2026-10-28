@@ -490,13 +490,19 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
     const filaDoc = (d, extra) => {
       const total = Number(d.total || 0);
       const nc = esNotaCredito(d);
+      // Solo DGI ("NC Factura Externa" y su comprobante externo): existen para emitir el CFE,
+      // no movieron la cuenta del cliente. No suman ni restan al saldo; el importe se muestra
+      // aparte. Sin esto, un período que dejaba afuera al comprobante y adentro a su NC daba
+      // "a favor" falso (Fundación Caleidoscopio, 28-10-2026).
+      const soloDgi = !!d.soloDgi;
       return {
         clase: 'DOC', key: 'D' + d.DocIdDocumento, fecha: d.fecha, moneda: d.MonSimbolo,
         cueId: principalPorMoneda[d.MonSimbolo] ?? null,
         tipoKey: prefijoDoc(d), tipoLabel: d.tipo, etiqueta: d.documento,
         descripcion: d.descripcion, factura: d.factura, cfeEstado: d.cfeEstado,
         cfeNumeroOficial: d.cfeNumeroOficial || null,
-        cargo: nc ? 0 : total, abono: nc ? total : 0, estado: d.estado,
+        cargo: soloDgi || nc ? 0 : total, abono: !soloDgi && nc ? total : 0, estado: d.estado,
+        soloDgi, importeDgi: soloDgi ? total : null,
         ...extra,
       };
     };
@@ -940,6 +946,12 @@ function ResumenDocumentosPanel({ CliIdCliente, desde, hasta, trigger, incluirAn
                             )}
                             {esDoc && m.cfeEstado && m.cfeEstado !== 'ACEPTADO_DGI' && (
                               <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200 uppercase tracking-wide">Borrador</span>
+                            )}
+                            {esDoc && m.soloDgi && (
+                              <span className="text-[9px] font-black px-1.5 py-0.5 rounded bg-violet-50 text-violet-700 border border-violet-200 uppercase tracking-wide"
+                                title="Comprobante emitido solo ante DGI (NC Factura Externa): no movió la cuenta del cliente, por eso no suma ni resta al saldo.">
+                                Solo DGI · {m.moneda} {fmtMoney(m.importeDgi)}
+                              </span>
                             )}
                             {/* El comprobante se asentó en las dos monedas: esta fila es
                                 solo la parte que pesó en ESTA cuenta. */}

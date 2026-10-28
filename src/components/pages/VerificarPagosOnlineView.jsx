@@ -175,6 +175,9 @@ const HistorialPagos = () => {
                         ) : filtered.map(pago => {
                             const isExp = expandedId === pago.Id;
                             const hasOrd = pago.Ordenes?.length > 0;
+                            // Un pago puede cubrir varios retiros (una transferencia por 4 RT): el
+                            // backend los manda juntos, "RT-1, RT-2", en una sola fila del pago.
+                            const variosRetiros = Number(pago.CantRetiros || 0) > 1;
                             return (
                                 <React.Fragment key={pago.Id}>
                                     <tr className={`hover:bg-slate-50 transition-colors ${isExp ? 'bg-emerald-50/30' : ''}`}>
@@ -197,7 +200,11 @@ const HistorialPagos = () => {
                                         </td>
                                         <td className="px-4 py-3">
                                             {pago.OrdenRetiro ? (
-                                                <span className="font-mono font-black text-blue-700 text-sm">{pago.OrdenRetiro}</span>
+                                                <div className="flex flex-col gap-0.5">
+                                                    {String(pago.OrdenRetiro).split(', ').map(rt => (
+                                                        <span key={rt} className="font-mono font-black text-blue-700 text-sm">{rt}</span>
+                                                    ))}
+                                                </div>
                                             ) : <span className="text-slate-300 text-xs">Sin retiro</span>}
                                         </td>
                                         <td className="px-4 py-3 text-right font-black text-emerald-700 text-sm whitespace-nowrap">
@@ -223,6 +230,7 @@ const HistorialPagos = () => {
                                                     <table className="w-full text-sm">
                                                         <thead>
                                                             <tr className="bg-emerald-50 text-emerald-800 text-xs font-black uppercase">
+                                                                {variosRetiros && <th className="px-4 py-2 text-left">Retiro</th>}
                                                                 <th className="px-4 py-2 text-left">Código</th>
                                                                 <th className="px-4 py-2 text-left">Material / Producto</th>
                                                                 <th className="px-4 py-2 text-left">Modo</th>
@@ -233,6 +241,7 @@ const HistorialPagos = () => {
                                                         <tbody className="divide-y divide-emerald-50">
                                                             {pago.Ordenes.map((o, i) => (
                                                                 <tr key={i} className={i % 2 ? 'bg-slate-50' : 'bg-white'}>
+                                                                    {variosRetiros && <td className="px-4 py-2 font-mono font-bold text-slate-500">{o.retiro || '—'}</td>}
                                                                     <td className="px-4 py-2 font-mono font-black text-blue-700">{o.codigo}</td>
                                                                     <td className="px-4 py-2 text-slate-700">{o.producto || '—'}</td>
                                                                     <td className="px-4 py-2">
@@ -256,7 +265,7 @@ const HistorialPagos = () => {
                                                                 }, {})
                                                             ).map(([sym, tot], i, arr) => (
                                                                 <tr key={sym} className="bg-emerald-50 font-black text-sm">
-                                                                    {i === 0 && <td colSpan={3} rowSpan={arr.length} className="px-4 py-2 text-emerald-800">Total ({pago.Ordenes.length} órdenes)</td>}
+                                                                    {i === 0 && <td colSpan={variosRetiros ? 4 : 3} rowSpan={arr.length} className="px-4 py-2 text-emerald-800">Total ({pago.Ordenes.length} órdenes)</td>}
                                                                     <td />
                                                                     <td className="px-4 py-2 text-right text-emerald-900">{sym} {tot.toLocaleString()}</td>
                                                                 </tr>

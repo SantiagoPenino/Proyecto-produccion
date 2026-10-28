@@ -266,10 +266,12 @@ async function main() {
         usar('Articulos_Imagenes', 'Idproid');
 
         // Configuración de venta
+        // [COPIAR VARIANTE 27/10] Un modelo puede tener varias variantes; solo choca si allá sigue el índice único viejo
         if (vc.PadreProIdProducto && vc.ModeloClave) {
             const padre = productos.get(vc.PadreProIdProducto);
-            L.push(`IF EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE PadreProIdProducto = ${exprArticulo(padre.Cod)} AND ModeloClave = ${sqlStr(vc.ModeloClave)} AND ProIdProducto <> @id)`);
-            L.push(`    THROW 50001, ${sqlStr(`Allá ya hay otra variante de ${padre.Cod} para el modelo ${vc.ModeloClave} (con otro código que ${p.Cod}). Borrala o cambiale el modelo y volvé a correr el script.`)}, 1;`);
+            L.push(`IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'UQ_ProductoVentaConfig_PadreModelo' AND object_id = OBJECT_ID('dbo.ProductoVentaConfig'))`);
+            L.push(`   AND EXISTS (SELECT 1 FROM dbo.ProductoVentaConfig WHERE PadreProIdProducto = ${exprArticulo(padre.Cod)} AND ModeloClave = ${sqlStr(vc.ModeloClave)} AND ProIdProducto <> @id)`);
+            L.push(`    THROW 50001, ${sqlStr(`Allá ya hay otra variante de ${padre.Cod} para el modelo ${vc.ModeloClave} y esa base permite una sola por modelo: corré primero docs/migrations/configurador_variantes_copias.sql y volvé a correr este script.`)}, 1;`);
         }
         L.push(await insertFila('ProductoVentaConfig', vc, {
             fijos: { ProIdProducto: '@id' },

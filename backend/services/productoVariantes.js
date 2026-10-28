@@ -10,15 +10,18 @@
 //
 // La VARIANTE es un artículo más: apunta a su padre (ProductoVentaConfig.PadreProIdProducto) y a un modelo del
 // molde del padre (ModeloClave). Nace como COPIA del padre (técnicas, telas, apliques, accesorios, ficha, avíos,
-// costuras, foto, precio) y se edita en el mismo editor, como cualquier artículo. Reglas:
+// costuras, foto, precio y escalas de precio) y se edita en el mismo editor, como cualquier artículo. Reglas:
 //   · el molde, el modelo, la producción principal, el origen y la medida son los del padre: no se cambian;
 //   · las técnicas, sus opciones (tamaños), las telas y los accesorios solo pueden ser de los que tiene el padre;
 //     si el padre deja de tener algo, se les saca también a sus variantes.
+//   · [27/10] un modelo puede tener VARIAS variantes: «Copiar» en una variante da otra del mismo padre y modelo
+//     (otra tela, otro precio…), sin precio y en borrador (configuradorController.copiarProducto).
 //
 // CÓDIGOS: <FAMILIA>-<ETIQUETA>-NN (CAM-BAS-01); sin etiqueta <FAMILIA>-NN; combos CMB-NN;
 // variante = código del padre + -NN (CAM-BAS-01-02). Abreviatura = 3 primeras letras sin tildes.
 // ─────────────────────────────────────────────────────────────────────────────
 const { sql } = require('../config/db');
+const escalasSvc = require('./escalasProducto');   // [ESCALAS 27/10] la variante nace con las escalas del padre
 
 const NOMBRE_AREA = { SB: 'Sublimación', TWC: 'Corte', TWT: 'Costura', EMB: 'Bordado', DF: 'Estampado DTF', TPU: 'Estampado TPU', DIRECTA: 'Impresión directa', ECOUV: 'EcoUV' };
 // Lo que una variante no cambia (es del padre): se saca de lo que manda el editor
@@ -33,6 +36,18 @@ async function tieneVariantes(cx) {
     return _tiene;
 }
 const FALTA_SQL = 'Falta correr docs/migrations/configurador_variantes.sql en esta base.';
+
+// [COPIAR VARIANTE 27/10] Varias variantes del MISMO modelo (otra tela, otro precio): hace falta
+// configurador_variantes_copias.sql, que saca el índice único padre + modelo. Sin él, la copia choca con ese índice.
+let _copias = false;
+async function admiteCopias(cx) {
+    if (_copias) return true;
+    const r = await req(cx).query(`SELECT COUNT(*) AS n FROM sys.indexes
+                                   WHERE name = 'UQ_ProductoVentaConfig_PadreModelo' AND object_id = OBJECT_ID('dbo.ProductoVentaConfig')`);
+    _copias = r.recordset[0].n === 0;
+    return _copias;
+}
+const FALTA_SQL_COPIAS = 'Para copiar una variante falta correr docs/migrations/configurador_variantes_copias.sql en esta base (permite varias variantes del mismo modelo).';
 const fallo = (status, msg) => Object.assign(new Error(msg), { status });
 // Pedido nuevo de mssql: sirve igual con un pool o con una transacción
 function req(cx) { return new sql.Request(cx); }
@@ -212,6 +227,8 @@ async function copiarDelPadre(tx, h, { padreId, varId, clave, codPadre, codVaria
         SELECT @V, ModeloClave, ModeloNombre, 1, 1 FROM dbo.ProductoModelos WHERE ProIdProducto = @P AND ModeloClave = @C`);
     // Fotos (los mismos archivos)
     if (fotos) await h.copiarFilas(tx, 'Articulos_Imagenes', 'Idproid', padreId, varId);
+    // [ESCALAS 27/10] Los precios por cantidad del padre (reemplazan los suyos; después se cambian en «Precios»)
+    await escalasSvc.copiar(tx, padreId, varId, codVariante);
 }
 
 // ── Crear una variante: COPIA del padre para un modelo ───────────────────────
@@ -240,7 +257,7 @@ async function crearVariante(pool, user, padreId, modeloClave, h) {
         const ya = (await req(tx).input('P', sql.Int, padreId).input('C', sql.NVarChar(96), clave).query(`
             SELECT LTRIM(RTRIM(a.CodArticulo)) AS Cod FROM dbo.ProductoVentaConfig vc JOIN dbo.Articulos a ON a.ProIdProducto = vc.ProIdProducto
             WHERE vc.PadreProIdProducto = @P AND vc.ModeloClave = @C`)).recordset[0];
-        if (ya) throw fallo(409, `Ese modelo ya tiene su variante (${ya.Cod}).`);
+        if (ya) throw fallo(409, `Ese modelo ya tiene su variante (${ya.Cod}). Para otra del mismo modelo (otra tela, otro precio), abrí ${ya.Cod} y tocá «Copiar».`);
 
         const cod = await codigoNuevaVariante(tx, p.Cod);
         const nombre = `${p.Descripcion} · ${m.ModeloNombre || clave}`.slice(0, 100);
@@ -268,7 +285,7 @@ async function crearVariante(pool, user, padreId, modeloClave, h) {
 
 // ── Copiar de nuevo todo del padre ──────────────────────────────────────────
 // La variante vuelve a quedar igual al padre: configuración, ficha, técnicas, telas, apliques, accesorios, avíos,
-// costuras y precio. Se quedan su nombre, su código, su estado y su foto (si no tiene, toma la del padre).
+// costuras, precio y escalas de precio. Se quedan su nombre, su código, su estado y su foto (si no tiene, toma la del padre).
 async function recopiarDelPadre(pool, user, varId, h) {
     if (!(await tieneVariantes(pool))) throw fallo(409, FALTA_SQL);
     const tx = new sql.Transaction(pool);
@@ -381,7 +398,7 @@ async function podarVariantes(tx, padreId) {
 }
 
 module.exports = {
-    NOMBRE_AREA, FALTA_SQL, tieneVariantes, abreviar,
+    NOMBRE_AREA, FALTA_SQL, FALTA_SQL_COPIAS, tieneVariantes, admiteCopias, abreviar,
     codigoNuevoProducto, codigoNuevaVariante, codigoSugerido, siguienteDePrefijo,
     padreDe, permitidoPor, datosParaFicha, variantesDe, crearVariante, recopiarDelPadre, prepararGuardarVariante, validarGuardarPadre, podarVariantes,
 };

@@ -269,7 +269,9 @@ function armarPedido(sol, p, bobinaId, formas = {}) {
           // Lo pactado en "Pago y seña" manda también para el producto del catálogo: precio establecido
           // (un total, todo incluido) o facturar por cada área.
           precio: sol.ModoCobro === 'PRECIO_ESTABLECIDO'
-            ? { modo: 'ESTABLECIDO', monto: Number(sol.PrecioPactado), moneda: MONEDA[sol.MonIdMoneda] || 'UYU' }
+            ? { modo: 'ESTABLECIDO', monto: Number(sol.PrecioPactado), moneda: MONEDA[sol.MonIdMoneda] || 'UYU',
+                // [SIN CARGO 27/10] en 0 con motivo: el pedido vale 0 y la línea queda con descuento del 100 %
+                ...(Number(sol.PrecioPactado) === 0 && sol.MotivoSinCargo ? { sinCargo: true, motivo: sol.MotivoSinCargo } : {}) }
             : { modo: 'POR_AREA' },
           // F1: sin molde, el producto se imprime a medida fija (el validador la controla archivo por archivo)
           medidaFija: p.Config && !p.Config.TizadaProMoldeRef && Number(p.Config.AnchoM) > 0 && Number(p.Config.AltoM) > 0 ? { anchoM: Number(p.Config.AnchoM), altoM: Number(p.Config.AltoM) } : null,

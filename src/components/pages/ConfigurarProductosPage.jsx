@@ -11,6 +11,7 @@ import { TablaMedidasEditable, ComoMedirEditable, HojaMedidas } from './Configur
 import PasoVariantes from './ConfiguradorVariantes';   // [VARIANTES] producto padre + variantes (12/10)
 import ConfiguradorAMedida, { IconoForma } from './ConfiguradorAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 import { useConfirmar } from './ventas/solicitudesComunes';   // ventana de confirmar (en vez de window.confirm)
+import { precioPorCantidad, textoEscalas } from '../../utils/escalasPrecio';   // [ESCALAS] precios por cantidad (27/10)
 import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info, Copy, Trash2 } from 'lucide-react';
 
 /*
@@ -494,6 +495,10 @@ const fichaToForm = (d) => ({
     // [VARIANTES] { padre, modeloClave, modeloNombre, permitido: { tecnicas, opciones, telas, accesorios } } si es variante
     variante: d.variante || null,
     cantidadVariantes: d.cantidadVariantes || 0,
+    // [ESCALAS 27/10] precios por cantidad (paso «Precios»): un cálculo para todas y las filas «desde N → valor»
+    escalasDisponibles: !!d.escalasDisponibles,
+    escalasTipo: d.escalas?.tipo || 'fixed_price',
+    escalas: (d.escalas?.filas || []).map(f => ({ desde: String(f.desde), valor: String(Number(f.valor)) })),
 });
 
 const formToPayload = (f) => ({
@@ -514,6 +519,14 @@ const formToPayload = (f) => ({
     validarStock: f.validarStock,
     estado: f.estado,
     ...(f.precio !== '' && f.precio != null ? { precio: Number(f.precio), moneda: f.moneda } : {}),
+    // [ESCALAS 27/10] las filas a medio llenar no viajan (ni cuentan como cambio)
+    ...(f.esCombo || !f.escalasDisponibles ? {} : {
+        escalas: {
+            tipo: f.escalasTipo,
+            filas: (f.escalas || []).filter(x => String(x.desde).trim() !== '' && String(x.valor).trim() !== '')
+                .map(x => ({ desde: Number(x.desde), valor: Number(String(x.valor).replace(',', '.')) })).sort((a, b) => a.desde - b.desde),
+        },
+    }),
     tecnicas: AREAS.filter(a => f.tecnicas[a.id].on).map(a => ({
         areaId: a.id,
         obligatorio: f.tecnicas[a.id].obligatorio,
@@ -603,9 +616,12 @@ const sugerirCodigoCopia = (cod, productos) => {
 
 // Ventana "Copiar producto": pide el nombre (y deja ajustar el código). La copia nace igual al
 // original pero sin precio y en borrador (backend: configuradorController.copiarProducto).
+// [COPIAR VARIANTE 27/10] De una variante: otra variante del mismo padre y modelo, con el código siguiente del padre.
 function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }) {
+    const variante = form.variante || null;
     const [nombre, setNombre] = useState(`${form.descripcion} (copia)`.slice(0, 100));
-    const [codigo, setCodigo] = useState(() => sugerirCodigoCopia(form.codArticulo, productos));
+    // Variante: el siguiente "padre-NN" (se le pasa un código de ese patrón para que busque el mayor)
+    const [codigo, setCodigo] = useState(() => sugerirCodigoCopia(variante?.padre?.codArticulo ? `${variante.padre.codArticulo}-01` : form.codArticulo, productos));
     const [copiando, setCopiando] = useState(false);
     const [error, setError] = useState(null);
     const nombreRef = useRef(null);
@@ -630,7 +646,10 @@ function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }
 
     const seCopia = form.esCombo
         ? ['Los productos del combo y sus servicios', 'Las cantidades', 'La foto y la categoría']
-        : ['Producción principal, molde y medidas', 'Técnicas y sus opciones', 'Cantidad y accesorios', 'Molde, telas, avíos y apliques', 'Ficha de diseño y pasos de costura', 'La foto, la familia y la etiqueta'];
+        : variante
+            ? ['El mismo padre y el mismo modelo (las mismas piezas y la misma plantilla)', 'Técnicas y sus opciones', 'Cantidad y accesorios', 'Telas, avíos y apliques', 'Ficha de diseño y pasos de costura', 'Las escalas de precio del padre', 'La foto, la familia y la etiqueta']
+            : ['Producción principal, molde y medidas', 'Técnicas y sus opciones', 'Cantidad y accesorios', 'Molde, telas, avíos y apliques', 'Ficha de diseño y pasos de costura', 'La foto, la familia y la etiqueta'];
+    const que = form.esCombo ? 'combo' : variante ? 'variante' : 'producto';
 
     return (
         <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => !copiando && onClose()}>
@@ -639,8 +658,11 @@ function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }
                 <div className="px-6 pt-6 flex items-start gap-4">
                     <div className="w-11 h-11 rounded-full bg-brand-cyan/10 text-brand-cyan flex items-center justify-center shrink-0"><Copy size={20} /></div>
                     <div className="min-w-0 flex-1">
-                        <h3 id="copiar-producto-titulo" className="text-lg font-black text-slate-800">Copiar {form.esCombo ? 'combo' : 'producto'}</h3>
+                        <h3 id="copiar-producto-titulo" className="text-lg font-black text-slate-800">Copiar {que}</h3>
                         <p className="text-sm text-slate-500 truncate">De <b className="text-slate-700">{form.descripcion}</b> <span className="font-mono text-xs">[{form.codArticulo}]</span></p>
+                        {variante && (
+                            <p className="text-xs text-slate-500 truncate">Variante de <b className="text-slate-700">{variante.padre.descripcion}</b> · modelo <b className="text-slate-700">{variante.modeloNombre || variante.modeloClave}</b></p>
+                        )}
                     </div>
                     <button type="button" onClick={onClose} disabled={copiando} title="Cerrar" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100"><X size={18} /></button>
                 </div>
@@ -667,7 +689,7 @@ function CopiarProductoModal({ form, productos, hayCambios, onClose, onCopiado }
                         </ul>
                         <p className="mt-3 flex items-start gap-1.5 text-slate-700">
                             <Info size={13} className="text-brand-cyan mt-px shrink-0" />
-                            <span>Queda <b>sin precio</b> y en <b>borrador</b>: cargale el precio y publicala cuando esté lista.</span>
+                            <span>Queda <b>sin precio</b> y en <b>borrador</b>: {variante ? 'cambiale la tela (o lo que la distinga), ' : ''}cargale el precio y publicala cuando esté lista.</span>
                         </p>
                     </div>
 
@@ -1445,6 +1467,8 @@ export default function ConfigurarProductosPage() {
             ...(conf ? [{ id: 'ficha', label: 'Ficha de diseño' }] : []),
             // [VARIANTES] un artículo por modelo del molde que se vende
             ...(conf && form.tizadaProMoldeRef && !form.variante && form.modoMolde !== 'A_MEDIDA' ? [{ id: 'variantes', label: 'Variantes' }] : []),
+            // [ESCALAS 27/10] precio de lista y precios por cantidad
+            { id: 'precios', label: 'Precios' },
             { id: 'resumen', label: 'Revisar y publicar' },
         ].map((p, i) => ({ ...p, n: i + 1 }));
     }, [form]);
@@ -2077,10 +2101,10 @@ export default function ConfigurarProductosPage() {
                                                 <span>· modelo <b className="text-slate-800">{form.variante.modeloNombre || form.variante.modeloClave}</b></span>
                                                 <span className="text-[11px] text-slate-500">El molde, el modelo y la producción principal son los del padre. Técnicas, telas y accesorios: solo de los que tiene el padre.</span>
                                                 <button type="button" disabled={recopiando} className="ml-auto inline-flex items-center gap-1.5 rounded-lg border border-brand-cyan bg-white px-2.5 py-1 text-[11px] font-bold text-brand-cyan hover:bg-brand-cyan/5 disabled:opacity-50"
-                                                    title="La variante vuelve a quedar igual al padre: técnicas, telas, apliques, accesorios, ficha, avíos, costuras y precio"
+                                                    title="La variante vuelve a quedar igual al padre: técnicas, telas, apliques, accesorios, ficha, avíos, costuras, precio y escalas de precio"
                                                     onClick={async () => {
                                                         const ok = await preguntar({ Icono: RotateCcw, titulo: 'Copiar de nuevo todo del padre', boton: 'Copiar del padre', peligro: true,
-                                                            texto: `"${form.descripcion}" vuelve a quedar igual a "${form.variante.padre.descripcion}": técnicas, telas, apliques, accesorios, ficha de diseño, avíos, pasos de costura, cantidad y precio.\n\nSe quedan su nombre, su código (${form.codArticulo}), su estado y su foto.`,
+                                                            texto: `"${form.descripcion}" vuelve a quedar igual a "${form.variante.padre.descripcion}": técnicas, telas, apliques, accesorios, ficha de diseño, avíos, pasos de costura, cantidad, precio y escalas de precio.\n\nSe quedan su nombre, su código (${form.codArticulo}), su estado y su foto.`,
                                                             nota: hayCambios ? 'Tiene cambios sin guardar: se pierden.' : 'Lo que le hayas cambiado a esta variante se pierde.' });
                                                         if (!ok) return;
                                                         setRecopiando(true);
@@ -2152,11 +2176,13 @@ export default function ConfigurarProductosPage() {
                                             <span className={`px-3 py-1 rounded-full text-[11px] font-black ${form.estado === 'PUBLICADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
                                                 {form.estado === 'PUBLICADO' ? '● PUBLICADO' : '○ BORRADOR'}
                                             </span>
-                                            {!form.variante && <button type="button" onClick={() => setCopiando(true)}
-                                                title={`Crear una copia de este ${form.esCombo ? 'combo' : 'producto'} con otro nombre (sin precio y en borrador)`}
+                                            <button type="button" onClick={() => setCopiando(true)}
+                                                title={form.variante
+                                                    ? 'Crear otra variante del mismo modelo (para otra tela, otro precio…), sin precio y en borrador'
+                                                    : `Crear una copia de este ${form.esCombo ? 'combo' : 'producto'} con otro nombre (sin precio y en borrador)`}
                                                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition-colors hover:border-brand-cyan hover:text-brand-cyan">
                                                 <Copy size={15} aria-hidden="true" /> Copiar
-                                            </button>}
+                                            </button>
                                             <button type="button" onClick={() => setBorrandoProd(true)}
                                                 title={`Borrar este ${form.esCombo ? 'combo' : 'producto'} (antes se revisa que no se haya usado en ningún lado)`}
                                                 className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold text-slate-500 transition-colors hover:border-rose-400 hover:text-rose-600">
@@ -3296,6 +3322,119 @@ export default function ConfigurarProductosPage() {
                                                 </div>
                                             )}
 
+                                            {/* ── PASO PRECIOS (27/10) ── el precio de lista (el mismo del encabezado, va a la lista de precios
+                                                base) y los precios por cantidad: «desde N prendas» con precio fijo c/u o % de descuento, como los
+                                                precios escalonados de los servicios. Los aplica el motor al cotizar el pedido (perfil global
+                                                PRODUCTOS ESCALONADOS, backend/services/escalasProducto.js). */}
+                                            {paso === 'precios' && (() => {
+                                                const lista = Number(form.precio) > 0 ? Number(form.precio) : null;
+                                                const filas = form.escalas || [];
+                                                const esPct = form.escalasTipo === 'percentage_discount';
+                                                const sim = simboloMoneda(form.moneda);
+                                                const setFila = (i, cambio) => setF({ escalas: filas.map((x, j) => (j === i ? { ...x, ...cambio } : x)) });
+                                                const agregar = () => {
+                                                    const ult = filas.reduce((mx, x) => Math.max(mx, Number(x.desde) || 0), 0);
+                                                    setF({ escalas: [...filas, { desde: String(ult ? ult * 2 : 10), valor: '' }] });
+                                                };
+                                                const escalasVivas = { tipo: form.escalasTipo, filas: filas.filter(x => Number(x.desde) > 0 && Number(String(x.valor).replace(',', '.')) > 0).map(x => ({ desde: Number(x.desde), valor: Number(String(x.valor).replace(',', '.')) })) };
+                                                const prueba = Number(form.escalasPrueba) > 0 ? Number(form.escalasPrueba) : null;
+                                                const rPrueba = prueba && lista ? precioPorCantidad(lista, escalasVivas, prueba) : null;
+                                                const paquete = form.politica === 'PAQUETE';
+                                                return (
+                                                    <div className="space-y-4">
+                                                        <div className="border border-slate-200 rounded-xl p-4">
+                                                            {tituloSeccion('Precio de lista', paquete
+                                                                ? 'Precio cerrado del paquete completo. Es el mismo del encabezado y va a la lista de precios base (Precios Estándar).'
+                                                                : 'Precio por unidad sin servicios: bordado, TPU y DTF se suman al cotizar. Es el mismo del encabezado y va a la lista de precios base (Precios Estándar).')}
+                                                            <div className="flex flex-wrap items-center gap-2">
+                                                                <span className="text-sm font-bold text-slate-500">{sim}</span>
+                                                                <input type="number" step="0.01" min="0" value={form.precio} placeholder="sin precio" aria-label="Precio de lista"
+                                                                    onChange={e => setF({ precio: e.target.value })} className={`w-32 ${claseCampo}`} />
+                                                                <Selector value={form.moneda} onChange={e => setF({ moneda: e.target.value })} aria-label="Moneda" anchoLista={120}
+                                                                    claseBoton={claseSel('border border-slate-200 rounded-lg px-2.5 py-2 text-sm font-bold text-slate-800 bg-white')}>
+                                                                    <option>UYU</option><option>USD</option>
+                                                                </Selector>
+                                                                {paquete ? null : <span className="text-[11px] text-slate-400">c/u</span>}
+                                                            </div>
+                                                        </div>
+
+                                                        {form.esCombo ? null : (
+                                                            <div className="border border-slate-200 rounded-xl p-4">
+                                                                {tituloSeccion('Precios por cantidad', 'Desde cierta cantidad, el precio baja. El pedido toma solo la escala que corresponde a la cantidad que se pide, como en los precios escalonados de los servicios.')}
+                                                                {!form.escalasDisponibles ? (
+                                                                    <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                                                                        <TriangleAlert size={14} className="shrink-0 mt-px" />
+                                                                        Falta correr backend/scripts/configurador_precios_escalonados.sql en esta base: crea el perfil «PRODUCTOS ESCALONADOS» donde viven las escalas.
+                                                                    </div>
+                                                                ) : paquete ? (
+                                                                    <p className="text-xs text-slate-500 flex items-start gap-1.5"><Info size={13} className="text-brand-cyan mt-px shrink-0" />Es un paquete fijo: siempre se pide la misma cantidad, así que no lleva escalas.</p>
+                                                                ) : (
+                                                                    <div className="space-y-3">
+                                                                        {form.variante && (
+                                                                            <p className="text-[11px] text-slate-500">Nace con las escalas de <b className="text-slate-700">{form.variante.padre.descripcion}</b>; las que cambies acá son solo de esta variante.</p>
+                                                                        )}
+                                                                        <div role="radiogroup" aria-label="Cálculo de las escalas" className={claseOpciones}>
+                                                                            {tarjetaOpcion({ id: 'fixed_price', sel: !esPct, onClick: () => setF({ escalasTipo: 'fixed_price' }), titulo: 'Precio fijo', detalle: `Desde esa cantidad, cada una sale ${sim} X.` })}
+                                                                            {tarjetaOpcion({ id: 'percentage_discount', sel: esPct, onClick: () => setF({ escalasTipo: 'percentage_discount' }), titulo: 'Descuento (%)', detalle: 'Desde esa cantidad, un % menos sobre el precio de lista.' })}
+                                                                        </div>
+                                                                        {!lista && filas.length > 0 && (
+                                                                            <div className="flex items-start gap-2 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold text-amber-800">
+                                                                                <TriangleAlert size={14} className="shrink-0 mt-px" />
+                                                                                Sin precio de lista las escalas no se aplican: cargale el precio arriba.
+                                                                            </div>
+                                                                        )}
+                                                                        {filas.length > 0 && (
+                                                                            <div className="space-y-2">
+                                                                                {filas.map((x, i) => {
+                                                                                    const desde = Number(x.desde);
+                                                                                    const valor = Number(String(x.valor).replace(',', '.'));
+                                                                                    const repetida = desde > 0 && filas.findIndex(y => Number(y.desde) === desde) !== i;
+                                                                                    let efecto = null;
+                                                                                    if (lista && valor > 0) {
+                                                                                        if (esPct) efecto = valor < 100 ? `${sim} ${(Math.round(lista * (1 - valor / 100) * 100) / 100).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u` : 'tiene que ser menor que 100 %';
+                                                                                        else efecto = valor < lista ? `${(Math.round((1 - valor / lista) * 10000) / 100).toLocaleString('es-UY', { maximumFractionDigits: 2 })} % menos que la lista` : 'no baja de la lista: se cobra la lista';
+                                                                                    }
+                                                                                    const malo = repetida || (desde > 0 && desde < 2) || (lista && valor > 0 && (esPct ? valor >= 100 : valor >= lista));
+                                                                                    return (
+                                                                                        <div key={i} className="flex flex-wrap items-center gap-2">
+                                                                                            <span className="text-sm text-slate-500">Desde</span>
+                                                                                            <input type="number" min="2" step="1" value={x.desde} aria-label={`Escala ${i + 1}: desde cuántas unidades`}
+                                                                                                onChange={e => setFila(i, { desde: e.target.value })} className={`w-24 ${claseCampoFila} font-bold`} />
+                                                                                            <span className="text-sm text-slate-500">unidades →</span>
+                                                                                            {!esPct && <span className="text-sm font-bold text-slate-500">{sim}</span>}
+                                                                                            <input type="number" min="0" step="0.01" value={x.valor} aria-label={`Escala ${i + 1}: ${esPct ? '% de descuento' : 'precio por unidad'}`}
+                                                                                                onChange={e => setFila(i, { valor: e.target.value })} className={`w-28 ${claseCampoFila} font-bold`} />
+                                                                                            <span className="text-sm text-slate-500">{esPct ? '% de descuento' : 'c/u'}</span>
+                                                                                            {(efecto || repetida) && <span className={`text-[11px] font-bold ${malo ? 'text-amber-700' : 'text-slate-500'}`}>{repetida ? 'esa cantidad ya está' : efecto}</span>}
+                                                                                            <button type="button" onClick={() => setF({ escalas: filas.filter((_, j) => j !== i) })} title="Quitar esta escala"
+                                                                                                className="ml-auto p-1.5 rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-600"><Trash2 size={14} /></button>
+                                                                                        </div>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        )}
+                                                                        <button type="button" onClick={agregar} className={claseAgregar}>+ Agregar escala</button>
+                                                                        {filas.length > 0 && lista && (
+                                                                            <div className="flex flex-wrap items-center gap-2 rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                                                                                <span className="font-bold text-slate-700">Probá una cantidad:</span>
+                                                                                <input type="number" min="1" step="1" value={form.escalasPrueba || ''} placeholder="30" aria-label="Cantidad de prueba"
+                                                                                    onChange={e => setF({ escalasPrueba: e.target.value })} className={`w-20 ${claseCampoFila}`} />
+                                                                                {rPrueba && (
+                                                                                    <span>→ <b className="text-slate-800">{fmtPrecio(rPrueba.precio, form.moneda)} c/u</b>
+                                                                                        {' · total '}<b className="text-slate-800">{fmtPrecio(Math.round(rPrueba.precio * prueba * 100) / 100, form.moneda)}</b>
+                                                                                        <span className="text-slate-400"> ({rPrueba.desde ? `escala desde ${rPrueba.desde}` : 'precio de lista'})</span></span>
+                                                                                )}
+                                                                            </div>
+                                                                        )}
+                                                                        <p className="text-[11px] text-slate-400">Se guarda con «Guardar». Lo cobra el pedido (solicitud y portal). Los perfiles y precios especiales del cliente compiten como siempre: gana el más bajo.</p>
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                );
+                                            })()}
+
                                             {/* ── PASO RESUMEN / PUBLICAR ── (02/10: mismo estilo que los otros pasos: secciones con el título
                                                 arriba, a todo el ancho y en dos columnas en pantallas anchas: a la izquierda cómo lo ve el cliente
                                                 y el resumen; a la derecha dónde se ve y el estado) */}
@@ -3374,6 +3513,9 @@ export default function ConfigurarProductosPage() {
                                                                     : `${ORIGENES.find(o => o.id === form.origenTipo)?.t}${origenSel ? ` — ${origenSel.Descripcion}` : ''}`)}
                                                                 {fila('Técnicas', form.esCombo ? 'por producto (ver composición)' : (AREAS.filter(a => form.tecnicas[a.id].on).map(a => { const conOpc = tecnicasCat.some(o => o.AreaID === a.id && o.Activo); const det = [conOpc ? form.tecnicas[a.id].modo.toLowerCase() : null, form.tecnicas[a.id].cobro === 'INCLUIDA' ? 'incluida' : null].filter(Boolean).join(', '); return det ? `${a.label} (${det})` : a.label; }).join(' · ') || 'ninguna'))}
                                                                 {fila('Precio', sinPrecio ? 'Sin precio' : `${fmtPrecio(form.precio, form.moneda)}${form.politica === 'PAQUETE' ? ' el paquete' : ' /u sin servicios'}`)}
+                                                                {/* [ESCALAS 27/10] */}
+                                                                {!form.esCombo && form.politica !== 'PAQUETE' && (form.escalas || []).length > 0
+                                                                    && fila('Por cantidad', textoEscalas(form.precio, { tipo: form.escalasTipo, filas: form.escalas }, simboloMoneda(form.moneda)) || 'Las escalas no bajan de la lista')}
                                                                 {fila('Cantidad', form.esCombo
                                                                     ? (itemsCombo.length ? `paquete armado: ${itemsCombo.map(it => `${it.cantidad}× ${it.itemNombre || `#${it.itemProIdProducto}`}${it.wmsVarianteId ? ` (${it.varianteNombre})` : ''}`).join(' + ')}` : 'sin productos en el combo')
                                                                     : form.politica === 'LIBRE' ? 'libre'

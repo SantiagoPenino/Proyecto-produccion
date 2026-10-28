@@ -1221,10 +1221,11 @@ export const generarPdfEstadoCuentaResumen = (cliente, documentos = [], ordenesP
             // código interno queda debajo como referencia.
             const nroOf = d.cfeEstado === 'ACEPTADO_DGI' ? parseNroOficialDgiPdf(d.cfeNumeroOficial) : null;
             const docBase = nroOf ? `N° ${nroOf}\n${d.documento}` : d.documento;
-            const docCell = d.factura ? `${docBase}\n${d.factura}` : docBase;
+            // Solo DGI (NC Factura Externa y su comprobante externo): no movió la cuenta.
+            const docCell = `${d.factura ? `${docBase}\n${d.factura}` : docBase}${d.soloDgi ? '\nSolo DGI' : ''}`;
             const anulado = d.estado === 'ANULADO';
             const impStr = `${sym} ${fmt(d.total)}`;
-            const pagoStr = anulado
+            const pagoStr = (anulado || d.soloDgi)
                 ? '—'
                 : (Number(d.pagado) > 0.01
                     ? `${sym} ${fmt(d.pagado)}\n${d.reciboPago ? 'Recibo ' + d.reciboPago : 'Cobro en caja'}`

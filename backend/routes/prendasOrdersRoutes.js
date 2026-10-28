@@ -117,7 +117,12 @@ router.get('/productos-terminados', verifyToken, async (req, res) => {
               ${conF1 && area ? 'AND vcfg.TecnicaPrincipal = @Area' : ''}
             ORDER BY Categoria, Descripcion
         `);
-        res.json({ success: true, data: r.recordset });
+        // [ESCALAS 27/10] precios por cantidad de cada producto ({ tipo, filas } o null): el sugerido "cantidad ×
+        // catálogo" usa la escala de esa cantidad, como el pedido
+        let esc = new Map();
+        try { esc = await require('../services/escalasProducto').deProductos(pool, r.recordset.map(x => x.ProIdProducto)); }
+        catch (eEsc) { logger.warn(`[Prendas] productos-terminados: escalas: ${eEsc.message}`); }
+        res.json({ success: true, data: r.recordset.map(x => ({ ...x, Escalas: esc.get(Number(x.ProIdProducto)) || null })) });
     } catch (e) {
         logger.warn(`[Prendas] productos-terminados: ${e.message}`);
         res.json({ success: true, data: [], warning: e.message });

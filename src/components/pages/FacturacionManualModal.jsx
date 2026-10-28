@@ -513,7 +513,8 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         return {
           ...prev,
           DocCliNombre: prev.DocCliNombre || c.Nombre || c.NombreFantasia || '',
-          DocCliDocumento: prev.DocCliDocumento || c.CioRuc || c.IDCliente || '',
+          // Solo el CI/RUT de la ficha: IDCliente es un código interno (ej. "SEPP1984"), no un documento.
+          DocCliDocumento: prev.DocCliDocumento || c.CioRuc || '',
           DocCliDireccion: prev.DocCliDireccion || c.DireccionTrabajo || '',
           DocCliCiudad: prev.DocCliCiudad || deptoNombre || ''
         };
@@ -568,7 +569,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         ...prev,
         DocCliNombre: c ? (c.Nombre || c.NombreFantasia || '') : prev.DocCliNombre,
         DocCliNombreFantasia: '',
-        DocCliDocumento: c ? (c.CioRuc || c.IDCliente || '') : prev.DocCliDocumento,
+        DocCliDocumento: c ? (c.CioRuc || '') : prev.DocCliDocumento,
         DocCliDireccion: c ? (c.DireccionTrabajo || '') : prev.DocCliDireccion,
         DocCliCiudad: c ? deptoNombre : prev.DocCliCiudad
       }));
@@ -823,7 +824,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
           CliIdCliente: idNumerico || val,
           DocCliNombre: c.Nombre || c.NombreFantasia || '',
           DocCliNombreFantasia: '',
-          DocCliDocumento: c.CioRuc || c.IDCliente || '',
+          DocCliDocumento: c.CioRuc || '',
           DocCliDireccion: c.DireccionTrabajo || '',
           DocCliCiudad: deptoNombre || ''
         };
@@ -862,7 +863,7 @@ export default function FacturacionManualModal({ onClose, onSuccess, initialData
         ...prev,
         DocCliNombre: c.Nombre || c.NombreFantasia || '',
         DocCliNombreFantasia: '',
-        DocCliDocumento: c.CioRuc || c.IDCliente || '',
+        DocCliDocumento: c.CioRuc || '',
         DocCliDireccion: c.DireccionTrabajo || '',
         DocCliCiudad: deptoNombre || ''
       }));
