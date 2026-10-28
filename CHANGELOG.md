@@ -300,6 +300,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Probado en local** a 1600 y 390 px: la lista, la ayuda, la confirmación de quitar (cancelada) y la ventana de vincular. Sin desborde de costado en el celular, y todos los pedidos de la pantalla dieron 200. No se guardó nada.
 - **Caja › Gestión de pagos (`/caja/pagos-online`) con la estética nueva (27/10).** Las cinco pestañas: Todos los pagos, Handy, Handy fallidos, MercadoPago y MercadoPago fallidos.
   - **Encabezado y pestañas** como en las demás pantallas: la elegida en negro y, en el celular, un selector. Los íconos de las pestañas de fallidos van en magenta; el «!» fijo que tenían se sacó porque no contaba nada.
+  - **Con el cambio de Yoania del 28/10** (merge de `85a923c`): un pago que cubre varios retiros los muestra uno por línea, y el detalle de órdenes suma la columna «Retiro». También en la tarjeta del celular, que su versión no tenía. Probado en local con el pago del 23/10 que cubre RT-34808, 34809, 34811 y 34814. «órdenes» con tilde (antes «4 ordenes»).
   - **Filtros:** fechas y método con el selector propio (antes, el calendario y la lista del navegador) y «Filtrar» en brand-cyan. El buscador de lo ya cargado y el contador de resultados pasan arriba de la tabla.
   - **Tablas claras** y, en el celular, un pago por tarjeta en vez de la tabla corrida de costado. En «Todos los pagos», las órdenes de cada pago se siguen desplegando, también en la tarjeta.
   - **Montos y fechas en formato uruguayo:** «$ 2.595,34» (antes «$ 2,595.34» o «2595.34») y «27/10/26, 13:22» (antes «1:22 p. m.»). Las pestañas de Handy y Mercado Pago dicen «$» y «US$» como la primera, en vez de UYU y USD.
@@ -366,7 +367,12 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Pestañas** en pastillas con la elegida en negro y su contador; en el celular, un selector.
   - **Tabla clara:** número en mono, importe en negro, vencimiento en negro (antes índigo).
   - **Estados:** en cartera verde, depositado cian, emitido ámbar (falta el débito), rechazado magenta; endosado, cobrado y anulado en gris.
-  - **Acciones:** antes eran cinco botones de cinco colores en cada fila. Ahora son botones blancos parejos, que se ponen cian al pasar; «Rechazar» y «Anular», magenta.
+  - **Acciones:** antes eran cinco botones de cinco colores en cada fila. Desde el 28/10 son los íconos con tooltip que agregó Yoania, con los colores de la estética nueva: depositar y endosar en cian, rechazar en magenta, cobrado en verde, y anular gris que pasa a magenta, separado del resto.
+  - **Con lo de Yoania del 28/10** (merge de `85a923c`), en las mismas piezas:
+    - **filtros** por banco, por texto (cliente, librador, número o documento) y por fecha (vencimiento, emisión o ingreso), con la cantidad de cheques y el total por moneda; con el selector y el selector de fecha propios (en su versión, los del navegador);
+    - **columna «Cliente · Qué paga»** y el librador debajo del banco; en el celular, en la tarjeta;
+    - **ventana «¿Qué hace cada acción?»** clara y por encima de la barra de arriba (en su versión `z-50`); en el celular se abre desde un enlace arriba de la lista.
+    - Su lógica quedó igual (filtros, totales, textos de ayuda y condiciones de cada acción comparados contra su versión). Probado en local: «Banco Itaú» deja 31 de 99 cheques con el total recalculado, sin desborde a 390 px.
   - **En el celular,** una tarjeta por cheque.
   - **Ventana de anular** clara, por encima de la barra de arriba (antes `z-50`). «Anular y revertir asiento» va en magenta.
   - **Sin cambios de lógica** (comparada con `diff`).

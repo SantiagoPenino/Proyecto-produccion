@@ -259,6 +259,8 @@ const totalesCobranzaDeOrden = async (pool, ordenId, monedaDestino = null) => {
                    MAX(CASE WHEN ISNULL(PerfilAplicado, '') LIKE 'Prepago%'
                               OR ISNULL(PerfilAplicado, '') LIKE 'Reposici%'
                               OR ISNULL(LogPrecioAplicado, '') LIKE '%Cubierto%por Plan%'
+                              -- [SIN CARGO 27/10] precio establecido en 0 con motivo (erpSyncService)
+                              OR ISNULL(LogPrecioAplicado, '') LIKE '%precio establecido en 0%'
                             THEN 1 ELSE 0 END) AS CeroIntencional
             FROM dbo.PedidosCobranzaDetalle WITH(NOLOCK)
             WHERE OrdenID = @OID

@@ -1137,8 +1137,9 @@ exports.getHistorialPagos = async (req, res) => {
                 p.PagMontoPago AS Monto,
                 mon.MonSimbolo AS Moneda,
                 mp.MPaDescripcionMetodo AS MetodoPago,
-                -- Orden de retiro vinculada
-                COALESCE(orr.FormaRetiro, 'R') + '-' + CAST(orr.OReIdOrdenRetiro AS VARCHAR) AS OrdenRetiro,
+                -- Orden(es) de retiro que pagó este pago, juntas (ver OUTER APPLY ret abajo)
+                ret.OrdenRetiro,
+                ret.CantRetiros,
                 -- Cliente
                 c.Nombre AS NombreCliente,
                 c.IDCliente AS CodigoCliente,
@@ -1151,29 +1152,42 @@ exports.getHistorialPagos = async (req, res) => {
                            CAST(od.OrdCantidad AS DECIMAL(10,2)) AS cantidad,
                            CAST(od.OrdCostoFinal AS FLOAT) AS monto,
                            monOd.MonSimbolo AS moneda,
-                           mo.MOrNombreModo AS modo
+                           mo.MOrNombreModo AS modo,
+                           -- Retiro de cada orden: un mismo pago puede cubrir varios retiros
+                           COALESCE(rOd.FormaRetiro, 'R') + '-' + CAST(rOd.OReIdOrdenRetiro AS VARCHAR(20)) AS retiro
                     FROM OrdenesDeposito od WITH(NOLOCK)
                     LEFT JOIN Articulos art WITH(NOLOCK) ON art.ProIdProducto = od.ProIdProducto
                     LEFT JOIN Monedas monOd WITH(NOLOCK) ON monOd.MonIdMoneda = od.MonIdMoneda
                     LEFT JOIN ModosOrdenes mo WITH(NOLOCK) ON mo.MOrIdModoOrden = od.MOrIdModoOrden
+                    LEFT JOIN OrdenesRetiro rOd WITH(NOLOCK) ON rOd.OReIdOrdenRetiro = od.OReIdOrdenRetiro
                     WHERE od.PagIdPago = p.PagIdPago
-                       OR (orr.OReIdOrdenRetiro IS NOT NULL
-                           AND od.OReIdOrdenRetiro = orr.OReIdOrdenRetiro
-                           AND od.PagIdPago IS NULL)
+                       OR (od.PagIdPago IS NULL
+                           AND od.OReIdOrdenRetiro IN (SELECT r.OReIdOrdenRetiro FROM OrdenesRetiro r WITH(NOLOCK)
+                                                       WHERE r.PagIdPago = p.PagIdPago))
+                    ORDER BY od.OReIdOrdenRetiro, od.OrdIdOrden
                     FOR JSON PATH
                 ) AS OrdenesJSON,
                 -- Cantidad de órdenes (misma lógica dual)
                 (SELECT COUNT(*) FROM OrdenesDeposito od WITH(NOLOCK)
                  WHERE od.PagIdPago = p.PagIdPago
-                    OR (orr.OReIdOrdenRetiro IS NOT NULL
-                        AND od.OReIdOrdenRetiro = orr.OReIdOrdenRetiro
-                        AND od.PagIdPago IS NULL)
+                    OR (od.PagIdPago IS NULL
+                        AND od.OReIdOrdenRetiro IN (SELECT r.OReIdOrdenRetiro FROM OrdenesRetiro r WITH(NOLOCK)
+                                                    WHERE r.PagIdPago = p.PagIdPago))
                 ) AS CantOrdenes,
                 p.PagRutaComprobante AS Comprobante
             FROM Pagos p WITH(NOLOCK)
             LEFT JOIN Monedas mon WITH(NOLOCK) ON mon.MonIdMoneda = p.PagIdMonedaPago
             LEFT JOIN MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago
-            LEFT JOIN OrdenesRetiro orr WITH(NOLOCK) ON orr.PagIdPago = p.PagIdPago
+            -- Retiros que pagó este pago, en UNA fila. Antes era un LEFT JOIN a OrdenesRetiro:
+            -- una transferencia que pagaba 4 retiros salía 4 veces, cada una con el monto entero
+            -- y las 4 órdenes (Coordinacion user, 23-10-2026: 4 × $ 98.400,45 por un solo pago).
+            OUTER APPLY (
+                SELECT STRING_AGG(COALESCE(r.FormaRetiro, 'R') + '-' + CAST(r.OReIdOrdenRetiro AS VARCHAR(20)), ', ')
+                           WITHIN GROUP (ORDER BY r.OReIdOrdenRetiro) AS OrdenRetiro,
+                       COUNT(*) AS CantRetiros
+                FROM OrdenesRetiro r WITH(NOLOCK)
+                WHERE r.PagIdPago = p.PagIdPago
+            ) ret
             OUTER APPLY (
                 -- Ruta 1: cliente vía OrdenesDeposito.PagIdPago (pagos manuales)
                 SELECT TOP 1 od.CliIdCliente
@@ -1185,7 +1199,8 @@ exports.getHistorialPagos = async (req, res) => {
                 -- Ruta 2: cliente vía OrdenRetiro→OrdenesDeposito.OReIdOrdenRetiro (pagos Handy)
                 SELECT TOP 1 od2.CliIdCliente
                 FROM OrdenesDeposito od2 WITH(NOLOCK)
-                WHERE od2.OReIdOrdenRetiro = orr.OReIdOrdenRetiro
+                WHERE od2.OReIdOrdenRetiro IN (SELECT r.OReIdOrdenRetiro FROM OrdenesRetiro r WITH(NOLOCK)
+                                               WHERE r.PagIdPago = p.PagIdPago)
                 ORDER BY od2.OrdIdOrden
             ) od_c2
             LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = COALESCE(od_c1.CliIdCliente, od_c2.CliIdCliente)
@@ -1206,7 +1221,9 @@ exports.getHistorialPagos = async (req, res) => {
             request.input('ClientFilter', sql.NVarChar, clientFilter);
         }
         if (orderFilter) {
-            queryStr += ` AND (COALESCE(orr.FormaRetiro, 'R') + '-' + CAST(orr.OReIdOrdenRetiro AS VARCHAR) LIKE '%' + @OrderFilter + '%')`;
+            queryStr += ` AND EXISTS (SELECT 1 FROM OrdenesRetiro rf WITH(NOLOCK)
+                                      WHERE rf.PagIdPago = p.PagIdPago
+                                        AND COALESCE(rf.FormaRetiro, 'R') + '-' + CAST(rf.OReIdOrdenRetiro AS VARCHAR) LIKE '%' + @OrderFilter + '%')`;
             request.input('OrderFilter', sql.NVarChar, orderFilter);
         }
         if (metodoPago) {

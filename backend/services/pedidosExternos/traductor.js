@@ -99,8 +99,10 @@ function traducir(pedido) {
     // del producto MÁS cada hermana (tela impresa, corte, costura…) aunque en el configurador
     // estén "incluidas en el precio". Con [PRECIO ESTABLECIDO] la PRO vale lo pactado y las
     // hermanas quedan consolidadas; con [FACTURA POR AREA] cada área cobra la suya.
-    const marcadorT = prod.precio?.modo === 'ESTABLECIDO' && Number(prod.precio.monto) > 0
-      ? `[PRECIO ESTABLECIDO: ${parseFloat(prod.precio.monto)} ${prod.precio.moneda}]`
+    // [SIN CARGO 27/10] En 0 solo si viene marcado sin cargo (con su motivo): un 0 suelto sigue sin marcador, como antes.
+    const sinCargoT = prod.precio?.modo === 'ESTABLECIDO' && !!prod.precio.sinCargo && Number(prod.precio.monto) === 0;
+    const marcadorT = prod.precio?.modo === 'ESTABLECIDO' && (Number(prod.precio.monto) > 0 || sinCargoT)
+      ? `[PRECIO ESTABLECIDO: ${parseFloat(prod.precio.monto)} ${prod.precio.moneda}]${sinCargoT ? ` [SIN CARGO: ${String(prod.precio.motivo || '').replace(/[[\]]/g, '').trim()}]` : ''}`
       : (prod.precio?.modo === 'POR_AREA' ? '[FACTURA POR AREA]' : '');
     listaServicios.push({
       esPrincipal: true, areaId: 'PRO', esProductoFabricado: true,

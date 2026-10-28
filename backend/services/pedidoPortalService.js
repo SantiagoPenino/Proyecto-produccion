@@ -18,6 +18,7 @@
 const { sql } = require('../config/db');
 const logger = require('../utils/logger');
 const svc = require('./solicitudesVendedorService');
+const escalasSvc = require('./escalasProducto');   // [ESCALAS 27/10] precios por cantidad del producto
 
 const fallo = (status, mensaje, extra) => Object.assign(new Error(mensaje), { status, ...(extra || {}) });
 const txt = (v, max = 200) => String(v == null ? '' : v).trim().slice(0, max);
@@ -131,6 +132,8 @@ async function producto(pool, proId) {
     cantidadMinima: Number(p.CantidadMinima) || 0, cantidadFija: Number(p.CantidadFija) || 0,
     precio: p.Precio != null && Number(p.Precio) > 0 ? Number(p.Precio) : null, monId: p.MonIdMoneda === 2 ? 2 : 1,
     moneda: p.MonIdMoneda === 2 ? 'USD' : 'UYU', foto: p.Foto || null,
+    // [ESCALAS 27/10] precios por cantidad: { tipo, filas: [{ desde, valor }] } o null
+    escalas: await escalasSvc.deProducto(pool, p.ProIdProducto).catch(e => { logger.warn(`[PORTAL-PEDIDO] escalas de ${p.ProIdProducto}: ${e.message}`); return null; }),
   };
 }
 const esArmable = (p) => p.publicado && p.tipoVitrina !== 'TERMINADO' && !!p.moldeRef;
@@ -305,7 +308,7 @@ async function resumen(pool, token, id) {
   return {
     SolicitudID: s.SolicitudID, ProductoSolID: s.ProductoSolID, confirmado: s.PortalConfirmado, cancelado: s.Estado === 'CANCELADA', pedido: s.PedidoNoDocERP || null,
     tizada: ult ? { estado: ult.Estado } : null,   // el motivo lo ve el equipo en la solicitud
-    producto: { proId: prod.proId, nombre: prod.nombreCorto, nombreCompleto: prod.nombre, foto: prod.foto, precio: prod.precio, moneda: prod.moneda, cantidadMinima: prod.cantidadMinima, cantidadFija: prod.cantidadFija },
+    producto: { proId: prod.proId, nombre: prod.nombreCorto, nombreCompleto: prod.nombre, foto: prod.foto, precio: prod.precio, escalas: prod.escalas, moneda: prod.moneda, cantidadMinima: prod.cantidadMinima, cantidadFija: prod.cantidadFija },
     extras: extras.map(e => {
       const pa = partes.recordset.find(x => x.Tipo === e.tipo);
       const d = (() => { try { return JSON.parse(pa?.DatosJson || '{}'); } catch (_) { return {}; } })();
@@ -578,7 +581,9 @@ async function confirmar(pool, token, id, b) {
   });
 
   // 2. Precio: el de catálogo por prenda (lo que dice la tienda). Los extras "aparte" los suma el vendedor; sin precio de catálogo, cobra cada área.
-  if (prod.precio) await svc.guardarPrecio(pool, s.user, s.SolicitudID, { ModoCobro: 'PRECIO_ESTABLECIDO', PrecioPactado: +(prod.precio * prendas).toFixed(2), MonIdMoneda: prod.monId, RequiereSena: false });
+  //    [ESCALAS 27/10] con precios por cantidad, el de la escala de esas prendas (lo mismo que le mostró la pantalla)
+  const precioUnit = prod.precio ? escalasSvc.precioPara(prod.precio, prod.escalas, prendas).precio : null;
+  if (prod.precio) await svc.guardarPrecio(pool, s.user, s.SolicitudID, { ModoCobro: 'PRECIO_ESTABLECIDO', PrecioPactado: +(precioUnit * prendas).toFixed(2), MonIdMoneda: prod.monId, RequiereSena: false });
   else await svc.guardarPrecio(pool, s.user, s.SolicitudID, { ModoCobro: 'POR_AREA', MonIdMoneda: prod.monId, RequiereSena: false });
 
   // 3. A TIZADA PRO: el mismo envío que hace el vendedor ("Enviar a Diseño" con "Generar ya la tizada"). Antes de salir,
@@ -593,7 +598,7 @@ async function confirmar(pool, token, id, b) {
   const aparte = (await extrasDelProducto(pool, s.ProIdProducto)).filter(e => e.cobro === 'APARTE' && p.Partes.some(pa => pa.Tipo === e.tipo)).map(e => e.nombre);
   await svc._baseTizadaPro().registrarEvento(pool, s.user, {
     solicitudId: s.SolicitudID, productoSolId: s.ProductoSolID, tipo: 'EDICION',
-    texto: `El cliente confirmó el pedido desde la tienda del portal: ${prendas} prenda(s)${prod.precio ? ` × ${prod.moneda === 'USD' ? 'US$' : '$'} ${prod.precio}` : ''}.`
+    texto: `El cliente confirmó el pedido desde la tienda del portal: ${prendas} prenda(s)${prod.precio ? ` × ${prod.moneda === 'USD' ? 'US$' : '$'} ${precioUnit}${precioUnit < prod.precio ? ` (precio por cantidad; lista ${prod.precio})` : ''}` : ''}.`
       + `${r?.tizada ? ` TIZADA PRO: ${r.tizada.Estado}${r.tizada.mensaje ? ` (${r.tizada.mensaje})` : ''}.` : ''}`
       + `${aparte.length ? ` Se cobra aparte (sumarlo al precio): ${aparte.join(', ')}.` : ''}`,
   });

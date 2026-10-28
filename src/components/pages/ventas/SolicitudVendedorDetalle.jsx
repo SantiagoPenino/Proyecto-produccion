@@ -298,7 +298,7 @@ export default function SolicitudVendedorDetalle() {
                 <Dato l="Precio" v={!s.ModoCobro ? <span className="text-rose-600">Sin pactar</span> : (
                     <span className="flex flex-wrap items-baseline gap-x-1.5">
                         <span>{s.ModoCobro === 'PRECIO_ESTABLECIDO' ? plata(s.PrecioPactado, s.MonIdMoneda) : 'Por cada área'}</span>
-                        <span className="text-xs font-semibold text-slate-500">{s.ModoCobro === 'PRECIO_ESTABLECIDO' ? '· precio establecido' : ''}</span>
+                        <span className="text-xs font-semibold text-slate-500">{s.ModoCobro !== 'PRECIO_ESTABLECIDO' ? '' : Number(s.PrecioPactado) === 0 && s.MotivoSinCargo ? `· sin cargo (${s.MotivoSinCargo})` : '· precio establecido'}</span>
                         <span className="text-xs font-semibold">· {!s.RequiereSena ? <span className="text-slate-500">sin seña</span>
                             : s.SenaConfirmada ? <span className="text-emerald-700">seña {plata(s.SenaMonto, s.MonIdMoneda)} confirmada</span>
                                 : <span className="text-rose-600">seña {plata(s.SenaMontoRequerido, s.MonIdMoneda)} sin confirmar</span>}</span>
@@ -629,7 +629,7 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
                     <div className="min-w-0">
                         <h2 className="truncate text-sm font-black text-slate-800">Producto {n}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'}</h2>
                         {p.Catalogo && (p.Catalogo.codigo || p.Catalogo.familia) ? <p className="text-[11px] text-slate-400">{[p.Catalogo.codigo, p.Catalogo.familia].filter(Boolean).join(' · ')}</p> : null}
-                        <p className="text-xs text-slate-600">{onCantidad && !editor ? <CantidadAuto p={p} onGuardar={onCantidad} /> : <><b>{p.Cantidad}</b> prendas</>}{p.Catalogo?.precio != null ? <> · {p.Catalogo.moneda === 'USD' ? 'US$' : '$'} {Number(p.Catalogo.precio).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u <span className="text-slate-400">(catálogo)</span></> : null}</p>
+                        <p className="text-xs text-slate-600">{onCantidad && !editor ? <CantidadAuto p={p} onGuardar={onCantidad} /> : <><b>{p.Cantidad}</b> prendas</>}{p.Catalogo?.precio != null ? <> · {p.Catalogo.moneda === 'USD' ? 'US$' : '$'} {Number(p.Catalogo.precio).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u <span className="text-slate-400">(catálogo{p.Catalogo.escalaDesde ? `, precio desde ${p.Catalogo.escalaDesde}; lista ${p.Catalogo.moneda === 'USD' ? 'US$' : '$'} ${Number(p.Catalogo.lista).toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : ''})</span></> : null}</p>
                     </div>
                 </div>
                 <span className="flex items-center gap-2">
@@ -2149,14 +2149,18 @@ function BotonSubir({ roles, onFiles, busy }) {
 // el monto de la seña), se dice ahí mismo y no se guarda hasta completarlo. "Confirmar seña" sigue siendo un botón: es un
 // hecho (entró la plata), no un dato.
 function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
-    const desdeS = () => ({ ModoCobro: s.ModoCobro || '', PrecioPactado: s.PrecioPactado ?? '', MonIdMoneda: s.MonIdMoneda || 1, RequiereSena: !!s.RequiereSena, SenaMontoRequerido: s.SenaMontoRequerido ?? '' });
-    const norma = (x) => JSON.stringify([x.ModoCobro, x.ModoCobro === 'PRECIO_ESTABLECIDO' ? Number(x.PrecioPactado) || 0 : 0, Number(x.MonIdMoneda) || 1, !!x.RequiereSena, x.RequiereSena ? Number(x.SenaMontoRequerido) || 0 : 0]);
+    const desdeS = () => ({ ModoCobro: s.ModoCobro || '', PrecioPactado: s.PrecioPactado ?? '', MonIdMoneda: s.MonIdMoneda || 1, RequiereSena: !!s.RequiereSena, SenaMontoRequerido: s.SenaMontoRequerido ?? '', MotivoSinCargo: s.MotivoSinCargo || '' });
+    // [SIN CARGO 27/10] precio establecido en 0 (escrito, no vacío) = sin cargo: el motivo es obligatorio
+    const esCero = (x) => x.ModoCobro === 'PRECIO_ESTABLECIDO' && String(x.PrecioPactado ?? '').trim() !== '' && Number(x.PrecioPactado) === 0;
+    const motivoDe = (x) => String(x.MotivoSinCargo || '').trim();
+    const norma = (x) => JSON.stringify([x.ModoCobro, x.ModoCobro === 'PRECIO_ESTABLECIDO' ? Number(x.PrecioPactado) || 0 : 0, Number(x.MonIdMoneda) || 1, !!x.RequiereSena, x.RequiereSena ? Number(x.SenaMontoRequerido) || 0 : 0, esCero(x) ? motivoDe(x) : '']);
     const guardadoAhora = norma(desdeS());
     const [f, setF] = useState(desdeS);
     useEffect(() => { setF(desdeS()); }, [guardadoAhora]);   // eslint-disable-line react-hooks/exhaustive-deps
     const [sena, setSena] = useState({ SenaVia: '', SenaMonto: '', SenaReferencia: '' });
     const falta = (x) => (!x.ModoCobro ? null
-        : x.ModoCobro === 'PRECIO_ESTABLECIDO' && !(Number(x.PrecioPactado) > 0) ? 'Falta el precio de la solicitud: se guarda cuando lo pongas.'
+        : esCero(x) && !motivoDe(x) ? 'Precio sin cargo: escribí el motivo (se guarda cuando lo pongas).'
+        : x.ModoCobro === 'PRECIO_ESTABLECIDO' && !esCero(x) && !(Number(x.PrecioPactado) > 0) ? 'Falta el precio de la solicitud: se guarda cuando lo pongas.'
             : x.RequiereSena && !(Number(x.SenaMontoRequerido) > 0) ? 'Falta de cuánto es la seña: se guarda cuando lo pongas.' : null);
     // cambio = lo que se acaba de elegir (vacío al dejar un campo de monto)
     const guardar = async (cambio = {}) => {
@@ -2176,7 +2180,7 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
     const totalCat = conCatalogo ? r2(prods.reduce((t, p) => t + Number(p.Catalogo.precio) * Number(p.Cantidad), 0)) : null;
     const pactado = Number(f.PrecioPactado) || 0;
     const mismaMoneda = conCatalogo && Number(f.MonIdMoneda) === monedaCat;
-    const dif = mismaMoneda && pactado > 0 ? r2(totalCat - pactado) : null;   // > 0 descuento · < 0 recargo
+    const dif = mismaMoneda && (pactado > 0 || esCero(f)) ? r2(totalCat - pactado) : null;   // > 0 descuento · < 0 recargo
     const unico = prods.length === 1 ? prods[0] : null;
     const porPrendaDe = (x) => (unico && Number(x) > 0 ? String(r2(Number(x) / Number(unico.Cantidad))) : '');
     const [porPrenda, setPorPrenda] = useState(() => porPrendaDe(f.PrecioPactado));
@@ -2193,7 +2197,7 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
             {!puede ? (
                 <div className="grid grid-cols-2 gap-3 text-xs">
                     <Info l="Cómo se cobra" v={!s.ModoCobro ? <span className="text-rose-600 font-bold">Sin pactar</span> : s.ModoCobro === 'POR_AREA' ? 'Se factura por cada área' : 'Precio establecido (todo incluido)'} />
-                    <Info l="Precio de la solicitud" v={s.ModoCobro === 'PRECIO_ESTABLECIDO' ? <b>{plata(s.PrecioPactado, s.MonIdMoneda)}</b> : '—'} />
+                    <Info l="Precio de la solicitud" v={s.ModoCobro !== 'PRECIO_ESTABLECIDO' ? '—' : esCero(desdeS()) ? <><b>Sin cargo</b>{s.MotivoSinCargo ? ` · ${s.MotivoSinCargo}` : ''}</> : <b>{plata(s.PrecioPactado, s.MonIdMoneda)}</b>} />
                     {s.ModoCobro === 'PRECIO_ESTABLECIDO' && conCatalogo ? <Info l="Precio de catálogo" v={<>{prods.map(p => `${p.Cantidad} × ${plata(p.Catalogo.precio, monedaCat)}`).join(' + ')} = <b>{plata(totalCat, monedaCat)}</b>{dif > 0 ? ` · descuento ${r2(dif / totalCat * 100)} %` : dif < 0 ? ` · recargo ${r2(-dif / totalCat * 100)} %` : ''}</>} /> : null}
                     <Info l="Seña" v={!s.RequiereSena ? 'No requiere' : <>Requiere <b>{plata(s.SenaMontoRequerido, s.MonIdMoneda)}</b></>} />
                     {s.RequiereSena ? <Info l="Estado de la seña" v={s.SenaConfirmada ? <span className="text-emerald-700 font-bold">Confirmada</span> : <span className="text-rose-600 font-bold">Sin confirmar — frena la conversión a pedido</span>} /> : null}
@@ -2224,7 +2228,7 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
                                                 <tr key={p.ProductoSolID} className="border-t border-slate-100">
                                                     <td className="px-2 py-1.5 text-slate-800">{p.ProductoNombre || `Producto ${i + 1}`}</td>
                                                     <td className="px-2 py-1.5 text-right">{p.Cantidad}</td>
-                                                    <td className="px-2 py-1.5 text-right">{pc != null ? plata(pc, monCat(p)) : <span className="text-slate-400">sin precio de catálogo</span>}</td>
+                                                    <td className="px-2 py-1.5 text-right">{pc != null ? <>{plata(pc, monCat(p))}{p.Catalogo.escalaDesde ? <span className="block text-[10px] text-slate-400">precio desde {p.Catalogo.escalaDesde} (lista {plata(p.Catalogo.lista, monCat(p))})</span> : null}</> : <span className="text-slate-400">sin precio de catálogo</span>}</td>
                                                     <td className="px-2 py-1.5 text-right">{pc != null ? plata(r2(pc * Number(p.Cantidad)), monCat(p)) : '—'}</td>
                                                 </tr>
                                             );
@@ -2243,9 +2247,18 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
                                 </Campo>
                             )}
                             <Campo label="Precio de la solicitud entera">
-                                <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />
+                                <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO}
+                                    title="Para un trabajo sin cargo, poné 0 y escribí el motivo" />
                             </Campo>
+                            {esCero(f) && (
+                                <Campo label="Motivo del sin cargo (obligatorio)">
+                                    <input value={f.MotivoSinCargo} maxLength={300} placeholder="Ej.: canje con el club, garantía, regalo de la casa"
+                                        onChange={e => setF(x => ({ ...x, MotivoSinCargo: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                        className={`${INPUT} min-w-[280px]`} />
+                                </Campo>
+                            )}
                         </div>
+                        {!esCero(f) && <p className="text-[11px] text-slate-400">Si el trabajo va sin cargo, poné 0 en el precio y escribí el motivo: en el pedido queda como descuento del 100 %.</p>}
                         {conCatalogo && (
                             <div className="flex flex-wrap items-center gap-2 text-[11px]">
                                 {dif == null ? (pactado > 0 && !mismaMoneda ? <span className="text-slate-500">El precio de catálogo está en {MONEDA[monedaCat]}: no se compara con el pactado.</span> : null)

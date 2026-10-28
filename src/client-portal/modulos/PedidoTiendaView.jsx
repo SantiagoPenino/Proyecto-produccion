@@ -3,6 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Toaster, toast } from 'sonner';
 import { AlertTriangle, ArrowLeft, Check, CheckCircle2, Circle, FileDown, ImageOff, Loader2, Lock, Plus, RotateCw, Send, Trash2, Upload, X } from 'lucide-react';
 import { apiClient } from '../api/apiClient';
+import { precioPorCantidad, textoEscalas } from '../../utils/escalasPrecio';   // [ESCALAS] precios por cantidad (27/10)
 import { solicitudesVendedorService as svc } from '../../services/modules/solicitudesVendedorService';
 import { Miniatura, errorDe } from '../../components/pages/ventas/solicitudesComunes';
 import { PrincipalBloque, useAccionesSolicitud } from '../../components/pages/ventas/SolicitudVendedorDetalle';
@@ -107,7 +108,11 @@ export const PedidoTiendaView = () => {
     const faltaArteExtra = disenos.flatMap(d => res.extras.filter(e => llevaEn(disenos, d, e) && !editablesDe(d, e.tipo).length && !subidosDe(e, d).length).map(e => `${d.nombre} · ${e.nombre}`));
     const telas = [...new Set((p.Datos?.sublimacion?.piezas || []).filter(x => !x.fija).map(x => x.telaNombre).filter(Boolean))];
     const prod = res.producto;
-    const total = prod.precio != null ? prod.precio * prendas : null;
+    // [ESCALAS 27/10] con precios por cantidad, el c/u de la escala de esas prendas (lo mismo que cobra el pedido)
+    const porCant = precioPorCantidad(prod.precio, prod.escalas, prendas);
+    const unit = prod.precio != null ? (porCant.precio ?? prod.precio) : null;
+    const total = unit != null ? Math.round(unit * prendas * 100) / 100 : null;
+    const escalasTxt = textoEscalas(prod.precio, prod.escalas, simbolo(prod.moneda));
     const aparte = res.extras.filter(e => e.activo && e.cobro === 'APARTE');
 
     // Lo que falta, para verlo de un vistazo (la validación de verdad la hace el servidor al confirmar)
@@ -484,6 +489,7 @@ export const PedidoTiendaView = () => {
                         <div className="min-w-0">
                             <p className="text-xs font-bold text-zinc-200 uppercase leading-snug line-clamp-2">{prod.nombre}</p>
                             {prod.precio != null && <p className="text-[11px] text-zinc-500 font-gsanscode">{simbolo(prod.moneda)} {numero(prod.precio)} c/u</p>}
+                            {escalasTxt && <p className="text-[11px] text-emerald-400/90 font-gsanscode">{escalasTxt}</p>}
                         </div>
                     </div>
 
@@ -508,7 +514,7 @@ export const PedidoTiendaView = () => {
                                         ? <span className="font-gsanscode font-bold"><span className="text-[13px] text-zinc-500">{simbolo(prod.moneda)} </span><span className="text-2xl text-zinc-100">{numero(total)}</span></span>
                                         : <span className="text-sm font-bold text-zinc-300">A cotizar</span>}
                                 </div>
-                                {total != null && <p className="text-[11px] text-zinc-500 text-right">{prendas} {unidadTxt(prendas)} × {simbolo(prod.moneda)} {numero(prod.precio)}</p>}
+                                {total != null && <p className="text-[11px] text-zinc-500 text-right">{prendas} {unidadTxt(prendas)} × {simbolo(prod.moneda)} {numero(unit)}{porCant.desde ? ' (precio por cantidad)' : ''}</p>}
                                 {aparte.length > 0 && <p className="text-[11px] text-amber-400/90">{aparte.map(e => e.nombre).join(' y ')}: se cobra aparte según la lista de precios.</p>}
                             </div>
 

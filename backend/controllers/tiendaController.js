@@ -374,6 +374,13 @@ exports.getTiendaCatalogo = async (req, res) => {
         });
         const combosPorProd = {};
         combos.recordset.forEach(c => { (combosPorProd[c.ProIdProducto] = combosPorProd[c.ProIdProducto] || []).push(c); });
+        // [ESCALAS 27/10] Precios por cantidad de los que se arman a pedido (los TERMINADO del carrito no: esa compra
+        // cobra el precio de lista)
+        let escPorProd = new Map();
+        try {
+            escPorProd = await require('../services/escalasProducto').deProductos(pool,
+                prods.recordset.filter(p => (p.TipoVitrina || 'TERMINADO').trim().toUpperCase() !== 'TERMINADO').map(p => p.ProIdProducto));
+        } catch (eEsc) { logger.warn('[Tienda] escalas de precio: ' + eEsc.message); }
 
         const data = prods.recordset.map(p => {
             // [COMBOS] Stock del combo = cuántos se pueden ARMAR con el stock de sus
@@ -422,6 +429,7 @@ exports.getTiendaCatalogo = async (req, res) => {
                 diasEntrega: p.DiasEntrega > 0 ? p.DiasEntrega : null,
                 precio: precioBase,
                 moneda: monedaBase,
+                escalas: escPorProd.get(Number(p.ProIdProducto)) || null,   // [ESCALAS 27/10] { tipo, filas } o null
                 fotos: fotosPorProd[p.ProIdProducto] || [],
                 fotosColor: fotosColorPorProd[p.ProIdProducto] || [],
                 variantes,

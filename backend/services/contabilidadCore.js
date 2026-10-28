@@ -770,11 +770,13 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
               + ISNULL(' (' + od.OrdNombreTrabajo + ')', '')
               -- Nº de retiro SIEMPRE en la línea: los webhooks (Handy/MP) lo mandan en
               -- TdeDescripcion ("Retiro diferido RW-x") pero caja manda otro texto y el
-              -- RW se perdía. Solo se agrega si ningún texto de la línea ya trae "RW-".
+              -- número se perdía. Solo se agrega si ningún texto de la línea ya lo trae.
+              -- El prefijo es el REAL del retiro (OrdenesRetiro.FormaRetiro: RT de caja, RW
+              -- web, RL): antes salía siempre "RW-" y un RT-34808 se facturaba como RW-34808.
               + CASE WHEN td.TdeTipoReferencia = 'ORDEN_RETIRO'
-                          AND ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia) NOT LIKE '%RW-%'
-                          AND COALESCE(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), CAST(td.TdeDescripcion AS VARCHAR(1000)), '') NOT LIKE '%RW-%'
-                     THEN ' - Retiro RW-' + CAST(td.TdeReferenciaId AS VARCHAR(20)) ELSE '' END
+                          AND ISNULL(od.OrdCodigoOrden, td.TdeCodigoReferencia) NOT LIKE '%R[WTL]-[0-9]%'
+                          AND COALESCE(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), CAST(td.TdeDescripcion AS VARCHAR(1000)), '') NOT LIKE '%R[WTL]-[0-9]%'
+                     THEN ' - Retiro ' + COALESCE(LTRIM(RTRIM(orFr.FormaRetiro)), 'RW') + '-' + CAST(td.TdeReferenciaId AS VARCHAR(20)) ELSE '' END
               + CHAR(13)+CHAR(10)
               + ISNULL('Tecnico: ' + CAST(pcd.DatoTecnico AS VARCHAR(1000)) + CHAR(13)+CHAR(10), '')
               + ISNULL(CAST(pcd.LogPrecioAplicado AS VARCHAR(1000)), ISNULL(CAST(td.TdeDescripcion AS VARCHAR(1000)), '')),
@@ -790,6 +792,9 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
                WHEN od.MonIdMoneda = 1 THEN 'UYU'
                ELSE ISNULL(pc.Moneda, ISNULL(pcd.Moneda, 'UYU')) END AS MonedaPC
         FROM dbo.TransaccionDetalle td
+        -- Prefijo real del retiro (RT/RW/RL) para el "Retiro X-n" de la línea. Una fila por retiro.
+        LEFT JOIN dbo.OrdenesRetiro orFr WITH(NOLOCK)
+          ON td.TdeTipoReferencia = 'ORDEN_RETIRO' AND orFr.OReIdOrdenRetiro = td.TdeReferenciaId
         -- Intento 1: relacion moderna por tabla intermedia
         LEFT JOIN dbo.RelOrdenesRetiroOrdenes rel
           ON rel.OReIdOrdenRetiro = td.TdeReferenciaId

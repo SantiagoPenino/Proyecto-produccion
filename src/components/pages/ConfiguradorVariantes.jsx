@@ -50,7 +50,8 @@ export default function PasoVariantes({ proId, hayCambios, onCambio, onEditar, B
                 <Layers size={18} className="text-brand-cyan shrink-0 mt-0.5" />
                 <div className="space-y-1">
                     <p><b className="text-slate-800">Cada modelo del molde que se vende puede ser una variante:</b> un artículo más, con su código ({padre.codArticulo}-01, -02…), su nombre, su foto y su estado. Es lo que se elige en la solicitud y sale en el pedido y la factura.</p>
-                    <p>Nace <b>igual a {padre.descripcion}</b> (técnicas, telas, apliques, accesorios, ficha, avíos, costuras y precio) y después la cambiás con <b>Editar</b>, como cualquier producto. El molde y el modelo no se cambian, y las técnicas, telas y accesorios solo pueden ser de los que tiene el padre: si el padre deja de tener algo, se les saca también a sus variantes.</p>
+                    <p>Nace <b>igual a {padre.descripcion}</b> (técnicas, telas, apliques, accesorios, ficha, avíos, costuras, precio y escalas de precio) y después la cambiás con <b>Editar</b>, como cualquier producto. El molde y el modelo no se cambian, y las técnicas, telas y accesorios solo pueden ser de los que tiene el padre: si el padre deja de tener algo, se les saca también a sus variantes.</p>
+                    <p>¿Otro producto del <b>mismo modelo</b> (otra tela, otro precio)? Abrí la variante con <b>Editar</b> y tocá <b>Copiar</b>.</p>
                 </div>
             </div>
 
@@ -79,6 +80,7 @@ export default function PasoVariantes({ proId, hayCambios, onCambio, onEditar, B
                                     <span className="font-mono">{v.codArticulo}</span>
                                     <span>·</span>
                                     <span className="font-bold text-slate-700">{fmtPrecio(v.precio, v.moneda)}</span>
+                                    {v.modeloOfrecido && <><span>·</span><span>modelo {v.modeloNombre || v.modeloClave}</span></>}
                                     {!v.modeloOfrecido && <span className="font-bold text-amber-700">· el modelo ya no se vende en el padre</span>}
                                 </div>
                             </div>

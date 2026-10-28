@@ -81,8 +81,10 @@ class LabelGenerationService {
         const esReposicion = codOrd.includes('-R') || prioridad === 'REPOSICIÓN' || prioridad === 'REPOSICION';
         const esFalla = /-F\d/.test(codOrd) || prioridad === 'FALLA';
         const esPrepago = (dbPerfilesPrecio && dbPerfilesPrecio.toLowerCase().includes('prepago')) || (dbDetalleCostos && dbDetalleCostos.toLowerCase().includes('prepago'));
+        // [SIN CARGO 27/10] Pedido con precio establecido en 0 (con motivo): el $0 es a propósito (erpSyncService lo anota así)
+        const esSinCargo = /precio establecido en 0/i.test(String(dbDetalleCostos || ''));
 
-        if (!esReposicion && !esFalla && !esPrepago && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
+        if (!esReposicion && !esFalla && !esPrepago && !esSinCargo && !esTerminac && !esHermanaPrendaLbl && (importeTotalStr === '0.00' || importeTotalStr === '0' || Number(importeTotalStr) <= 0)) {
             return { success: false, error: 'Calculo Frio: La orden no cuenta con un costo válido (Es $0). Vaya a Edit Cotización e ingrese un valor, o asegúrese de aplicar prepago o código R para habilitar $0.' };
         }
 

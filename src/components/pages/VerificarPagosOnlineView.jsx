@@ -29,7 +29,7 @@ const fmtFecha = (f) => f
     ? new Date(f).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
     : '—';
 const fmtMonto = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-const fmtOrdenes = (n) => `${n} orden${n !== 1 ? 'es' : ''}`;
+const fmtOrdenes = (n) => `${n} ${n !== 1 ? 'órdenes' : 'orden'}`;
 
 // Total de las órdenes de un pago, por moneda: [['$', 1234.5], ['US$', 20]]
 const totalesPorMoneda = (ordenes) => Object.entries(ordenes.reduce((acc, o) => {
@@ -133,6 +133,9 @@ const BotonOrdenes = ({ cantidad, abierto, onClick }) => (
 // Un pago en el celular: cliente y monto arriba, método/tipo/retiro, y al pie la fecha y las órdenes (desplegables)
 const TarjetaPago = ({ pago, abierto, onToggle }) => {
     const hasOrd = pago.Ordenes?.length > 0;
+    // Un pago puede cubrir varios retiros (una transferencia por 4 RT): el
+    // backend los manda juntos, "RT-1, RT-2", en una sola fila del pago.
+    const variosRetiros = Number(pago.CantRetiros || 0) > 1;
     return (
         <div className={`${CARD} p-3.5 flex flex-col gap-2.5`}>
             <div className="flex items-start justify-between gap-3">
@@ -145,7 +148,11 @@ const TarjetaPago = ({ pago, abierto, onToggle }) => {
                 </span>
                 {pago.TipoCliente && <span className={CHIP_NEUTRO}>{pago.TipoCliente}</span>}
                 {pago.OrdenRetiro
-                    ? <span className="font-mono font-bold text-brand-cyan text-sm ml-auto">{pago.OrdenRetiro}</span>
+                    ? <span className="ml-auto flex flex-col items-end gap-0.5">
+                        {String(pago.OrdenRetiro).split(', ').map(rt => (
+                            <span key={rt} className="font-mono font-bold text-brand-cyan text-sm">{rt}</span>
+                        ))}
+                    </span>
                     : <span className="text-zinc-400 text-xs ml-auto">Sin retiro</span>}
             </div>
             <div className="flex items-center justify-between gap-3 pt-2.5 border-t border-zinc-100">
@@ -157,7 +164,10 @@ const TarjetaPago = ({ pago, abierto, onToggle }) => {
                     {pago.Ordenes.map((o, i) => (
                         <div key={i} className="px-3 py-2 flex items-start justify-between gap-3">
                             <div className="min-w-0">
-                                <div className="font-mono font-bold text-brand-cyan text-sm">{o.codigo}</div>
+                                <div className="font-mono font-bold text-brand-cyan text-sm">
+                                    {o.codigo}
+                                    {variosRetiros && <span className="ml-1.5 text-zinc-400">· {o.retiro || '—'}</span>}
+                                </div>
                                 <div className="text-xs text-zinc-600">{o.producto || '—'}</div>
                                 {(o.modo || o.cantidad != null) && (
                                     <div className="text-[11px] text-zinc-400 tabular-nums">
@@ -322,6 +332,9 @@ const HistorialPagos = () => {
                             ) : filtered.map(pago => {
                                 const isExp = expandedId === pago.Id;
                                 const hasOrd = pago.Ordenes?.length > 0;
+                                // Un pago puede cubrir varios retiros (una transferencia por 4 RT): el
+                                // backend los manda juntos, "RT-1, RT-2", en una sola fila del pago.
+                                const variosRetiros = Number(pago.CantRetiros || 0) > 1;
                                 return (
                                     <React.Fragment key={pago.Id}>
                                         <tr className={`transition-colors ${isExp ? 'bg-zinc-50' : 'hover:bg-zinc-50'}`}>
@@ -338,9 +351,13 @@ const HistorialPagos = () => {
                                                 </span>
                                             </td>
                                             <td className="px-4 py-3">
-                                                {pago.OrdenRetiro
-                                                    ? <span className="font-mono font-bold text-brand-cyan text-sm">{pago.OrdenRetiro}</span>
-                                                    : <span className="text-zinc-400 text-xs">Sin retiro</span>}
+                                                {pago.OrdenRetiro ? (
+                                                    <div className="flex flex-col gap-0.5">
+                                                        {String(pago.OrdenRetiro).split(', ').map(rt => (
+                                                            <span key={rt} className="font-mono font-bold text-brand-cyan text-sm">{rt}</span>
+                                                        ))}
+                                                    </div>
+                                                ) : <span className="text-zinc-400 text-xs">Sin retiro</span>}
                                             </td>
                                             <td className="px-4 py-3 text-right font-black text-zinc-900 text-sm whitespace-nowrap tabular-nums">
                                                 {pago.Moneda || '$'} {fmtMonto(pago.Monto)}
@@ -361,6 +378,7 @@ const HistorialPagos = () => {
                                                         <table className="w-full text-sm">
                                                             <thead className="bg-zinc-50 border-b border-zinc-100">
                                                                 <tr>
+                                                                    {variosRetiros && <th className={`${TH_CHICO} text-left`}>Retiro</th>}
                                                                     <th className={`${TH_CHICO} text-left`}>Código</th>
                                                                     <th className={`${TH_CHICO} text-left`}>Material / Producto</th>
                                                                     <th className={`${TH_CHICO} text-left`}>Modo</th>
@@ -371,6 +389,7 @@ const HistorialPagos = () => {
                                                             <tbody className="divide-y divide-zinc-100">
                                                                 {pago.Ordenes.map((o, i) => (
                                                                     <tr key={i}>
+                                                                        {variosRetiros && <td className="px-4 py-2 font-mono font-bold text-zinc-500 whitespace-nowrap">{o.retiro || '—'}</td>}
                                                                         <td className="px-4 py-2 font-mono font-bold text-brand-cyan whitespace-nowrap">{o.codigo}</td>
                                                                         <td className="px-4 py-2 text-zinc-700">{o.producto || '—'}</td>
                                                                         <td className="px-4 py-2">
@@ -388,7 +407,7 @@ const HistorialPagos = () => {
                                                             <tfoot className="border-t border-zinc-200">
                                                                 {totalesPorMoneda(pago.Ordenes).map(([sym, tot], i, arr) => (
                                                                     <tr key={sym} className="bg-zinc-50 font-black text-sm">
-                                                                        {i === 0 && <td colSpan={3} rowSpan={arr.length} className="px-4 py-2 text-zinc-700">Total ({fmtOrdenes(pago.Ordenes.length)})</td>}
+                                                                        {i === 0 && <td colSpan={variosRetiros ? 4 : 3} rowSpan={arr.length} className="px-4 py-2 text-zinc-700">Total ({fmtOrdenes(pago.Ordenes.length)})</td>}
                                                                         <td />
                                                                         <td className="px-4 py-2 text-right text-zinc-900 whitespace-nowrap tabular-nums">{sym} {fmtMonto(tot)}</td>
                                                                     </tr>

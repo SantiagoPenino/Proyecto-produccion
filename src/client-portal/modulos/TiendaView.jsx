@@ -10,6 +10,7 @@ import { apiClient } from '../api/apiClient';
 import { useToast } from '../pautas/Toast';
 import handyLogo from '../../assets/images/pasarelas/handy.svg';
 import mpLogo from '../../assets/images/pasarelas/mercadopago.svg';
+import { textoEscalas } from '../../utils/escalasPrecio';   // [ESCALAS] precios por cantidad (27/10)
 
 /*
  * [TIENDA] Vitrina del e-commerce del portal — F1 (plan: docs/ecommerce-portal-plan.md).
@@ -1351,6 +1352,10 @@ const FichaProducto = ({ producto, onCerrar, onAgregar, onIniciarPedido, armable
                                             {producto.tipo === 'CONFECCIONADO' ? <Scissors size={15} className="text-purple-400" /> : <Sparkles size={15} className="text-brand-cyan" />}
                                             <PrecioFicha precio={producto.precio} moneda={producto.moneda} /> <span className="text-xs font-bold text-zinc-500">por unidad</span>
                                         </p>
+                                        {/* [ESCALAS 27/10] precios por cantidad: el total del pedido toma la escala de la cantidad */}
+                                        {textoEscalas(producto.precio, producto.escalas, producto.moneda === 'USD' ? 'US$' : '$') && (
+                                            <p className="text-xs font-bold text-emerald-400/90">Por cantidad: {textoEscalas(producto.precio, producto.escalas, producto.moneda === 'USD' ? 'US$' : '$')} c/u</p>
+                                        )}
                                         <p className="text-xs text-zinc-500 leading-relaxed">
                                             {armable
                                                 ? 'Se fabrica a pedido con tu diseño. Subí tu arte, elegí la tela y cargá la lista de jugadores: la tizada se arma sola y el total sale con ese precio por unidad.'

@@ -46,7 +46,17 @@ async function tieneFicha(pool) {
   }
   return _tieneFicha;
 }
-const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+// [SIN CARGO 27/10] El motivo del precio establecido en 0 vive en SolicitudesVendedor.MotivoSinCargo
+// (scripts/add_solicitudes_precio_sin_cargo.sql). Sin la columna, el precio en 0 no se acepta.
+let _tieneMotivoSinCargo = false;   // solo se recuerda el "sí": después de correr el script anda sin reiniciar
+async function tieneMotivoSinCargo(pool) {
+  if (!_tieneMotivoSinCargo) {
+    const r = await pool.request().query("SELECT COL_LENGTH('dbo.SolicitudesVendedor', 'MotivoSinCargo') AS L");
+    _tieneMotivoSinCargo = r.recordset[0].L != null;
+  }
+  return _tieneMotivoSinCargo;
+}
+const norm =(s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
 const txt = (v, max) => { const s = String(v ?? '').trim(); return s ? (max ? s.substring(0, max) : s) : null; };
 const entero = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) ? n : null; };
 const decimal = (v) => { if (v === null || v === undefined || v === '') return null; const n = Number(v); return Number.isFinite(n) ? n : null; };
@@ -436,8 +446,15 @@ async function guardarPrecio(pool, user, solicitudId, b) {
   if (!['PRECIO_ESTABLECIDO', 'POR_AREA'].includes(modo)) throw fallo(400, 'Elegí cómo se cobra: "Precio establecido" o "Facturar por cada área".');
   const precio = decimal(b.PrecioPactado);
   const moneda = entero(b.MonIdMoneda);
+  // [SIN CARGO 27/10] Precio establecido en 0 = sin cargo, con motivo obligatorio: en el pedido queda como descuento del 100 %
+  const sinCargo = modo === 'PRECIO_ESTABLECIDO' && precio === 0;
+  const motivo = sinCargo ? txt(b.MotivoSinCargo, 300) : null;
+  const conMotivo = await tieneMotivoSinCargo(pool);
   if (modo === 'PRECIO_ESTABLECIDO') {
-    if (!precio || precio <= 0) throw fallo(400, 'Ingresá el precio pactado de la solicitud.');
+    if (sinCargo) {
+      if (!motivo) throw fallo(400, 'Precio sin cargo: escribí el motivo.');
+      if (!conMotivo) throw fallo(409, 'Para poner un precio sin cargo falta correr scripts/add_solicitudes_precio_sin_cargo.sql en la base.');
+    } else if (!precio || precio <= 0) throw fallo(400, 'Ingresá el precio pactado de la solicitud.');
     if (![1, 2].includes(moneda)) throw fallo(400, 'Elegí la moneda del precio pactado.');
   }
   const requiere = b.RequiereSena ? 1 : 0;
@@ -455,11 +472,12 @@ async function guardarPrecio(pool, user, solicitudId, b) {
       .input('Precio', sql.Decimal(18, 2), modo === 'PRECIO_ESTABLECIDO' ? precio : null)
       .input('Mon', sql.Int, moneda || null).input('Req', sql.Bit, requiere)
       .input('SenaReq', sql.Decimal(18, 2), requiere ? senaReq : null).input('U', sql.Int, user.id)
+      .input('Mot', sql.NVarChar(300), motivo)
       .query(`UPDATE dbo.SolicitudesVendedor SET ModoCobro = @Modo, PrecioPactado = @Precio, MonIdMoneda = @Mon,
-                     RequiereSena = @Req, SenaMontoRequerido = @SenaReq, UsuarioModif = @U, FechaModif = GETDATE()
+                     RequiereSena = @Req, SenaMontoRequerido = @SenaReq, UsuarioModif = @U, FechaModif = GETDATE()${conMotivo ? ', MotivoSinCargo = @Mot' : ''}
                WHERE SolicitudID = @Sol`);
     const simb = moneda === 2 ? 'US$' : '$';
-    const partes = [modo === 'PRECIO_ESTABLECIDO' ? `Precio establecido: ${simb} ${precio.toFixed(2)}` : 'Se factura por cada área',
+    const partes = [modo === 'PRECIO_ESTABLECIDO' ? (sinCargo ? `Precio establecido: SIN CARGO (${motivo})` : `Precio establecido: ${simb} ${precio.toFixed(2)}`) : 'Se factura por cada área',
       requiere ? `Requiere seña de ${simb} ${senaReq.toFixed(2)}` : 'No requiere seña'];
     await registrarEvento(transaction, user, { solicitudId, tipo: 'PRECIO', texto: partes.join(' · ') });
     await transaction.commit();
@@ -1236,11 +1254,21 @@ async function obtener(pool, user, solicitudId) {
       r.recordset.forEach(x => catPorId.set(x.ProIdProducto, x));
     } catch (e) { logger.warn(`[SOLICITUDES] foto / precio de catálogo de productos: ${e.message}`); }
   }
+  // [ESCALAS 27/10] Precios por cantidad del producto: el precio de catálogo es el de la escala de SU cantidad
+  // (lo mismo que cobra el pedido); la lista queda aparte para mostrarla.
+  let escPorId = new Map();
+  if (idsCat.length) {
+    try { escPorId = await require('./escalasProducto').deProductos(pool, idsCat); }
+    catch (e) { logger.warn(`[SOLICITUDES] escalas de precio de productos: ${e.message}`); }
+  }
   for (const p of sol.Productos) {
     const c = p.ProIdProducto ? cfgPorId.get(Number(p.ProIdProducto)) : null;
     p.Config = c ? { TecnicaPrincipal: c.TecnicaPrincipal || 'SB', Molde: c.Molde || 'OBLIGATORIO', UM: c.UM || 'u', AnchoM: c.AnchoM, AltoM: c.AltoM, BordeCm: c.BordeCm, TizadaProMoldeRef: c.TizadaProMoldeRef || null, AMedida: !!c.AMedida } : null;
     const k = p.ProIdProducto ? catPorId.get(Number(p.ProIdProducto)) : null;
-    p.Catalogo = k ? { codigo: k.CodArticulo || null, familia: k.Categoria || null, foto: k.Imagen || null, precio: k.Precio != null ? Number(k.Precio) : null, moneda: k.Moneda || null,
+    const esc = k ? escPorId.get(Number(p.ProIdProducto)) || null : null;
+    const porCant = k && k.Precio != null ? require('./escalasProducto').precioPara(k.Precio, esc, p.Cantidad) : null;
+    p.Catalogo = k ? { codigo: k.CodArticulo || null, familia: k.Categoria || null, foto: k.Imagen || null, precio: k.Precio != null ? (porCant.precio ?? Number(k.Precio)) : null, moneda: k.Moneda || null,
+                             lista: k.Precio != null ? Number(k.Precio) : null, escalaDesde: porCant?.desde || null, escalas: esc,   // [ESCALAS 27/10]
                              minima: Number(k.CantidadMinima) || null, fija: Number(k.CantidadFija) || null } : null;   // paquete fijo / mínimo (guardarDatos)
     const nombreArea = { DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' }[p.Config?.TecnicaPrincipal];
     if (nombreArea) p.Partes.forEach(pa => { if (pa.Tipo === 'PRINCIPAL') pa.Nombre = `Producción principal (${nombreArea})`; });
@@ -1343,6 +1371,10 @@ function faltantesConversion(sol, p, archivos) {
   if (sol.Estado === 'CANCELADA') return ['La solicitud está cancelada.'];
   if (p.PedidoNoDocERP) return [];
   if (!sol.ModoCobro) f.push('Falta el precio pactado de la solicitud (cómo se cobra).');
+  // [SIN CARGO 27/10] en 0 vale si tiene motivo (y solo en productos del catálogo: la prenda personalizada no tiene lista)
+  else if (sol.ModoCobro === 'PRECIO_ESTABLECIDO' && sol.PrecioPactado != null && Number(sol.PrecioPactado) === 0 && txt(sol.MotivoSinCargo)) {
+    if (p.TipoFabricacion !== 'PRODUCTO_TERMINADO') f.push('Precio sin cargo: solo se puede con productos del catálogo.');
+  }
   else if (sol.ModoCobro === 'PRECIO_ESTABLECIDO' && !(Number(sol.PrecioPactado) > 0)) f.push('Falta el monto del precio establecido.');
   if (sol.RequiereSena && !sol.SenaConfirmada) f.push('La seña está sin confirmar (vía de entrada, monto y referencia del pago).');
   if (p.TipoFabricacion === 'PRODUCTO_TERMINADO' && !p.ProIdProducto) f.push('Falta elegir el producto terminado.');

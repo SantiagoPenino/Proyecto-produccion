@@ -3,6 +3,7 @@ const logger = require('../utils/logger');
 const { upsertPrecioBase } = require('./stockArtController');
 const variantesSvc = require('../services/productoVariantes');   // [VARIANTES] padre + variantes y códigos nuevos (12/10)
 const aMedidaSvc = require('../services/tizadaProAMedida');   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
+const escalasSvc = require('../services/escalasProducto');   // [ESCALAS] precios por cantidad del producto (27/10)
 
 /*
  * ══════════════════════════════════════════════════════════════════════════
@@ -513,6 +514,9 @@ exports.getProductoFicha = async (req, res) => {
         const pool = await getPool();
         const data = await leerFicha(pool, proId);
         if (!data) return res.status(404).json({ error: 'Producto no encontrado.' });
+        // [ESCALAS 27/10] Precios por cantidad del producto (paso «Precios») y si la base ya tiene su perfil
+        data.escalas = await escalasSvc.deProducto(pool, proId);
+        data.escalasDisponibles = !!(await escalasSvc.perfilId(pool));
         res.json({ success: true, data: await variantesSvc.datosParaFicha(pool, data) });
     } catch (e) {
         logger.error('[Configurador] getProductoFicha:', e);
@@ -861,8 +865,13 @@ exports.guardarProductoConfig = async (req, res) => {
     let body = req.body || {};
     const errores = validarVenta(body);
     if (errores.length) return res.status(400).json({ error: errores.join(' ') });
+    // [ESCALAS 27/10] Se revisan antes de guardar nada (undefined = el editor no las manda: no se tocan)
+    let escalas;
+    try { if (body.escalas !== undefined) escalas = escalasSvc.normalizar(body.escalas); }
+    catch (e) { return res.status(e.status || 400).json({ error: e.message }); }
     try {
         const pool = await getPool();
+        if (escalas?.filas.length && !(await escalasSvc.perfilId(pool))) return res.status(409).json({ error: escalasSvc.FALTA_SQL });
 
         const existe = await pool.request().input('PID', sql.Int, proId)
             .query(`SELECT 1 FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar,0) = 0`);
@@ -1072,6 +1081,14 @@ exports.guardarProductoConfig = async (req, res) => {
             await upsertPrecioBase(pool, cod.recordset[0].Cod, parseFloat(body.precio) || 0, body.moneda);
         }
 
+        // [ESCALAS 27/10] Precios por cantidad: reemplazan a las que tenía, en la moneda del precio de lista
+        if (escalas) {
+            const a = (await pool.request().input('PID', sql.Int, proId).query(`
+                SELECT LTRIM(RTRIM(a.CodArticulo)) AS Cod, (SELECT TOP 1 LTRIM(RTRIM(Moneda)) FROM dbo.PreciosBase WHERE ProIdProducto = a.ProIdProducto) AS Moneda
+                FROM dbo.Articulos a WHERE a.ProIdProducto = @PID`)).recordset[0];
+            await escalasSvc.guardar(pool, proId, a.Cod, escalas, body.moneda || a.Moneda || 'UYU');
+        }
+
         logger.info(`[Configurador] Config guardada para ProIdProducto ${proId} por ${req.user?.username || 'N/A'}${ajustadas.length ? ` — variantes ajustadas: ${ajustadas.join(', ')}` : ''}`);
         res.json({ success: true, ...(ajustadas.length ? { variantesAjustadas: ajustadas } : {}) });
     } catch (e) {
@@ -1189,6 +1206,9 @@ exports.crearProducto = async (req, res) => {
 // de Odoo (es otro producto del ERP), el stock/variantes del WMS, la vitrina de la tienda ni las
 // reglas de perfiles de precio. Los archivos (foto, dibujo, fotos de pasos) se comparten: ningún
 // reemplazo borra el archivo anterior, así que cambiarlos en la copia no toca el original.
+// [COPIAR VARIANTE 27/10] Una variante también se copia: la copia queda del MISMO padre y del MISMO modelo
+// (la configuración viaja entera, con PadreProIdProducto y ModeloClave), con el código siguiente del padre
+// (PR-001-02). Mismas piezas y misma plantilla de TIZADA; se le cambia la tela, el precio, etc.
 // ─────────────────────────────────────────────────────────────────────────
 
 // Columnas que se copian de una tabla: todas menos la identidad, las calculadas y rowversion, así
@@ -1282,7 +1302,14 @@ exports.copiarProducto = async (req, res) => {
             SELECT LTRIM(RTRIM(CodArticulo)) AS Cod, LTRIM(RTRIM(Descripcion)) AS Descripcion
             FROM dbo.Articulos WHERE ProIdProducto = @PID AND ISNULL(borrar, 0) = 0`)).recordset[0];
         if (!orig) { await transaction.rollback(); return res.status(404).json({ error: 'Producto no encontrado.' }); }
-        if (await variantesSvc.padreDe(transaction, origenId)) { await transaction.rollback(); return res.status(409).json({ error: 'Es una variante: copiá el producto padre (las variantes se crean en su paso "Variantes").' }); }
+        // [COPIAR VARIANTE 27/10] De una variante: el código va con el del padre (padre-NN)
+        const padreId = await variantesSvc.padreDe(transaction, origenId);
+        let codPadre = null;
+        if (padreId) {
+            if (!(await variantesSvc.admiteCopias(transaction))) { await transaction.rollback(); return res.status(409).json({ error: variantesSvc.FALTA_SQL_COPIAS }); }
+            codPadre = (await new sql.Request(transaction).input('P', sql.Int, padreId)
+                .query('SELECT LTRIM(RTRIM(CodArticulo)) AS Cod FROM dbo.Articulos WHERE ProIdProducto = @P')).recordset[0]?.Cod || null;
+        }
 
         const repetido = await new sql.Request(transaction).input('Desc', sql.VarChar(100), descripcion).input('PID', sql.Int, origenId).query(`
             SELECT TOP 1 1 AS x FROM dbo.Articulos a
@@ -1290,8 +1317,8 @@ exports.copiarProducto = async (req, res) => {
               AND LTRIM(RTRIM(a.CodStock)) = (SELECT LTRIM(RTRIM(CodStock)) FROM dbo.Articulos WHERE ProIdProducto = @PID)`);
         if (repetido.recordset.length) { await transaction.rollback(); return res.status(409).json({ error: `Ya hay un producto llamado "${descripcion}" en la misma familia.` }); }
 
-        // Código: el pedido (tiene que estar libre) o el siguiente del patrón del original
-        const cod = codPedido || await siguienteCodigo(transaction, orig.Cod);
+        // Código: el pedido (tiene que estar libre) o el siguiente del patrón del original (variante: el siguiente del padre)
+        const cod = codPedido || (codPadre ? await variantesSvc.codigoNuevaVariante(transaction, codPadre) : await siguienteCodigo(transaction, orig.Cod));
         if (cod) {
             const usado = await codigoEnUso(transaction, cod);
             if (usado) { await transaction.rollback(); return res.status(409).json({ error: `El código ${cod} ya lo usa ${usado.startsWith('un precio') ? usado : `"${usado}"`}.` }); }
@@ -1323,6 +1350,13 @@ exports.copiarProducto = async (req, res) => {
 
         // 4. Listas de la configuración
         for (const tabla of TABLAS_COPIA) await copiarFilas(transaction, tabla, 'ProIdProducto', origenId, nuevoId);
+        // [COPIAR VARIANTE 27/10] Su modelo en ProductoModelos: si la original no lo tenía (variantes viejas), del padre, como al crearla
+        if (padreId) await new sql.Request(transaction).input('V', sql.Int, nuevoId).input('P', sql.Int, padreId).query(`
+            IF NOT EXISTS (SELECT 1 FROM dbo.ProductoModelos WHERE ProIdProducto = @V)
+                INSERT INTO dbo.ProductoModelos (ProIdProducto, ModeloClave, ModeloNombre, EsDefault, Orden)
+                SELECT TOP 1 @V, m.ModeloClave, m.ModeloNombre, 1, 1
+                FROM dbo.ProductoModelos m JOIN dbo.ProductoVentaConfig vc ON vc.ProIdProducto = @V AND vc.ModeloClave = m.ModeloClave
+                WHERE m.ProIdProducto = @P`);
         // Variantes viejas del configurador: sin precio, como el resto de la copia
         await copiarFilas(transaction, 'ProductoVariantes', 'ProIdProducto', origenId, nuevoId,
             { PrecioCalculado: 'NULL', PrecioManual: 'NULL', FechaCreacion: 'GETDATE()' });
@@ -1345,13 +1379,17 @@ exports.copiarProducto = async (req, res) => {
         // 6. Fotos (mismos archivos)
         await copiarFilas(transaction, 'Articulos_Imagenes', 'Idproid', origenId, nuevoId);
 
+        // 7. [ESCALAS 27/10] Copia de una variante: nace con las escalas de precio del PADRE (después se cambian).
+        //    La copia de un producto común sigue sin escalas, como sin precio.
+        if (padreId) await escalasSvc.copiar(transaction, padreId, nuevoId, codFinal);
+
         await transaction.commit();
-        logger.info(`[Configurador] Producto ${origenId} "${orig.Descripcion}" [${orig.Cod}] copiado como ${nuevoId} "${descripcion}" [${codFinal}] (sin precio, borrador) por ${req.user?.username || 'N/A'}`);
-        res.json({ success: true, proIdProducto: nuevoId, codArticulo: codFinal, descripcion });
+        logger.info(`[Configurador] ${padreId ? `Variante (de ${codPadre})` : 'Producto'} ${origenId} "${orig.Descripcion}" [${orig.Cod}] copiado como ${nuevoId} "${descripcion}" [${codFinal}] (sin precio, borrador) por ${req.user?.username || 'N/A'}`);
+        res.json({ success: true, proIdProducto: nuevoId, codArticulo: codFinal, descripcion, ...(padreId ? { variante: true } : {}) });
     } catch (e) {
         try { await transaction?.rollback(); } catch (_) { /* no había empezado o ya estaba cerrada */ }
         logger.error('[Configurador] copiarProducto:', e);
-        res.status(500).json({ error: e.message });
+        res.status(e.status || 500).json({ error: e.message });
     }
 };
 

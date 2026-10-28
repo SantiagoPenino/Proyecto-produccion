@@ -733,7 +733,29 @@ class ERPSyncService {
                 lineaPro.PrecioUnitario = cantPro > 0 ? montoEst / cantPro : montoEst;
                 lineaPro.PrecioUnitarioOriginal = lineaPro.PrecioUnitario;
                 lineaPro.PerfilAplicado = 'Manual';
-                lineaPro.LogPrecioAplicado = `${lineaPro.LogPrecioAplicado || ''}\nPrecio establecido al crear el pedido: ${montoEst} ${targetCurrency} (precio final, sin conversión)`.trim();
+                // [SIN CARGO 27/10] Precio establecido en 0 con su motivo ([SIN CARGO: …] en la nota de la PRO). El texto
+                // "precio establecido en 0" del log es el que reconocen la etiqueta y el depósito como cero a propósito
+                // (LabelGenerationService, utils/montoTotalPedido): sin eso, la etiqueta frena por "costo $0".
+                const sinCargoEst = montoEst === 0;
+                const motivoSC = (notaProMadre.match(/\[SIN CARGO:\s*([^\]]*)\]/i)?.[1] || '').trim();
+                const textoSC = `Sin cargo${motivoSC ? `: ${motivoSC}` : ''}`;
+                lineaPro.LogPrecioAplicado = sinCargoEst
+                    ? `${lineaPro.LogPrecioAplicado || ''}\n${textoSC} (precio establecido en 0 al crear el pedido)`.trim()
+                    : `${lineaPro.LogPrecioAplicado || ''}\nPrecio establecido al crear el pedido: ${montoEst} ${targetCurrency} (precio final, sin conversión)`.trim();
+                // [LISTA − DESCUENTO 27/10] Producto del catálogo: la diferencia contra su precio de lista queda como descuento
+                // (o recargo) de la línea, con su %, así la cotización y la factura dicen "lista, descuento, neto" en vez de un
+                // neto suelto (INV-PRE.03). La prenda personalizada no tiene una lista con qué comparar: queda como antes.
+                if (sinCargoEst && /\[PRODUCTO FABRICADO A MEDIDA\]/i.test(notaProMadre)) {
+                    // sin cargo: lista − descuento del 100 %, como la reposición sin cargo (sin lista, el 0 es su propia lista)
+                    lineaPro.desglose = PricingService.desgloseSinCargo(lineaPro.desglose || null, 'SIN_CARGO', textoSC)
+                        || PricingService.desgloseManual(lineaPro.desglose || null, 0, textoSC);
+                } else if (/\[PRODUCTO FABRICADO A MEDIDA\]/i.test(notaProMadre)) {
+                    const dg = PricingService.desgloseManual(lineaPro.desglose || null, lineaPro.PrecioUnitario, 'Precio establecido al crear el pedido');
+                    const pctDe = (imp) => (dg.precioLista > 0 ? Math.round(imp / dg.precioLista * 1000000) / 10000 : null);
+                    if (dg.descuento) dg.descuento.pct = pctDe(dg.descuento.importeUnitario);
+                    if (dg.recargoImporte > 0) { dg.recargoPct = pctDe(dg.recargoImporte); if (dg.recargos[0]) dg.recargos[0].pct = dg.recargoPct; }
+                    lineaPro.desglose = dg;
+                }
                 lineasHermanas.forEach(d => { d.esHermanaConsolidada = true; });
                 // El total del pedido pasa a ser el precio establecido: sacar lo que habían
                 // aportado la línea PRO previa y las hermanas, y poner el monto pactado.
