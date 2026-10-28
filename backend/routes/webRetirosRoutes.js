@@ -4,6 +4,7 @@ const webRetirosController = require('../controllers/webRetirosController');
 
 // 👇 Middleware
 const { verifyToken } = require('../middleware/authMiddleware');
+const { conReintentoDeadlock } = require('../utils/reintentarDeadlock');
 
 // RUTAS API PARA LA TABLA RETIROSWEB
 router.post('/ingresar', verifyToken, webRetirosController.crearRetiro);
@@ -25,7 +26,9 @@ router.get('/estantes', verifyToken, webRetirosController.obtenerMapaEstantes);
 router.post('/estantes/asignar', verifyToken, webRetirosController.asignarRetiroAEstante);
 router.delete('/estantes/desasignar', verifyToken, webRetirosController.desasignarRetiroDeEstante);
 router.post('/estantes/mover', verifyToken, webRetirosController.moverRetiroEntreEstantes);
-router.delete('/estantes/liberar/:ubicacionId', verifyToken, webRetirosController.marcarRetiroEntregado);
+// [26/10] Reintento ante deadlock: la entrega libera el estante y puede chocar con otra entrega a la vez.
+// La múltiple reintenta retiro por retiro adentro del handler.
+router.delete('/estantes/liberar/:ubicacionId', verifyToken, conReintentoDeadlock(webRetirosController.marcarRetiroEntregado));
 router.post('/estantes/liberar-multiple', verifyToken, webRetirosController.marcarRetiroEntregadoMultiple);
 
 router.post('/excepcional', verifyToken, webRetirosController.marcarExcepcional);

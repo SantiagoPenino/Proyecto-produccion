@@ -1005,6 +1005,15 @@ export default function MonitorServidorPage() {
                                     ))}
                                 </div>
                             )}
+                            {snap.rutas.subidas?.length > 0 && (<>
+                                <div className={`${ROTULO} mt-2`} title="Desde que el servidor recibe el archivo hasta que contesta: validar y subir a Drive. La subida desde la PC del cliente no se ve (la recibe nginx antes).">Subidas de archivos (velocidad del servidor)</div>
+                                <div className={HASTA_6}>
+                                    {snap.rutas.subidas.map(r => (
+                                        <Fila key={r.ruta} etiqueta={<span className="font-mono text-xs" title={r.ruta}>{r.ruta}</span>}
+                                            valor={`${r.mbps != null ? `${r.mbps} MB/s` : '—'} · ${r.n} · ${r.mb >= 1024 ? `${(r.mb / 1024).toFixed(1)} GB` : r.mb >= 1 ? `${r.mb} MB` : 'menos de 1 MB'}`} />
+                                    ))}
+                                </div>
+                            </>)}
                             <div className={`${ROTULO} mt-2`}>Con errores 500</div>
                             {!snap.rutas.conErrores.length ? <div className="text-sm font-bold text-emerald-700 py-0.5">Ninguna</div> : (
                                 <div className={HASTA_6}>

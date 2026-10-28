@@ -6,6 +6,7 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 const { marcarCobranzaPagada } = require('./cobranzaService');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 
 /* ── IDS DE RETIRO ─────────────────────────────────────────────────────────
  * Antes se generaban con `SELECT MAX(id)+1 ... WITH (UPDLOCK)`, que toma un
@@ -622,12 +623,14 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
             INSERT INTO HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta) 
             VALUES (@ID, 5, @Fec, @Usr);
 
-            -- Liberar estante automáticamente al entregar
-            DELETE FROM OcupacionEstantes
-            WHERE OrdenRetiro = COALESCE(
-                (SELECT FormaRetiro FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID),
-                'R'
-            ) + '-' + CAST(@ID AS VARCHAR);
+            -- Liberar estante automáticamente al entregar.
+            -- [26/10/2026] El código del retiro (RT-34959) se calcula ANTES y se borra por ese valor. Con la
+            -- subconsulta dentro del WHERE, SQL Server recorría TODO IX_OcupacionEstantes_OrdenRetiro tomando
+            -- un candado U en cada fila (Index Scan) y dos entregas a la vez se cruzaban: deadlocks del 26/10
+            -- a las 16:07 (RT-34959 y RT-34956). Con la variable va directo a la fila (Index Seek).
+            DECLARE @Ret VARCHAR(50) = COALESCE((SELECT RTRIM(FormaRetiro) FROM OrdenesRetiro WHERE OReIdOrdenRetiro = @ID), 'R')
+                                       + '-' + CAST(@ID AS VARCHAR(12));
+            DELETE FROM OcupacionEstantes WHERE OrdenRetiro = @Ret;
         `);
 
     // [25/09] Los bultos de las órdenes del retiro salen de Depósito: hasta ahora la entrega no los
@@ -673,6 +676,9 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
                 FROM @salen;
             `);
     } catch (errBultos) {
+        // [26/10] Un deadlock no se traga: SQL Server ya deshizo toda la transacción, así que seguir con la
+        // entrega sería trabajar sobre nada. Sube para que el que llama reintente el retiro entero.
+        if (esDeadlock(errBultos)) throw errBultos;
         logger.warn(`[RETIRO] No se pudieron cerrar los bultos del retiro ${OReIdOrdenRetiro}: ${errBultos.message}`);
     }
 
@@ -709,6 +715,7 @@ async function marcarEntregado(transactionOrReq, OReIdOrdenRetiro, fecha, usuari
             });
         }
     } catch (syncErr) {
+        if (esDeadlock(syncErr)) throw syncErr;   // [26/10] ídem bultos: que se reintente el retiro
         console.error('Error sincronizando estado global a Entregado en marcarEntregado:', syncErr);
     }
 }

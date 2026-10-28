@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { createOrdenRetiro, getOrdenesRetiroPorEstados, actualizarOrdenRetiroEstado, marcarOrdenRetiroPronto, ordenesRetiroCaja, marcarOrdenRetiroEntregado, getOrdenesRetiroPasarPorCaja, getOrdenesRetiroPorFecha, getOrdenesRetiroPorLugar, marcarDespachoEntregadoAutorizado, buscarParaMostrador, getClienteEnvioDatos, getTodasSinRetiro, backfillLugarRetiro, getOrdenesRetiroPorRemito, editarCostoOrden, desvincularOrdenRetiro, cancelarOrdenCaja, exonerarOrdenCaja, revertirExoneracionOrden, cambiarEstadoOrden, getEstadoOrden } = require('../controllers/ordenesRetiroController');
 const { verifyToken, soloInternoConRol } = require('../middleware/authMiddleware');
+const { conReintentoDeadlock } = require('../utils/reintentarDeadlock');
 
 // Las rutas que no tenían login (estados, caja, pasarporcaja, filterByDate, lugar) quedan solo para
 // usuarios internos (19/10). Las llaman la estación de impresión, Retiros web, Entrega de pedidos y
@@ -33,7 +34,8 @@ router.post('/actualizarEstado', verifyToken, actualizarOrdenRetiroEstado)
 router.post('/marcarPronto', verifyToken, marcarOrdenRetiroPronto);
 
 // Ruta para marcar orden como entregada
-router.post('/marcarOrdenEntregada', verifyToken, marcarOrdenRetiroEntregado)
+// [26/10] Las entregas reintentan ante deadlock: liberan el estante y pueden chocar con otra entrega a la vez
+router.post('/marcarOrdenEntregada', verifyToken, conReintentoDeadlock(marcarOrdenRetiroEntregado))
 
 // Ruta para traer las ordenes de retiro y ordenes para la caja
 router.get('/caja', interno, ordenesRetiroCaja);
@@ -45,7 +47,7 @@ router.get('/filterByDate', interno, getOrdenesRetiroPorFecha);
 
 // Rutas para Entregas/Logística
 router.get('/lugar/:lugarId', interno, getOrdenesRetiroPorLugar);
-router.post('/despachos/entregar-autorizado', verifyToken, marcarDespachoEntregadoAutorizado);
+router.post('/despachos/entregar-autorizado', verifyToken, conReintentoDeadlock(marcarDespachoEntregadoAutorizado));
 
 // Mostrador & Facturación Remota
 router.get('/mostrador/buscar', verifyToken, buscarParaMostrador);

@@ -1708,6 +1708,44 @@ const getFallasOrden = async (req, res) => {
 // La falla se registra contra la MADRE; cada -F se asocia a las fallas de los archivos que repone por el
 // NOMBRE del archivo (la -F clona NombreArchivo de la madre). Si ninguna coincide, van todas las de la
 // madre. Para el detalle del lote (13/10/2026): ahí no se veía dónde estaba la falla.
+// Orden del lote para el Control (26/10/2026): lo que necesita src/utils/ordenLote (la misma regla del
+// detalle del lote) de TODAS las órdenes del lote, no solo de las que el Control lista (oculta canceladas,
+// retenidas, etc.). Así el Control calcula el orden sobre el lote entero y le sale igual que al detalle.
+// Mismos campos y la misma Referencia de Tela de Cliente que arma rollsController para el detalle.
+const getOrdenLote = async (req, res) => {
+    try {
+        const rolloId = parseInt(req.params.rolloId, 10);
+        if (!(rolloId > 0)) return res.status(400).json({ error: 'rolloId requerido' });
+        const pool = await getPool();
+        const result = await pool.request()
+            .input('R', sql.Int, rolloId)
+            .query(`
+                SELECT o.OrdenID, o.Secuencia, o.Impreso, o.FechaImpreso, o.GrupoManual, o.Material, o.Variante,
+                       ibt.Referencia AS BobRef, r.AreaID AS AreaLote
+                FROM dbo.Ordenes o WITH(NOLOCK)
+                JOIN dbo.Rollos r WITH(NOLOCK) ON r.RolloID = o.RolloID
+                LEFT JOIN dbo.InventarioBobinas ibt WITH(NOLOCK) ON ibt.BobinaID = o.BobinaTelaID
+                WHERE o.RolloID = @R
+            `);
+        const ordenes = result.recordset.map(o => {
+            const esTelaCliente = /cliente/i.test(o.Variante || '');
+            return {
+                id: o.OrdenID,
+                sequence: o.Secuencia,
+                printed: !!o.Impreso,
+                fechaImpreso: o.FechaImpreso || null,
+                groupId: o.GrupoManual,
+                material: o.Material,
+                referencia: (esTelaCliente && o.BobRef != null && String(o.BobRef).trim() !== '') ? String(o.BobRef).trim() : null,
+            };
+        });
+        res.json({ success: true, area: result.recordset[0]?.AreaLote || null, ordenes });
+    } catch (err) {
+        logger.error("Error getOrdenLote:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 const getFallasImagenesLote = async (req, res) => {
     try {
         const rolloId = parseInt(req.params.rolloId, 10);
@@ -3409,6 +3447,7 @@ module.exports = {
     getTiposFalla,
     getFallasImagenes,
     getFallasImagenesLote,
+    getOrdenLote,
     getFallasOrden,
     regenerateEtiquetas,
     updateFileCopyCount,

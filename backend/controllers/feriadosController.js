@@ -1,5 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// Los feriados no cuentan en el ciclo en planta de las órdenes: al cambiarlos se recalcula en segundo plano.
+const { recalcularEnSegundoPlano } = require('../services/cicloPlantaService');
 
 exports.getAll = async (req, res) => {
     try {
@@ -30,6 +32,7 @@ exports.create = async (req, res) => {
             .input('Descripcion', sql.VarChar(100), descripcion || null)
             .query("INSERT INTO dbo.CalendarioFeriados (Fecha, Descripcion) VALUES (@Fecha, @Descripcion)");
 
+        recalcularEnSegundoPlano(pool);
         res.json({ success: true, message: 'Feriado creado' });
     } catch (err) {
         logger.error("Error creating feriado:", err);
@@ -50,6 +53,7 @@ exports.update = async (req, res) => {
             .query(`UPDATE dbo.CalendarioFeriados SET Fecha = @FechaNueva, Descripcion = @Descripcion
                     WHERE Fecha = @FechaOriginal`);
 
+        recalcularEnSegundoPlano(pool);
         res.json({ success: true, message: 'Feriado actualizado' });
     } catch (err) {
         logger.error("Error updating feriado:", err);
@@ -65,6 +69,7 @@ exports.remove = async (req, res) => {
             .input('Fecha', sql.Date, fecha)
             .query("DELETE FROM dbo.CalendarioFeriados WHERE Fecha = @Fecha");
 
+        recalcularEnSegundoPlano(pool);
         res.json({ success: true, message: 'Feriado eliminado' });
     } catch (err) {
         logger.error("Error deleting feriado:", err);

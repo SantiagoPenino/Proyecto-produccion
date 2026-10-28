@@ -608,6 +608,14 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error("❌ [CRON] Error cargando ServicioTecnico:", e.message);
             }
 
+            // Ciclo en planta de cada orden pronta (tiempo de respuesta de las áreas, plan INF-SIS-2026-04) — cada 10 min.
+            try {
+                const { startCicloPlantaJob } = require('./jobs/cicloPlanta.job');
+                startCicloPlantaJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando CicloPlanta:", e.message);
+            }
+
             // POSLink — cobros con tarjeta sin resolver y conciliación de lotes (docs/poslink-implementacion-plan.md).
             // No arranca si POSLINK_URL / POSLINK_SYSTEM_ID no están en el .env.
             try {

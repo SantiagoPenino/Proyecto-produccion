@@ -9,6 +9,7 @@ import RollDetailsModal from '../modals/RollDetailsModal';
 import OrderDetailModal from '../production/components/OrderDetailModal';
 import FileControlCard from '../production/components/FileControlCard';
 import FallaAnnotator from '../production/components/FallaAnnotator';
+import { idsEnOrdenLote, AREAS_MARCADO_LIBRE } from '../../utils/ordenLote';
 
 import { socket } from '../../services/socketService';
 import useRecargaConFreno from '../../hooks/useRecargaConFreno';
@@ -89,8 +90,15 @@ const FilePrintControl = ({ areaCode }) => {
 
   const autoAdvanceTimerRef = useRef(null); // Timer Ref for auto-advance
 
-  // Sort & Auto-Advance
-  const [sortOrder, setSortOrder] = useState('asc'); // 'asc' | 'desc'
+  // Orden de la lista (26/10/2026): el MISMO que el detalle del lote (utils/ordenLote), calculado sobre
+  // TODAS las órdenes del lote. Antes era solo por Secuencia, y una orden que entró tarde al lote
+  // aparecía al final aunque en el detalle estuviera con su tela. En SB arranca en el orden de la
+  // calandra, porque al empaquetado la tela llega calandrada; el botón junto al buscador alterna
+  // con el de impresión. En el resto de las áreas arranca en el de impresión, como antes.
+  const vistaPorDefecto = String(areaCode || '').toUpperCase() === 'SB' ? 'calandra' : 'impresion';
+  const [vistaOrden, setVistaOrden] = useState(vistaPorDefecto); // 'calandra' | 'impresion'
+  useEffect(() => { setVistaOrden(vistaPorDefecto); }, [vistaPorDefecto]);
+  const [ordenLote, setOrdenLote] = useState(null);             // Map OrdenID → posición en el orden de impresión del lote
   // Auto-Siguiente DESHABILITADO a pedido: siempre false, el toggle queda visible pero disabled.
   const [autoAdvance] = useState(false);
 
@@ -142,14 +150,34 @@ const FilePrintControl = ({ areaCode }) => {
   }, [activeRoll, areaCode]);
 
   // --- DERIVED STATE ---
-  const sortedOrders = useMemo(() => {
-    return [...orders].sort((a, b) => {
-      const seqA = a.sequence || 999999;
-      const seqB = b.sequence || 999999;
-      if (sortOrder === 'asc') return seqA - seqB;
-      return seqB - seqA;
-    });
-  }, [orders, sortOrder]);
+  // Posiciones del lote: la regla del detalle en su orden de impresión (sin "fuera de orden" al final,
+  // como el Historial); la calandra es exactamente el inverso.
+  const cargarOrdenLote = React.useCallback(async (rolloId) => {
+    if (!rolloId || rolloId === 'todo') { setOrdenLote(null); return; }
+    try {
+      const data = await fileControlService.getOrdenLote(rolloId);
+      const area = String(data?.area || areaCode || '').toUpperCase();
+      const ids = idsEnOrdenLote(data?.ordenes || [], { isSB: area === 'SB', marcadoLibre: AREAS_MARCADO_LIBRE.includes(area) });
+      setOrdenLote(new Map(ids.map((id, i) => [id, i])));
+    } catch (e) { console.error('Orden del lote:', e); setOrdenLote(null); }
+  }, [areaCode]);
+
+  // Sin posición (buscando en todos los lotes, o una orden que llegó antes de recargar las posiciones):
+  // por lote y Secuencia. Las que no tienen posición van al final en las dos vistas.
+  const compararOrdenes = React.useCallback((a, b) => {
+    const pa = ordenLote?.get(a.id);
+    const pb = ordenLote?.get(b.id);
+    if ((pa == null) !== (pb == null)) return pa == null ? 1 : -1;
+    const c = (pa != null)
+      ? pa - pb
+      : ((a.rolloId || 0) - (b.rolloId || 0)) || ((a.sequence || 999999) - (b.sequence || 999999));
+    return vistaOrden === 'calandra' ? -c : c;
+  }, [ordenLote, vistaOrden]);
+  // Los handlers del socket y del auto-avance leen el comparador vigente sin re-suscribirse
+  const compararRef = useRef(compararOrdenes);
+  compararRef.current = compararOrdenes;
+
+  const sortedOrders = useMemo(() => [...orders].sort(compararOrdenes), [orders, compararOrdenes]);
 
   // --- EFFECTS ---
 
@@ -233,6 +261,7 @@ const FilePrintControl = ({ areaCode }) => {
 
     fetchOrders();
     fetchMetrics();
+    cargarOrdenLote(activeRoll?.id);
     // Reset selection when roll changes
     if (activeRoll) setSelectedOrder(null);
   }, [activeRoll, searchTerm, areaCode]);
@@ -280,6 +309,8 @@ const FilePrintControl = ({ areaCode }) => {
     const runHeavyRefresh = () => {
       if (!activeRoll) return;
       const rId = activeRoll.id === 'todo' ? '' : activeRoll.id;
+      // Las posiciones cambian al imprimir, mover o sumar órdenes al lote
+      cargarOrdenLote(rId);
       // Refresh orders list
       fileControlService.getOrdenes(searchTerm, rId, areaCode || 'DTF').then(newOrders => {
           const normalized = (newOrders || []).map(o => ({
@@ -333,11 +364,7 @@ const FilePrintControl = ({ areaCode }) => {
 
               if (isCompleted && !wasCompleted && !isReposition) {
                 // Determinar si es la última orden válida del lote
-                const currentSorted = [...normalized].sort((a, b) => {
-                  const seqA = a.sequence || 999999;
-                  const seqB = b.sequence || 999999;
-                  return sortOrder === 'asc' ? seqA - seqB : seqB - seqA;
-                });
+                const currentSorted = [...normalized].sort(compararRef.current);
                 const idx = currentSorted.findIndex(o => o.id === fresh.id);
                 let hasNext = false;
                 for (let i = idx + 1; i < currentSorted.length; i++) {
@@ -375,7 +402,7 @@ const FilePrintControl = ({ areaCode }) => {
       socket.off('server:ordersUpdated', handleUpdate);
       // NO cancelamos autoAdvanceTimerRef aquí — eso se maneja en su propio efecto
     };
-  }, [activeRoll, searchTerm, areaCode, sortOrder]);
+  }, [activeRoll, searchTerm, areaCode, cargarOrdenLote]);
 
   // 5. Auto-Advance: efecto separado para no cancelar el timer al cambiar selectedOrder
   useEffect(() => {
@@ -394,11 +421,7 @@ const FilePrintControl = ({ areaCode }) => {
 
       // Buscar la siguiente orden válida
       setOrders(prevOrders => {
-        const currentSorted = [...prevOrders].sort((a, b) => {
-          const seqA = a.sequence || 999999;
-          const seqB = b.sequence || 999999;
-          return sortOrder === 'asc' ? seqA - seqB : seqB - seqA;
-        });
+        const currentSorted = [...prevOrders].sort(compararRef.current);
 
         const idx = currentSorted.findIndex(o => o.id === completedOrderData.ordenId);
         let nextOrder = null;
@@ -432,7 +455,7 @@ const FilePrintControl = ({ areaCode }) => {
     return () => {
       if (autoAdvanceTimerRef.current) clearTimeout(autoAdvanceTimerRef.current);
     };
-  }, [completedOrderData, autoAdvance, sortOrder]);
+  }, [completedOrderData, autoAdvance]);
 
   // Cada vez que se abre el modal de orden pronta, la cantidad de bultos arranca en 1
   useEffect(() => {
@@ -1297,11 +1320,14 @@ const FilePrintControl = ({ areaCode }) => {
               />
             </div>
             <button
-              onClick={() => setSortOrder(prev => prev === 'asc' ? 'desc' : 'asc')}
+              onClick={() => setVistaOrden(prev => prev === 'calandra' ? 'impresion' : 'calandra')}
               className="w-8 h-[34px] flex items-center justify-center bg-white border border-slate-200 rounded-lg text-slate-500 hover:bg-slate-50 hover:text-cyan-600 transition-colors"
-              title={`Ordenar por Secuencia (${sortOrder === 'asc' ? 'Ascendente' : 'Descendente'})`}
+              title={vistaOrden === 'calandra'
+                ? 'Orden de la calandra, como el detalle del lote en la calandra. Tocá para ver el orden de impresión.'
+                : 'Orden de impresión, como el detalle del lote en la impresora. Tocá para ver el orden de la calandra.'}
+              aria-label={vistaOrden === 'calandra' ? 'Ver el orden de impresión' : 'Ver el orden de la calandra'}
             >
-              <i className={`fa-solid fa-sort-${sortOrder === 'asc' ? 'numeric-down' : 'numeric-up-alt'}`}></i>
+              <i className={`fa-solid ${vistaOrden === 'calandra' ? 'fa-arrow-up-z-a' : 'fa-arrow-down-a-z'}`}></i>
             </button>
           </div>
 

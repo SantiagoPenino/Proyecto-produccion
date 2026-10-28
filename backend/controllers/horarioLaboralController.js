@@ -1,5 +1,8 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// El ciclo en planta de las órdenes (tiempo de respuesta de las áreas) se cuenta con este horario: al cambiarlo se
+// recalcula en segundo plano (services/cicloPlantaService.js).
+const { recalcularEnSegundoPlano } = require('../services/cicloPlantaService');
 
 // Obtener Horario Laboral (todas las áreas, o filtrado por ?area=)
 exports.getAll = async (req, res) => {
@@ -47,6 +50,7 @@ exports.create = async (req, res) => {
             .query(`INSERT INTO dbo.ConfigHorarioLaboral (AreaID, DiaSemana, Turno, HoraInicio, HoraFin, Activo)
                     VALUES (@AreaID, @DiaSemana, @Turno, @HoraInicio, @HoraFin, 1)`);
 
+        recalcularEnSegundoPlano(pool, { area: areaID });
         res.json({ success: true, message: 'Horario creado' });
     } catch (err) {
         logger.error("Error creating horario laboral:", err);
@@ -73,6 +77,7 @@ exports.update = async (req, res) => {
                         HoraInicio = @HoraInicio, HoraFin = @HoraFin, Activo = @Activo
                     WHERE HorarioID = @ID`);
 
+        recalcularEnSegundoPlano(pool);   // todas: la fila pudo cambiar de área
         res.json({ success: true, message: 'Horario actualizado' });
     } catch (err) {
         logger.error("Error updating horario laboral:", err);
@@ -89,6 +94,7 @@ exports.remove = async (req, res) => {
             .input('ID', sql.Int, id)
             .query("DELETE FROM dbo.ConfigHorarioLaboral WHERE HorarioID = @ID");
 
+        recalcularEnSegundoPlano(pool);
         res.json({ success: true, message: 'Horario eliminado' });
     } catch (err) {
         logger.error("Error deleting horario laboral:", err);

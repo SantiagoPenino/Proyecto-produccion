@@ -83,7 +83,10 @@ const normalizarRuta = (url) => String(url || '').split('?')[0]
     .replace(/\/[^/]{28,}(?=\/|$)/g, '/:token')
     .slice(0, 120);
 
-function anotarRuta(url, status, ms) {
+// Subidas de archivos (multipart, 26/10): una ruta que recibió alguna en los 15 min va aparte, con MB/s, y no
+// entre las lentas: ahí estaba siempre /api/web-orders/upload-stream, porque tarda lo que pesa el archivo (casi
+// todo es la subida a Drive). Los MB/s son del servidor: la subida del cliente no se ve, la recibe nginx antes.
+function anotarRuta(url, status, ms, extra = {}) {
     const minuto = Math.floor(Date.now() / 60000);
     let b = bucketsRutas[bucketsRutas.length - 1];
     if (!b || b.minuto !== minuto) {
@@ -92,10 +95,14 @@ function anotarRuta(url, status, ms) {
         while (bucketsRutas.length > 15) bucketsRutas.shift();
     }
     const ruta = normalizarRuta(url);
-    const r = b.rutas.get(ruta) || { n: 0, ms: 0, e5: 0, durs: [] };
+    const r = b.rutas.get(ruta) || { n: 0, ms: 0, e5: 0, durs: [], subidas: 0, bytes: 0, msSubidas: 0 };
     r.n++; r.ms += ms;
     if (status >= 500) r.e5++;
     if (r.durs.length < 200) r.durs.push(ms);
+    if (extra.multipart) {
+        r.subidas++;
+        if (extra.bytes > 0 && status < 400) { r.bytes += extra.bytes; r.msSubidas += ms; }
+    }
     b.rutas.set(ruta, r);
 }
 
@@ -105,18 +112,24 @@ function rutasTop() {
     for (const b of bucketsRutas) {
         if (b.minuto <= desde) continue;
         for (const [ruta, r] of b.rutas) {
-            const t = total.get(ruta) || { n: 0, ms: 0, e5: 0, durs: [] };
+            const t = total.get(ruta) || { n: 0, ms: 0, e5: 0, durs: [], subidas: 0, bytes: 0, msSubidas: 0 };
             t.n += r.n; t.ms += r.ms; t.e5 += r.e5; t.durs.push(...r.durs);
+            t.subidas += r.subidas; t.bytes += r.bytes; t.msSubidas += r.msSubidas;
             total.set(ruta, t);
         }
     }
     const filas = [...total.entries()].map(([ruta, t]) => {
         const d = t.durs.sort((a, b) => a - b);
-        return { ruta, n: t.n, e5: t.e5, prom: Math.round(t.ms / t.n), p95: d.length ? d[Math.floor(d.length * 0.95)] : 0 };
+        return {
+            ruta, n: t.n, e5: t.e5, prom: Math.round(t.ms / t.n), p95: d.length ? d[Math.floor(d.length * 0.95)] : 0,
+            subidas: t.subidas, mb: Math.round(t.bytes / MB), mbps: t.msSubidas > 0 ? Math.round(t.bytes / MB / (t.msSubidas / 1000) * 10) / 10 : null,
+        };
     });
     return {
-        lentas: filas.filter(f => f.n >= 3).sort((a, b) => b.p95 - a.p95).slice(0, 12),
+        lentas: filas.filter(f => f.n >= 3 && !f.subidas).sort((a, b) => b.p95 - a.p95).slice(0, 12),
         conErrores: filas.filter(f => f.e5 > 0).sort((a, b) => b.e5 - a.e5).slice(0, 12),
+        subidas: filas.filter(f => f.subidas).sort((a, b) => b.mb - a.mb || b.subidas - a.subidas).slice(0, 6)
+            .map(f => ({ ruta: f.ruta, n: f.subidas, mb: f.mb, mbps: f.mbps, p95: f.p95 })),
     };
 }
 
@@ -139,7 +152,7 @@ function resumenLogins() {
 function registrarHttp(status, ms, url, extra = {}) {
     if (String(url || '').startsWith('/api/sysadmin/monitor')) return;   // la propia pantalla no cuenta
     const sinQuery = String(url || '').split('?')[0];
-    if (sinQuery.startsWith('/api/')) anotarRuta(sinQuery, status, ms);
+    if (sinQuery.startsWith('/api/')) anotarRuta(sinQuery, status, ms, extra);
     if (RUTAS_LOGIN[sinQuery] && (status === 401 || status === 403)) {
         loginsFallidos.push({ t: Date.now(), ip: String(extra.ip || '').replace(/^::ffff:/, '') || '?', usuario: extra.loginUsuario ? String(extra.loginUsuario).trim().slice(0, 60) : null, sistema: RUTAS_LOGIN[sinQuery] });
     }
@@ -331,6 +344,9 @@ function memoria() {
 // Disco y red (Linux). /proc/stat: iowait y steal (CPU que el host de Hostinger le saca a la máquina). /proc/diskstats:
 // el disco con más actividad, sin particiones ni loops. /proc/net/dev: la interfaz con más tráfico, sin lo ni docker.
 let ioPrevio = null;
+// Steal del último minuto (26/10): el aviso usa este y no la muestra de 5 s. Al reiniciar pm2, o mientras corren las
+// miniaturas, la máquina pide mucha CPU de golpe y el steal sube unos segundos: con una sola muestra el cartel iba y venía.
+const ventanaCpu = [];
 const esParticion = (n) => /^(sd|vd|xvd|hd)[a-z]+\d+$/.test(n) || /^(nvme\d+n\d+|mmcblk\d+)p\d+$/.test(n);
 function leerIoRed() {
     if (!ES_LINUX) return { io: null, red: null };
@@ -346,6 +362,9 @@ function leerIoRed() {
             .filter(i => !/^(lo|docker|veth|br-|virbr)/.test(i.nombre))
             .sort((a, b) => (b.rx + b.tx) - (a.rx + a.tx))[0];
         const ahora = { t: Date.now(), cpu, cpuTotal, disco, iface };
+        ventanaCpu.push({ t: ahora.t, steal: cpu[7] || 0, total: cpuTotal });
+        while (ahora.t - ventanaCpu[0].t > 65000) ventanaCpu.shift();
+        const base = ventanaCpu[0];
         const prev = ioPrevio;
         ioPrevio = ahora;
         if (!prev) return { io: null, red: null };
@@ -354,6 +373,9 @@ function leerIoRed() {
         const io = {
             iowaitPct: Math.round((cpu[4] - prev.cpu[4]) / dCpu * 1000) / 10,
             stealPct: Math.round(((cpu[7] || 0) - (prev.cpu[7] || 0)) / dCpu * 1000) / 10,
+            // null hasta tener un minuto de muestras (recién arrancado)
+            stealMinutoPct: ahora.t - base.t >= 55000 && cpuTotal > base.total
+                ? Math.round(((cpu[7] || 0) - base.steal) / (cpuTotal - base.total) * 1000) / 10 : null,
             dispositivo: disco?.nombre || null,
             leeMBs: disco && prev.disco ? Math.round((disco.leidos - prev.disco.leidos) * 512 / MB / dt * 10) / 10 : null,
             escribeMBs: disco && prev.disco ? Math.round((disco.escritos - prev.disco.escritos) * 512 / MB / dt * 10) / 10 : null,
@@ -392,6 +414,16 @@ lagHist.enable();
 const ejecutar = (cmd, args, ms = 4000) => new Promise((ok) => {
     execFile(cmd, args, { timeout: ms, maxBuffer: 2 * MB, windowsHide: true }, (err, stdout) => ok(err ? null : stdout));
 });
+// Igual, pero si falla devuelve el motivo, para anotarlo en el log en vez de perderlo (26/10: el contenedor de SQL
+// salía «sin dato» y no había forma de saber por qué). No se usa en los comandos que fallan como parte normal
+// (grep o journalctl --grep sin coincidencias, el ping a un destino que no contesta).
+const ejecutarConMotivo = (cmd, args, ms = 4000) => new Promise((ok) => {
+    execFile(cmd, args, { timeout: ms, maxBuffer: 2 * MB, windowsHide: true }, (err, stdout, stderr) => ok(err
+        ? { out: null, motivo: err.killed ? `no terminó en ${ms / 1000} s` : String(stderr || err.message).trim().split('\n')[0].slice(0, 200) }
+        : { out: stdout, motivo: null }));
+});
+const yaAnotados = new Set();
+const anotarUnaVez = (clave, texto) => { if (!yaAnotados.has(clave)) { yaAnotados.add(clave); logger.warn(texto); } };
 
 // Procesos que más memoria usan. Solo nombre y script: los argumentos pueden traer contraseñas (el backup).
 let procesosCache = null;
@@ -484,14 +516,22 @@ function memoriaContenedor(id) {
 }
 
 async function leerContenedor(nombre) {
-    const formato = '{{.State.Status}}|{{.State.StartedAt}}|{{.RestartCount}}|{{.HostConfig.Memory}}|{{.Id}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}';
-    const out = await ejecutar('docker', ['inspect', '--format', formato, nombre], 8000);
-    if (out == null) return { tipo: 'contenedor', nombre, error: 'sin dato' };
-    const [estado, inicio, reinicios, topeBytes, id, salud] = out.trim().split('|');
+    // El JSON entero y no un --format (26/10): sin healthcheck configurado, docker no trae State.Health y el
+    // template con {{if .State.Health}} fallaba («map has no entry for key "Health"»), así que el contenedor
+    // de SQL salía siempre «sin dato».
+    const { out, motivo } = await ejecutarConMotivo('docker', ['inspect', nombre], 8000);
+    let c = null;
+    try { c = out ? JSON.parse(out)[0] || null : null; } catch (e) { c = null; }
+    if (!c) {
+        anotarUnaVez(`docker:${nombre}`, `[MONITOR] No se pudo leer el contenedor ${nombre}: ${motivo || 'docker inspect no devolvió un JSON con el contenedor'}`);
+        return { tipo: 'contenedor', nombre, error: 'sin dato' };
+    }
+    const inicio = c.State?.StartedAt;
+    const topeBytes = Number(c.HostConfig?.Memory);
     return {
-        tipo: 'contenedor', nombre, activo: estado === 'running', estado: estado || '?', salud: salud || null,
-        memMB: memoriaContenedor(id), topeMB: Number(topeBytes) > 0 ? Math.round(Number(topeBytes) / MB) : null,
-        reinicios: Number(reinicios) || 0, desde: inicio && !inicio.startsWith('0001') ? new Date(inicio).toISOString() : null,
+        tipo: 'contenedor', nombre, activo: c.State?.Status === 'running', estado: c.State?.Status || '?', salud: c.State?.Health?.Status || null,
+        memMB: memoriaContenedor(c.Id), topeMB: topeBytes > 0 ? Math.round(topeBytes / MB) : null,
+        reinicios: Number(c.RestartCount) || 0, desde: inicio && !inicio.startsWith('0001') ? new Date(inicio).toISOString() : null,
     };
 }
 
@@ -558,7 +598,9 @@ async function medirRed() {
         const res = await Promise.all(destinos.map(async d => ({ ...d, r: await ping(d.host) })));
         if (res.every(x => !x.r)) { redCache = { sinPing: true, destinos: [] }; return; }
         for (const x of res) if (x.r && x.r.perdida < 100) contestaronAlgunaVez.add(x.host);
-        const lista = res.map(x => ({
+        // La oficina se muestra solo si contestó alguna vez (26/10): casi ningún router contesta ping desde internet, y
+        // la casilla «no contesta ping» no decía nada. Que la oficina llega al servidor ya lo muestra su latido.
+        const lista = res.filter(x => !x.oficina || contestaronAlgunaVez.has(x.host)).map(x => ({
             nombre: x.nombre, host: x.oficina ? null : x.host, oficina: !!x.oficina,
             ms: x.r?.ms ?? null, perdida: x.r?.perdida ?? null, contesto: contestaronAlgunaVez.has(x.host),
         }));
@@ -981,7 +1023,7 @@ function evaluar(m) {
     }
     if (m.node.lagMs > 500) add('lag', 'atencion', `El backend está trabado: el event loop demora ${m.node.lagMs} ms`);
     if (m.host.io?.iowaitPct >= 25) add('io', 'atencion', `El disco está trabado: ${m.host.io.iowaitPct} % de la CPU esperando al disco`);
-    if (m.host.io?.stealPct >= 20) add('steal', 'atencion', `El host de Hostinger nos está sacando CPU (${m.host.io.stealPct} % steal)`);
+    if (m.host.io?.stealMinutoPct >= 20) add('steal', 'atencion', `El host de Hostinger nos está sacando CPU (${m.host.io.stealMinutoPct} % steal en el último minuto)`);
     if (m.externo?.configurado && m.externo.ultimo && m.externo.haceSeg > 5 * 60) add('externo', 'atencion', `El monitor externo (${m.externo.pc}) no manda latido hace ${Math.round(m.externo.haceSeg / 60)} min`);
     if (m.http.errores5xxPorMin >= 10) add('http5xx', 'atencion', `${m.http.errores5xxPorMin} errores 500 por minuto`);
     if (m.http.r429PorMin >= 20) add('r429', 'atencion', `El límite de pedidos está rechazando ${m.http.r429PorMin} por minuto${m.http.top429[0] ? ` (sobre todo a ${m.http.top429[0].ip})` : ''}`);
@@ -1227,4 +1269,4 @@ function snapshot({ conHistoria = false } = {}) {
     return { listo: true, cadaMs: CADA_MS, ...resto, avisos: { mails: alertasPush.mails.length, whatsapp: alertasPush.numeros.length }, eventos, ...(conHistoria ? { historia } : {}) };
 }
 
-module.exports = { iniciar, snapshot, registrarHttp, registrarErrorFront, registrarLatidoExterno, terminarProceso, cortarSesionSql, leerHistoria, resumenDia, fechaUY };
+module.exports = { iniciar, snapshot, registrarHttp, registrarErrorFront, registrarLatidoExterno, terminarProceso, cortarSesionSql, leerHistoria, resumenDia, fechaUY, _leerContenedor: leerContenedor, _pruebas: { leerIoRed, evaluar, medirRed, red: () => redCache, rutasTop } };

@@ -19,6 +19,7 @@ import ModalConfirmacionFalla from './ModalConfirmacionFalla';
 import ModalLiberacionFalla from './ModalLiberacionFalla';
 import ModalConsultaCliente from './ModalConsultaCliente';
 import BandaConsultaCliente from './BandaConsultaCliente';
+import { CicloOrdenBadge } from './IndicadorCicloArea';
 import Swal from 'sweetalert2';
 
 // Visor 3D del parche TPU (el mismo del portal, en modo interno: el diseñador elige las texturas).
@@ -1859,6 +1860,8 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                             <span className="text-xs font-bold text-brand-cyan bg-brand-cyan/10 px-2 py-0.5 rounded uppercase tracking-wider border border-brand-cyan/20">
                                 Detalle de Orden
                             </span>
+                            {/* Cuánto tardó en planta (horas laborales del área), cuando ya quedó pronta */}
+                            <CicloOrdenBadge ordenId={currentOrder.id} />
                             {String(currentOrder.status || '').toUpperCase() === 'CANCELADO' && (
                                 <span className="text-xs font-bold text-white bg-brand-magenta px-2 py-0.5 rounded uppercase tracking-wider">CANCELADA</span>
                             )}

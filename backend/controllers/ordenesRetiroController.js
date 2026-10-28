@@ -2,6 +2,7 @@ const { getPool, sql } = require('../config/db');
 const moment = require('moment-timezone');
 const { crearRetiro, marcarEntregado } = require('../services/retiroService');
 const logger = require('../utils/logger');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
 const { recargoDesdePct } = require('../services/desgloseLineaPedido');
 
@@ -474,6 +475,7 @@ const marcarOrdenRetiroEntregado = async (req, res) => {
     req.app.get('socketio')?.emit('retiros:update', { type: 'estado' });
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch (e) { }
+    if (esDeadlock(err)) throw err;   // [26/10] lo reintenta conReintentoDeadlock en la ruta
     res.status(500).json({ error: err.message });
   }
 };
@@ -635,6 +637,7 @@ const marcarDespachoEntregadoAutorizado = async (req, res) => {
     }
   } catch (err) {
     if (transaction) try { await transaction.rollback(); } catch (e) { }
+    if (esDeadlock(err)) throw err;   // [26/10] lo reintenta conReintentoDeadlock en la ruta
     logger.error("Error al marcar despacho entregado:", err);
     res.status(500).json({ error: err.message });
   }

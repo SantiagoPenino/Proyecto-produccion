@@ -55,6 +55,9 @@ module.exports = (req, res, next) => {
             ip: req.ip, build: req.headers['x-front-build'], usuario: req.user?.id,
             // En los logins, solo el usuario que se intentó (nunca la contraseña), para los fallidos del monitor
             loginUsuario: /^\/api\/(web-)?auth\/login/.test(url) ? (req.body?.username || req.body?.email || req.body?.usuario) : undefined,
+            // Subidas de archivos (26/10): el monitor las muestra aparte, con MB/s, y no entre las rutas lentas
+            multipart: /^multipart\/form-data/i.test(req.headers['content-type'] || ''),
+            bytes: Number(req.headers['content-length']) || null,
         });
         const userId = req.user?.id || '-';
         const line = `[HTTP] ${req.method} ${url} ${res.statusCode} ${duration}ms — user:${userId}`;

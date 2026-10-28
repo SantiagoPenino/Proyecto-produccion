@@ -7,6 +7,7 @@ const { marcarEntregado, registrarPago } = require('../services/retiroService');
 const ordenesRetiroController = require('./ordenesRetiroController');
 const logger = require('../utils/logger');
 const { rollbackSeguro } = require('../utils/rollbackSeguro');
+const { esDeadlock } = require('../utils/reintentarDeadlock');
 
 /**
  * Endpoint nativo para recibir y registrar directamente un retiro web.
@@ -836,6 +837,7 @@ exports.marcarRetiroEntregado = async (req, res) => {
         }
 
     } catch (err) {
+        if (esDeadlock(err)) throw err;   // [26/10] lo reintenta conReintentoDeadlock en la ruta
         logger.error("Error al entregar:", err);
         res.status(500).json({ error: "Fallo en la entrega general", details: err.message });
     }
@@ -962,22 +964,37 @@ exports.marcarRetiroEntregadoMultiple = async (req, res) => {
             });
         }
 
+        // [26/10] Un retiro que pierde un deadlock (1205) se reintenta solo, hasta INTENTOS veces: SQL Server
+        // ya deshizo toda su transacción, así que repetirla es seguro. Antes quedaba como fallido y el
+        // operario veía error (RT-34959 y RT-34956, 26/10 16:07). Espera creciente con azar, como
+        // utils/reintentarDeadlock: si las dos que chocaron reintentan juntas, vuelven a chocar.
+        const INTENTOS = 3, ESPERA_MS = 150;
         for (const item of ordenesOrdenadas) {
-            const transaction = new sql.Transaction(pool);
-            await transaction.begin();
-            try {
-                logger.info(`[ENTREGADO MULTIPLE] ${item.ord} -> OReId ${item.id}`);
-                // marcarEntregado actualiza el historial, estados y ya elimina de OcupacionEstantes
-                await marcarEntregado(transaction, item.id, new Date(fechaEntrega), UsuarioAlta);
-                const suyos = sinRecibir.filter(b => b.OReIdOrdenRetiro === item.id);
-                if (suyos.length && modoTransito === 'pendientes') await anotarBultosPendientes(transaction, suyos, item.ord);
-                else if (suyos.length) await cerrarBultosEntregados(transaction, suyos, item.ord);
-                await transaction.commit();
-                entregadas.push(item.ord);
-            } catch (errItem) {
-                try { await transaction.rollback(); } catch (e) { /* ya abortada */ }
-                logger.error(`[ENTREGADO MULTIPLE] Falló ${item.ord}: ${errItem.message}`);
-                fallidas.push(item.ord);
+            for (let intento = 1; intento <= INTENTOS; intento++) {
+                const transaction = new sql.Transaction(pool);
+                await transaction.begin();
+                try {
+                    logger.info(`[ENTREGADO MULTIPLE] ${item.ord} -> OReId ${item.id}${intento > 1 ? ` (intento ${intento})` : ''}`);
+                    // marcarEntregado actualiza el historial, estados y ya elimina de OcupacionEstantes
+                    await marcarEntregado(transaction, item.id, new Date(fechaEntrega), UsuarioAlta);
+                    const suyos = sinRecibir.filter(b => b.OReIdOrdenRetiro === item.id);
+                    if (suyos.length && modoTransito === 'pendientes') await anotarBultosPendientes(transaction, suyos, item.ord);
+                    else if (suyos.length) await cerrarBultosEntregados(transaction, suyos, item.ord);
+                    await transaction.commit();
+                    entregadas.push(item.ord);
+                    break;
+                } catch (errItem) {
+                    try { await transaction.rollback(); } catch (e) { /* ya abortada */ }
+                    if (esDeadlock(errItem) && intento < INTENTOS) {
+                        const espera = ESPERA_MS * intento + Math.floor(Math.random() * ESPERA_MS);
+                        logger.warn(`[ENTREGADO MULTIPLE] ${item.ord}: víctima de deadlock (intento ${intento}/${INTENTOS}). Reintentando en ${espera} ms.`);
+                        await new Promise(r => setTimeout(r, espera));
+                        continue;
+                    }
+                    logger.error(`[ENTREGADO MULTIPLE] Falló ${item.ord}: ${errItem.message}`);
+                    fallidas.push(item.ord);
+                    break;
+                }
             }
         }
 
