@@ -59,12 +59,12 @@ const CAPAS_CONTROL = true;
 // capas vectoriales el RIP mostraba las zonas lisas pero NO las texturadas (07/09). El arte CMYK
 // sigue vectorial. `false` vuelve al vector.
 const SPOTS_RASTER = true;
-// Un solo cabezal blanco en la impresora (verificado 09/09 con la prueba 16): el canal Spot_1 no
-// imprime, solo Spot_2, así que las zonas con "relieve normal" salían vacías. Mientras esté en true,
-// el generador pone TODAS las zonas también en Spot 2 y el archivo sale igual en la máquina de uno
-// y en la de dos cabezales. Cuando llegue el segundo cabezal: false acá y en RELIEVE_DOBLE_SIEMPRE
-// del visor (Tpu3DViewer.jsx), que por la misma razón muestra todo al relieve máximo.
-const RELIEVE_DOBLE_SIEMPRE = true;
+// Relieve normal o doble por zona: Spot 1 lleva todas las zonas con relieve y Spot 2 solo las que el
+// cliente marcó "Doble". Del 09/09 al 28/10 estuvo en true porque la impresora tenía un solo cabezal
+// blanco (el canal Spot_1 no imprimía y las zonas "normales" salían vacías): el generador ponía TODAS
+// las zonas también en Spot 2. El 28/10 Santiago pidió volver a elegir. Va junto con
+// RELIEVE_DOBLE_SIEMPRE del visor (Tpu3DViewer.jsx): si se vuelve a true, true en los dos.
+const RELIEVE_DOBLE_SIEMPRE = false;
 // Canaleta entre zonas (08/10, pedido de Santiago): entre dos zonas de relieve que se tocan queda 1 pt
 // (0,35 mm) sin relieve ni barniz, donde solo cae el color. La cede la zona MÁS GRANDE (casi siempre el
 // fondo): las letras y el dibujo quedan enteros. Las manchitas de menos de 0,5 mm no hacen ceder a nadie.

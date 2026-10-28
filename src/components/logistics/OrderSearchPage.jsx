@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
-import { Search, Loader2, Save, Trash2, Download, Filter, RefreshCcw, CheckSquare, Square, ChevronDown, CheckCircle, Database, X, Ban, Check, User, Hash, Truck, SearchX, ListChecks, FileText, AlertTriangle, CalendarDays } from 'lucide-react';
+import { Search, Loader2, Save, Trash2, Download, Filter, RefreshCcw, CheckSquare, Square, ChevronDown, CheckCircle, Database, X, Ban, Check, User, Hash, Truck, SearchX, ListChecks, FileText, AlertTriangle, CalendarDays, LayoutGrid, List } from 'lucide-react';
 import api from '../../services/api';
 import { utils, writeFile } from 'xlsx';
 import Swal from 'sweetalert2';
@@ -37,6 +37,34 @@ const COLOR_ESTADO = {
 };
 const claseEstado = (estado) => COLOR_ESTADO[String(estado || '').trim().toLowerCase()] || 'bg-zinc-100 text-zinc-600 border-zinc-200';
 
+// Vista del resultado (28/10/2026): tarjetas o filas, a elección; se recuerda en este navegador. En el celular siempre
+// tarjetas: la tabla de 10 columnas no entra a 390 px.
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+const VISTAS = [['tarjetas', LayoutGrid, 'Tarjetas'], ['filas', List, 'Filas']];
+const segmento = (activo) => `inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
+    activo ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`;
+const TH = 'px-3 py-2.5 text-[10px] font-black uppercase tracking-wide text-zinc-400';
+
+// El backend (/apiordenes/datafilter) manda la fecha de ingreso ya como texto en-US, hora de Montevideo
+// («10/26/2026, 8:48:43 PM»): se muestra DD/MM/AA HH:mm en 24 h, como el resto del sistema. Otra forma, tal cual.
+const fechaIngreso = (v) => {
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})(?::\d{2})?\s*([AP]M)$/i.exec(String(v || '').trim());
+    if (!m) return v || '-';
+    const h = (Number(m[4]) % 12) + (m[6].toUpperCase() === 'PM' ? 12 : 0);
+    const p = (n) => String(n).padStart(2, '0');
+    return `${p(m[2])}/${p(m[1])}/${m[3].slice(-2)} ${p(h)}:${m[5]}`;
+};
+
 const Toast = Swal.mixin({
     toast: true,
     position: 'bottom-end',
@@ -48,7 +76,7 @@ const Toast = Swal.mixin({
 const OrderSearchPage = () => {
     const [dropdownOpen, setDropdownOpen] = useState(false);
     const [orders, setOrders] = useState([]);
-    // Tarjetas de a 50: una búsqueda por fechas puede traer miles. Al acercarse al final se agregan 50 más; vuelve a
+    // Tarjetas o filas de a 50: una búsqueda por fechas puede traer miles. Al acercarse al final se agregan 50 más; vuelve a
     // 50 con cada búsqueda. La selección («seleccionar todas», acciones masivas, Excel) sigue tomando todas las órdenes.
     const [verOrdenes, setVerOrdenes] = useState(50);
     useEffect(() => { setVerOrdenes(50); }, [orders]);
@@ -60,6 +88,10 @@ const OrderSearchPage = () => {
             { rootMargin: '0px 0px 600px 0px' });
         obsOrdenes.current.observe(nodo);
     }, []);
+    const conTabla = useConTabla();
+    const [vista, setVista] = useState(() => { try { return localStorage.getItem('buscarOrdenes.vista') || 'tarjetas'; } catch (_) { return 'tarjetas'; } });
+    const cambiarVista = (v) => { setVista(v); try { localStorage.setItem('buscarOrdenes.vista', v); } catch (_) { /* nada */ } };
+    const enFilas = conTabla && vista === 'filas';
     const [selectedOrders, setSelectedOrders] = useState(new Set());
     const [estadosOrden, setEstadosOrden] = useState([]);
     const [tiposClientes, setTiposClientes] = useState([]);
@@ -689,7 +721,7 @@ const OrderSearchPage = () => {
                 </div>
             </div>
 
-            {/* Data Grid Section — una tarjeta por orden (antes una tabla de 10 columnas) */}
+            {/* Data Grid Section — tarjetas o filas, según el selector de vista (en el celular siempre tarjetas) */}
             <div className="space-y-3">
                 <div className={`${CARD} px-4 py-3 flex flex-wrap items-center justify-between gap-3`}>
                     <div className="min-w-0">
@@ -698,23 +730,34 @@ const OrderSearchPage = () => {
                             {loading ? 'Buscando…' : orders.length > 0 ? `${orders.length.toLocaleString('es-UY')} ${orders.length === 1 ? 'orden encontrada' : 'órdenes encontradas'}` : 'Resultado de la búsqueda'}
                         </p>
                     </div>
-                    {orders.length > 0 && (
+                    {(orders.length > 0 || conTabla) && (
                         <div className="flex flex-wrap items-center gap-2">
-                            {selectedOrders.size > 0 && (
+                            {orders.length > 0 && selectedOrders.size > 0 && (
                                 <span className={`${BADGE} bg-brand-cyan/5 text-brand-cyan border-brand-cyan/20 tabular-nums`}>
                                     {selectedOrders.size} seleccionada(s)
                                 </span>
                             )}
-                            {/* Seleccionar todo (antes el checkbox del encabezado de la tabla) */}
-                            <label className={`${BTN_SECUNDARIO} cursor-pointer select-none`}>
-                                <input
-                                    type="checkbox"
-                                    checked={allSelected}
-                                    onChange={toggleAllSelection}
-                                    className="w-4 h-4 cursor-pointer accent-brand-cyan"
-                                />
-                                Seleccionar todas
-                            </label>
+                            {/* Seleccionar todo en tarjetas; en filas lo hace el checkbox del encabezado de la tabla */}
+                            {orders.length > 0 && !enFilas && (
+                                <label className={`${BTN_SECUNDARIO} cursor-pointer select-none`}>
+                                    <input
+                                        type="checkbox"
+                                        checked={allSelected}
+                                        onChange={toggleAllSelection}
+                                        className="w-4 h-4 cursor-pointer accent-brand-cyan"
+                                    />
+                                    Seleccionar todas
+                                </label>
+                            )}
+                            {conTabla && (
+                                <div className="inline-flex items-center gap-0.5 p-0.5 rounded-xl border border-zinc-200 bg-white" role="group" aria-label="Vista de las órdenes">
+                                    {VISTAS.map(([v, Icono, txt]) => (
+                                        <button key={v} type="button" onClick={() => cambiarVista(v)} aria-pressed={vista === v} className={segmento(vista === v)}>
+                                            <Icono size={14} /> {txt}
+                                        </button>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
                 </div>
@@ -728,6 +771,93 @@ const OrderSearchPage = () => {
                     <div className={`${CARD} flex flex-col items-center justify-center gap-2 py-16 px-4 text-center`}>
                         <SearchX size={40} className="text-zinc-200" />
                         <span className="text-sm text-zinc-400">No hay órdenes disponibles. Realiza una búsqueda.</span>
+                    </div>
+                ) : enFilas ? (
+                    <div className={`${CARD} overflow-hidden`}>
+                        <div className="overflow-x-auto">
+                            <table className="w-full text-sm text-left whitespace-nowrap">
+                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                    <tr>
+                                        <th className="pl-4 pr-2 py-2.5 w-10">
+                                            <input
+                                                type="checkbox"
+                                                checked={allSelected}
+                                                onChange={toggleAllSelection}
+                                                aria-label="Seleccionar todas"
+                                                className="w-4 h-4 align-middle cursor-pointer accent-brand-cyan"
+                                            />
+                                        </th>
+                                        <th className={TH}>Código orden</th>
+                                        <th className={TH}>Orden retiro</th>
+                                        <th className={TH}>Cliente</th>
+                                        <th className={TH}>Trabajo</th>
+                                        <th className={TH}>Producto</th>
+                                        <th className={TH}>Estado</th>
+                                        <th className={`${TH} text-right`}>Cantidad</th>
+                                        <th className={`${TH} text-right`}>Costo final</th>
+                                        <th className={`${TH} pr-4`}>Fecha ingreso</th>
+                                    </tr>
+                                </thead>
+                                <tbody className="divide-y divide-zinc-100">
+                                    {orders.slice(0, verOrdenes).map(order => {
+                                        const marcada = selectedOrders.has(order.IdOrden);
+                                        return (
+                                            <tr key={order.IdOrden}
+                                                onClick={() => setSelectedOrderDetail(order)}
+                                                className={`cursor-pointer transition-colors ${marcada ? 'bg-brand-cyan/5 hover:bg-brand-cyan/10' : 'hover:bg-zinc-50'}`}
+                                            >
+                                                <td className="pl-4 pr-2 py-2.5" onClick={(e) => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={marcada}
+                                                        onChange={(e) => {
+                                                            e.stopPropagation();
+                                                            toggleOrderSelection(order.IdOrden);
+                                                        }}
+                                                        aria-label={`Seleccionar ${order.CodigoOrden}`}
+                                                        className="w-4 h-4 align-middle cursor-pointer accent-brand-cyan"
+                                                    />
+                                                </td>
+                                                <td className="px-3 py-2.5 font-mono text-xs font-black text-zinc-800">{order.CodigoOrden}</td>
+                                                <td className="px-3 py-2.5">
+                                                    {order.OrdenRetiro ? (
+                                                        <div className="flex flex-col">
+                                                            <span className="font-black text-brand-cyan tabular-nums">#{order.OrdenRetiro}</span>
+                                                            {order.EstadoOrdenRetiro && (
+                                                                <span className="max-w-[110px] 2xl:max-w-[200px] truncate text-[10px] text-zinc-400 font-bold uppercase tracking-wide" title={order.EstadoOrdenRetiro}>{order.EstadoOrdenRetiro}</span>
+                                                            )}
+                                                        </div>
+                                                    ) : (
+                                                        <span className="text-zinc-300">-</span>
+                                                    )}
+                                                </td>
+                                                {/* Cliente, trabajo y producto bajan a dos líneas en pantallas angostas en vez de agrandar la tabla */}
+                                                <td className="px-3 py-2.5 min-w-[100px] max-w-[200px] whitespace-normal">
+                                                    <div className="font-bold text-zinc-800 line-clamp-2 [overflow-wrap:anywhere]" title={order.IdCliente}>{order.IdCliente}</div>
+                                                </td>
+                                                <td className="px-3 py-2.5 min-w-[120px] max-w-[260px] whitespace-normal">
+                                                    <div className="text-zinc-500 line-clamp-2 [overflow-wrap:anywhere]" title={order.NombreTrabajo}>{order.NombreTrabajo || '-'}</div>
+                                                </td>
+                                                <td className="px-3 py-2.5 min-w-[120px] max-w-[240px] whitespace-normal">
+                                                    <div className="text-zinc-600 line-clamp-2 [overflow-wrap:anywhere]" title={order.Producto}>{order.Producto || '-'}</div>
+                                                </td>
+                                                <td className="px-3 py-2.5">
+                                                    <span className={`${BADGE} ${claseEstado(order.EstadoAprobacionStr || order.Estado)}`}>{order.EstadoAprobacionStr || order.Estado}</span>
+                                                </td>
+                                                <td className="px-3 py-2.5 text-right text-zinc-700 tabular-nums">{order.Cantidad}</td>
+                                                <td className="px-3 py-2.5 text-right font-black text-zinc-800 tabular-nums">{order.CostoFinal ? `${order.MonSimbolo || '$'}${Number(order.CostoFinal).toFixed(2)}` : '-'}</td>
+                                                <td className="pl-3 pr-4 py-2.5 text-xs text-zinc-500 tabular-nums">{fechaIngreso(order.FechaIngresoOrden)}</td>
+                                            </tr>
+                                        );
+                                    })}
+                                </tbody>
+                            </table>
+                        </div>
+                        {orders.length > verOrdenes && (
+                            <div ref={centinelaOrdenes} className="py-3 text-center text-xs text-zinc-400 border-t border-zinc-100">
+                                Mostrando {verOrdenes} de {orders.length}…
+                            </div>
+                        )}
                     </div>
                 ) : (
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
@@ -791,7 +921,7 @@ const OrderSearchPage = () => {
                                     </div>
                                     <div className="min-w-0">
                                         <dt className="text-[10px] font-black uppercase tracking-wide text-zinc-400">Fecha ingreso</dt>
-                                        <dd className="text-xs text-zinc-500 tabular-nums">{order.FechaIngresoOrden ? order.FechaIngresoOrden : '-'}</dd>
+                                        <dd className="text-xs text-zinc-500 tabular-nums">{fechaIngreso(order.FechaIngresoOrden)}</dd>
                                     </div>
                                 </dl>
                             </div>
@@ -898,7 +1028,7 @@ const OrderSearchPage = () => {
                                 {/* Info Row 5 */}
                                 <div className="min-w-0">
                                     <p className={ROTULO}>Fecha Ingreso Orden</p>
-                                    <p className="text-sm font-medium text-zinc-800 tabular-nums">{selectedOrderDetail.FechaIngresoOrden ? selectedOrderDetail.FechaIngresoOrden : '-'}</p>
+                                    <p className="text-sm font-medium text-zinc-800 tabular-nums">{fechaIngreso(selectedOrderDetail.FechaIngresoOrden)}</p>
                                 </div>
                                 <div className="min-w-0 md:col-span-2">
                                     <p className={ROTULO}>Nota Cliente</p>

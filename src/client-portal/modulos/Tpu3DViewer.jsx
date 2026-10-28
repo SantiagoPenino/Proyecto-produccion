@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { X, Loader2, Rotate3d, Sparkles, Save, Check, ChevronRight, ChevronLeft, Move, Eye, EyeOff, Lock, LockOpen } from 'lucide-react';
+import { X, Loader2, Rotate3d, Sparkles, Save, Check, ChevronRight, ChevronLeft, Move, Eye, EyeOff, Lock, LockOpen, Layers } from 'lucide-react';
 import { API_BASE_URL } from '../api/apiClient';
 import Tpu3DCargando from './Tpu3DCargando';
 
@@ -158,13 +158,13 @@ const ALTURA_NORMAL = 1.2;
 // Tope del tile respecto del ancho del render: sin esto, escalas grandes generan un canvas de
 // varios miles de píxeles y el recorrido píxel a píxel de cargarTile se hace notar.
 const TILE_MAX_FACTOR = 1.5;
-// Un solo cabezal blanco en la impresora (verificado 09/09): Spot_1 no imprime, así que el generador
-// pone TODAS las zonas en doble (RELIEVE_DOBLE_SIEMPRE en tpuMatrizService.js). Acá se refleja igual:
-// toda zona con relieve se ve al máximo y el botón Normal/Doble se esconde. Apagar en los dos lados
-// cuando llegue el segundo cabezal.
+// Del 09/09 al 28/10 estuvo en true: la impresora tenía un solo cabezal blanco (Spot_1 no imprimía) y el
+// generador ponía TODAS las zonas en doble (RELIEVE_DOBLE_SIEMPRE en tpuMatrizService.js); acá toda zona
+// se veía al máximo y el botón Normal/Doble no estaba. El 28/10 Santiago pidió volver a elegir por zona.
+// Va junto con la del service: si se vuelve a true, true en los dos.
 // (Sin "engorde" del tile: la impresión real del 09/09 sacó nítidos trazos de 0,10 mm; el engorde
 // fundía la trama en bloques y no correspondía a nada físico.)
-const RELIEVE_DOBLE_SIEMPRE = true;
+const RELIEVE_DOBLE_SIEMPRE = false;
 // Modo matriz: CANALETA entre zonas (08/10, pedido de Santiago). Entre dos zonas de relieve que se
 // tocan queda 1 pt (0,35 mm del parche real) sin relieve ni barniz, donde solo se ve el color. La cede
 // la zona MÁS GRANDE (la que más se ve; si empatan, la de índice menor): casi siempre el fondo, así que
@@ -2454,7 +2454,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                         dobles[zonaActiva] ? 'border-cyan-400 bg-cyan-500/10 text-cyan-300' : `${ui.cardBorde} ${ui.cardTxt}`
                                     }`}
                                 >
-                                    <span>Relieve</span>
+                                    <span className="flex items-center gap-1.5"><Layers size={13} /> Relieve</span>
                                     <span className={`text-[9px] font-black uppercase tracking-widest ${dobles[zonaActiva] ? 'text-cyan-300' : ui.etiqueta}`}>
                                         {dobles[zonaActiva] ? 'Doble' : 'Normal'}
                                     </span>

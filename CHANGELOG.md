@@ -218,6 +218,18 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - Nuevo: `POST /api/web-orders/bordado/analizar-vector` (lee el archivo y lo borra; no guarda nada) y `utils/bordadoVector.js`. Las partes con degradado o patrón no entran en el cálculo, y se avisa.
 
 ### Cambiado
+- **TPU «Armá tu matriz»: relieve normal o doble por zona, Spot 1 y Spot 2 vuelven a ser distintos (28/10).**
+  - **Antes (desde el 09/09):** toda zona con relieve salía doble. La impresora tenía un solo cabezal blanco y el canal Spot 1 no imprimía, así que el generador ponía todas las zonas también en Spot 2 y el visor no mostraba la elección.
+  - **Ahora:** en el panel de la zona vuelve el botón «Relieve · Normal / Doble», al lado de «Quitar». Spot 1 lleva todas las zonas con relieve y Spot 2 solo las dobles. En el 3D, la doble se ve más alta. Una zona nueva arranca en Normal.
+  - Las matrices ya generadas no cambian: se hicieron con todo doble.
+  - Probado en local con el generador real y el escudo de Peñarol (estrellas y bastones dobles, fondo normal): Spot 1 con todo y Spot 2 solo estrellas y bastones. Con la opción vieja, Spot 2 sale igual a Spot 1.
+  - `services/tpuMatrizService.js` y `client-portal/modulos/Tpu3DViewer.jsx`: `RELIEVE_DOBLE_SIEMPRE` en `false` en los dos.
+- **Base de Datos de Órdenes (`/logistica/buscar-ordenes`): el resultado se puede ver en filas (28/10).**
+  - **Selector «Tarjetas | Filas»** al lado del título «Órdenes», como el de Cotizaciones. Cada navegador recuerda la última vista elegida (localStorage `buscarOrdenes.vista`).
+  - **Filas:** una tabla con casilla, código, orden de retiro (con su estado), cliente, trabajo, producto, estado, cantidad, costo final y fecha de ingreso. Igual que en las tarjetas, un clic en la fila abre el detalle, la casilla marca sin abrirlo y se cargan de a 50 al bajar. «Seleccionar todas» pasa a ser la casilla del encabezado.
+  - **Ancho:** en pantallas angostas, cliente, trabajo y producto bajan a dos líneas; a 1280 px la tabla entra sin barra horizontal. En el celular (menos de 768 px) siempre se ven tarjetas y el selector no aparece.
+  - **Fecha de ingreso:** se muestra «26/10/26 20:48» en las tarjetas, las filas y el detalle. El backend la manda como texto en inglés, con el mes primero y en 12 h («10/26/2026, 8:48:43 PM»). Se cambió solo en el front; el backend no se tocó.
+  - Probado en local con «Pronto para entregar» (427 órdenes) y «Cancelado»: selección de una y de todas, detalle, carga de más filas, cambio de vista, recargar la página y el celular. No se mandó ninguna escritura.
 - **Tareas (`/tareas`) con la estética nueva (28/10).**
   - **Encabezado:** como en las demás pantallas: ícono brand-cyan sin el cuadrito de fondo, «TAREAS» en mayúsculas y la página a todo el ancho; antes era una columna angosta en el medio. «Nueva tarea» pasa a ser un botón brand-cyan al lado del título, en vez de la franja punteada.
   - **Alta:** los dos campos tienen borde y se marcan en brand-cyan. «Cancelar» y «Agregar» usan los botones de siempre, y «Agregar» muestra la ruedita mientras guarda.
@@ -1225,6 +1237,7 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Queda pendiente:** los 18 cobros de Entrega de pedidos del 11/06 al 13/08 no tienen asiento contable (por el bug de `procesarEventoContable` que arregló Yoania). Las cuentas 713, 89, 402 y 1297 tienen una factura que figura impaga aunque el pago entró. Las facturas ET-122 y ET-392 siguen en estado PENDIENTE ante DGI desde junio.
 
 ### Notas de deploy
+- **TPU relieve normal o doble:** sin SQL. Backend con reinicio (`services/tpuMatrizService.js`) y el front en el build, juntos: si sube solo uno, el visor muestra una cosa y la matriz sale con otra. La máquina tiene que imprimir el canal Spot 1: con un solo cabezal blanco, las zonas en «Normal» salen sin relieve (pasó el 09/09).
 - **«Ver OP» del Libro Mayor:** sin SQL. Backend con reinicio: `services/cajaService.js`. La estética nueva del Libro Mayor va en el build del front (`pages/LibroMayorView.jsx`), y las dos partes son independientes.
 - **Miniaturas de archivos grandes (INF-SIS-2026-08):** sin SQL y sin cambios en el front.
   - **Backend, con reinicio** (por la subida): `utils/thumbnailGenerator.js`, `services/driveService.js` y `controllers/webOrdersController.js`.
@@ -1271,6 +1284,13 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Precios y perfiles con la estética nueva:** solo front, en el build: `pages/PriceProfiles.jsx`, `pages/PriceCalculatorTest.jsx`, `pages/PriceReports.jsx` y `pages/BasePrices.jsx` (el modo embebido, sin su título). Sin backend ni SQL.
 - **Cuadre diario con la estética nueva:** solo front, en el build: `pages/CuadreDiarioView.jsx`. Sin backend ni SQL.
 - **Precios especiales con la estética nueva:** solo front, en el build: `pages/SpecialPrices.jsx` (se ve también en la Vista 360 › Precios). Sin backend ni SQL. No arregla la pérdida de reglas al guardar (INF-SIS-2026-12).
+- **Lo de Yoania (commit `85a923c` del 28/10).** No tocó el CHANGELOG; lo describo a partir de su diff. Backend con reinicio (30 archivos entre backend y front; front en el build).
+  - **3 scripts SQL que su código pide y NO están en el repo** (`*.sql` está en el `.gitignore`; en la copia local tampoco se corrieron). Hay que pedírselos. Sin cada uno, esa función avisa con un mensaje y no guarda, y lo demás anda; cuando se corre, anda sin reiniciar:
+    - `backend/scripts/configurador_precios_escalonados.sql`: crea el perfil global «PRODUCTOS ESCALONADOS» (categoría PRO), para las escalas por cantidad de los productos del configurador;
+    - `docs/migrations/configurador_variantes_copias.sql`: saca el índice único padre + modelo de `ProductoVentaConfig`, para «Copiar» una variante;
+    - `scripts/add_solicitudes_precio_sin_cargo.sql`: agrega `SolicitudesVendedor.MotivoSinCargo`, para el precio en 0 con motivo.
+  - **Qué trae:** escalas de precio por cantidad en el configurador (tienda, pedido de prenda y solicitud cobran la de la cantidad); copiar variantes; precio sin cargo con motivo (descuento del 100 %; la etiqueta ya no lo frena por costo $ 0); «lista, descuento, neto» en las líneas de productos del catálogo; cambiar el cliente de una factura muda su cuenta corriente; el retiro con su prefijo real (RT/RW/RL) en las facturas; las NC solo para DGI no mueven el saldo del estado de cuenta; facturación manual sin el IDCliente como documento; filtros y columna «Cliente · Qué paga» en Tesorería; pagos que cubren varios retiros en Gestión de pagos.
+  - Las tablas y columnas que usan sus consultas existen en la copia local; la consulta para comprobarlo en producción está en «Deploy 28-10 · Base de datos y .env.pdf» (Escritorio).
 - **Filtro del error de Instagram en iPhone:** front `utils/errorReporter.js` (build) y backend `controllers/sysadminController.js` (reinicio). Independientes: el backend solo ya descarta los que mande el front viejo.
 - **Entregar retiros sin deadlocks:** solo backend, con reinicio; sin SQL ni build. Archivos: `services/retiroService.js`, `controllers/webRetirosController.js`, `controllers/ordenesRetiroController.js`, `routes/webRetirosRoutes.js` y `routes/getwayOrdenesRetiro.js`. Después del deploy, correr `backend/scripts/diag_deadlocks_entrega_multiple_2026-10-26.sql` a la tarde, que es cuando más se entrega: no tiene que aparecer ningún deadlock sobre `OcupacionEstantes`.
 - **Orden del Control igual al del detalle del lote:** backend con reinicio, `controllers/productionFileController.js` y `routes/productionFileRoutes.js` (`GET /api/production-file-control/lote/:rolloId/orden`, nuevo). Front, en el build: `utils/ordenLote.js` (nuevo), `pages/FilePrintControl.jsx`, `modals/RollDetailsModal.jsx` y `services/modules/fileControlService.js`. Van juntos: el front nuevo sin el backend ordena el Control solo por Secuencia (en SB, de mayor a menor, porque arranca en la vista de calandra).

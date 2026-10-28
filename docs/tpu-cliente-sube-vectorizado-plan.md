@@ -239,6 +239,7 @@ el operario imponga a mano.
   XObject del arte. Causa 2: **la impresora tiene un solo cabezal blanco, Spot_1 no imprime** → "relieve normal" vacío.
   Mientras dure: `RELIEVE_DOBLE_SIEMPRE` (service → `relieve_doble_siempre` en el job → Spot 2 = todas las zonas) y la
   misma constante en el visor (todo al máximo, botón Normal/Doble oculto; el `doble` que viaja al backend queda en true).
+  **28/10: las dos constantes en `false`** a pedido de Santiago (relieve normal o doble por zona; Spot 2 = solo las dobles).
   Los trazos de 0,10 mm del Recurso 10 imprimieron nítidos: **no hay piso de grosor**, el engorde se eliminó de ambos lados.
 - **Spot 3 sin barniz / Spot 2 sin dobles**: la capa queda vacía; los marcadores de tinta del RIP solo
   se emiten para las tintas con objetos, y en el PDF de control la página vacía lleva solo el rótulo.
