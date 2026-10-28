@@ -43,6 +43,7 @@ const BobinaCard = ({
     onAdministrar,
     onEjecutarConfirm,
     onSolicitarDevolucion,
+    onVerBandeja,
 }) => {
     const esPendiente   = bob.Estado === "Pendiente";
     const esAgotada     = bob.Estado === "Agotado" || bob.Estado === "Cerrado";
@@ -185,7 +186,20 @@ const BobinaCard = ({
                             <FileText className="w-3.5 h-3.5 text-brand-cyan" /> Estado de cuenta
                         </button>
                     )}
-                    {!esAgotada && !esPendiente && (
+                    {/* Con una solicitud en curso no se ofrece pedir otra (el servicio la rechazaba): se ve el
+                        estado y lleva a la bandeja, donde se aprueba, rechaza o empaqueta. */}
+                    {!esAgotada && !esPendiente && bob.SolicitudTevID && (
+                        <button
+                            type="button"
+                            onClick={onVerBandeja}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-amber-200 bg-amber-50 text-xs font-bold text-amber-800 hover:border-amber-300 transition-colors"
+                            title={`Solicitud #${bob.SolicitudTevID} ${bob.SolicitudEstado === "APROBADA" ? "aprobada" : "pendiente"}: ver en la Bandeja de devoluciones`}
+                        >
+                            <Undo2 className="w-3.5 h-3.5" />
+                            {bob.SolicitudAccion === "DESCARTAR" ? "Descarte pedido" : "Devolución pedida"}
+                        </button>
+                    )}
+                    {!esAgotada && !esPendiente && !bob.SolicitudTevID && (
                         <button
                             type="button"
                             onClick={() => onSolicitarDevolucion(bob)}
@@ -436,6 +450,7 @@ const TelaClienteInventarioPage = () => {
             onEstadoCuenta={setEstadoTelaBobina}
             onAdministrar={(b) => setManagingBobina({ bobina: b, insumoName: b.TipoTela })}
             onSolicitarDevolucion={setSolicitandoBobina}
+            onVerBandeja={() => setVista("bandeja")}
             onEjecutarConfirm={ejecutarConfirmacion}
         />
     );
@@ -671,6 +686,7 @@ const TelaClienteInventarioPage = () => {
                     insumoName={managingBobina.insumoName}
                     onClose={() => setManagingBobina(null)}
                     onSuccess={loadInventory}
+                    onVerBandeja={() => { setManagingBobina(null); setVista("bandeja"); }}
                 />
             )}
             {solicitandoBobina && (

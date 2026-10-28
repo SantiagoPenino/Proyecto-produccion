@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { FileText, CheckCircle, AlertCircle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, RefreshCw, FileX, FilePlus, User, Trash2, Mail, MailCheck } from 'lucide-react';
+import { FileText, AlertCircle, AlertTriangle, Search, Send, FileOutput, Plus, Edit, XCircle, Printer, Copy, FileX, User, Trash2, Mail, MailCheck, Loader2, SearchX } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
@@ -12,16 +12,35 @@ import CfeNotaCreditoModal from './CfeNotaCreditoModal';
 import NcExternaModal from './NcExternaModal';
 import CfePreviewDgiModal from './CfePreviewDgiModal';
 import CfeEnviarEmailModal from './CfeEnviarEmailModal';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
+import useConfirmar from '../ui/useConfirmar';
 // Nombre del tipo de documento: única fuente, compartida con el generador de PDF
 import { getTipoDocName } from '../../utils/tiposDocumento';
 
+// Estética nueva (27/10/2026): encabezado, filtros con Selector/SelectorFecha, tabla clara (en el celular, una
+// tarjeta por documento), estados con color de estado y acciones como íconos parejos. Anular y reversar confirman
+// con la ventana del sistema (antes, window.confirm). La lógica no cambió.
+
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-8 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const TH = 'px-4 py-3 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full border whitespace-nowrap';
+// Ícono de acción: gris, se pone cian al pasar (magenta en los que anulan)
+const ACCION = 'p-1.5 rounded-lg text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5 transition-colors disabled:opacity-40';
+const ACCION_PELIGRO = 'p-1.5 rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 transition-colors';
+const CHECK = 'w-4 h-4 rounded border-zinc-300 accent-[#006E97] cursor-pointer';
+
 const getStatusBadge = (status) => {
     switch(status) {
-        case 'PENDIENTE': return <span className="bg-yellow-100 text-yellow-800 px-2 py-1 rounded-full text-xs font-semibold">Pendiente DGI</span>;
-        case 'ACEPTADO_DGI': return <span className="bg-green-100 text-green-800 px-2 py-1 rounded-full text-xs font-semibold">Aceptado DGI</span>;
-        case 'RECHAZADO_DGI': return <span className="bg-red-100 text-red-800 px-2 py-1 rounded-full text-xs font-semibold">Rechazado</span>;
-        case 'BORRADOR': return <span className="bg-purple-100 text-purple-800 px-2 py-1 rounded-full text-xs font-semibold">📋 Borrador</span>;
-        default: return <span className="bg-gray-100 text-gray-800 px-2 py-1 rounded-full text-xs font-semibold">{status}</span>;
+        case 'PENDIENTE': return <span className={`${CHIP} bg-amber-50 text-amber-700 border-amber-200`}>Pendiente DGI</span>;
+        case 'ACEPTADO_DGI': return <span className={`${CHIP} bg-emerald-50 text-emerald-700 border-emerald-200`}>Aceptado DGI</span>;
+        case 'RECHAZADO_DGI': return <span className={`${CHIP} bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20`}>Rechazado</span>;
+        case 'BORRADOR': return <span className={`${CHIP} bg-zinc-50 text-zinc-600 border-zinc-200`}>Borrador</span>;
+        default: return <span className={`${CHIP} bg-zinc-50 text-zinc-500 border-zinc-200`}>{status}</span>;
     }
 };
 
@@ -41,31 +60,31 @@ const renderDocFecha = (fechaStr) => {
     if (!fechaStr) return '—';
     const date = new Date(fechaStr);
     const datePart = date.toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' });
-    const timePart = date.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hour12: true });
+    const timePart = date.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
     return (
-        <div className="flex flex-col text-xs text-gray-500 font-medium">
-            <span className="text-gray-900 font-semibold">{datePart}</span>
-            <span className="text-[10px] text-gray-400 mt-0.5">{timePart}</span>
+        <div className="flex flex-col text-xs tabular-nums">
+            <span className="text-zinc-800 font-semibold">{datePart}</span>
+            <span className="text-[11px] text-zinc-400 mt-0.5">{timePart}</span>
         </div>
     );
 };
 
 const renderCfeOficialCol = (doc) => {
     if (doc.CfeEstado !== 'ACEPTADO_DGI') {
-        return <span className="text-gray-400">-</span>;
+        return <span className="text-zinc-300">—</span>;
     }
     const text = doc.CfeNumeroOficial || '';
-    
+
     // Caso 1: Formato "Nro. de CAE 90260001010 Serie B 1 / 1000"
     const matchCae = text.match(/Nro\.\s+de\s+CAE\s+(\d+)\s+Serie\s+([A-Za-z]+)\s+(\d+)\s*(?:\/\s*(\d+))?/i);
     if (matchCae) {
         const [_, caeNum, serie, numero, total] = matchCae;
         return (
             <div className="flex flex-col text-xs leading-tight">
-                <div className="font-extrabold text-blue-600 text-sm">N° {numero}</div>
-                <div className="font-medium text-gray-500">Serie {serie} {total ? `/ ${total}` : ''}</div>
-                <div className="text-[10px] text-gray-400 mt-1">CAE: {caeNum}</div>
-                <div className="text-[10px] text-gray-400">{doc.CfeCAE}</div>
+                <div className="font-black text-brand-cyan text-sm tabular-nums">N° {numero}</div>
+                <div className="font-medium text-zinc-500">Serie {serie} {total ? `/ ${total}` : ''}</div>
+                <div className="text-[10px] text-zinc-400 mt-1 font-mono">CAE: {caeNum}</div>
+                <div className="text-[10px] text-zinc-400 font-mono">{doc.CfeCAE}</div>
             </div>
         );
     }
@@ -76,18 +95,18 @@ const renderCfeOficialCol = (doc) => {
         const [_, serie, numero] = matchSimple;
         return (
             <div className="flex flex-col text-xs leading-tight">
-                <div className="font-extrabold text-blue-600 text-sm">N° {numero}</div>
-                <div className="font-medium text-gray-500">Serie {serie}</div>
-                <div className="text-[10px] text-gray-400 mt-1">{doc.CfeCAE}</div>
+                <div className="font-black text-brand-cyan text-sm tabular-nums">N° {numero}</div>
+                <div className="font-medium text-zinc-500">Serie {serie}</div>
+                <div className="text-[10px] text-zinc-400 mt-1 font-mono">{doc.CfeCAE}</div>
             </div>
         );
     }
-    
+
     // Fallback
     return (
         <div className="flex flex-col leading-tight">
-            <div className="font-semibold text-gray-900 text-sm">{text}</div>
-            <div className="text-xs text-gray-400">{doc.CfeCAE}</div>
+            <div className="font-semibold text-zinc-800 text-sm">{text}</div>
+            <div className="text-xs text-zinc-400 font-mono">{doc.CfeCAE}</div>
         </div>
     );
 };
@@ -115,19 +134,35 @@ const BotonEnviarEmail = ({ doc, onClick }) => {
         <button
             onClick={() => onClick(doc)}
             title={title}
-            className={`transition-colors ${
-                yaEnviado ? 'text-green-600 hover:text-green-700'
-                          : email ? 'text-gray-500 hover:text-blue-600'
-                                  : 'text-amber-500 hover:text-amber-600'
+            aria-label="Enviar por email"
+            className={`p-1.5 rounded-lg transition-colors ${
+                yaEnviado ? 'text-emerald-600 hover:bg-emerald-50'
+                          : email ? 'text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/5'
+                                  : 'text-amber-500 hover:text-amber-600 hover:bg-amber-50'
             }`}
         >
-            {yaEnviado ? <MailCheck className="h-5 w-5" /> : <Mail className="h-5 w-5" />}
+            {yaEnviado ? <MailCheck className="h-[18px] w-[18px]" /> : <Mail className="h-[18px] w-[18px]" />}
         </button>
     );
 };
 
+// En el celular, tarjetas en vez de la tabla de 9 columnas (una vista sola: no se dibujan las dos ocultando una)
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
 const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoNuevaFactura = false }) => {
     const { token } = useAuth();
+    const [confirmar, ventanaConfirmar] = useConfirmar();
+    const conTabla = useConTabla();
     // Cuando se monta scopeado a un cliente (Panel 360): fecha amplia y cliente fijo.
     const cliFijoId = initialCliente ? (initialCliente.CliIdCliente || initialCliente.CodCliente || '') : '';
     const seisMesesAtras = () => { const d = new Date(); d.setMonth(d.getMonth() - 6); return d.toISOString().split('T')[0]; };
@@ -459,7 +494,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
         //     toast.error('No se puede anular porque esta factura ya fue pagada en Caja. Debes anular el cobro desde la Caja.');
         //     return;
         // }
-        if (!window.confirm(`¿Seguro que deseas ANULAR la factura ${doc.DocSerie}-${doc.DocNumero}? Esto revertirá el asiento contable.`)) return;
+        if (!(await confirmar({ titulo: `¿Anular la factura ${doc.DocSerie}-${doc.DocNumero}?`, texto: 'Esto revertirá el asiento contable.', confirmar: 'Anular', peligro: true }))) return;
         
         try {
             const { data } = await api.put(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/anular`);
@@ -499,7 +534,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             ? 'Esta acción emitirá una Nota de Crédito por el 100% del total para anular la factura fiscal y abrirá el formulario para que generes una nueva corregida. ¿Deseas continuar?'
             : 'Esta acción reversará el documento actual y abrirá el formulario para que generes uno nuevo corregido. ¿Deseas continuar?';
         
-        if (!window.confirm(confirmMsg)) return;
+        if (!(await confirmar({ titulo: 'Reversar y generar de nuevo', texto: confirmMsg, confirmar: 'Continuar', peligro: true }))) return;
 
         try {
             const toastId = toast.loading('Reversando documento...');
@@ -581,565 +616,515 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
         }
     };
 
-    return (
-        <div className={`${embedded ? 'p-0' : 'p-4 sm:p-6'} w-full mx-auto`}>
-            <div className="flex items-center justify-between mb-6">
-                <div className="flex items-center space-x-3">
-                    <FileText className="h-8 w-8 text-blue-600" />
-                    <h2 className="text-2xl font-bold text-gray-800">
-                        {embedded ? 'Bandeja CFE' : 'Bandeja de Facturación Electrónica (CFE)'}
-                    </h2>
+    const esNotaODebito = (doc) => isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO');
+    const pendientesFiscales = docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo));
+
+    // Tipo + nomenclador DGI. Se distingue lo EMITIDO (hecho) de lo que CORRESPONDE (cálculo): si no coinciden,
+    // la fila se marca.
+    const celdaTipo = (doc) => (
+        <>
+            <div className="text-sm font-semibold text-zinc-800">{getTipoDocName(doc.DocTipo)}</div>
+            {doc.DgiTipoCorrecto && (
+                <div className="mt-0.5 space-y-1">
+                    {doc.DgiTipoEmitido ? (
+                        <div
+                            className={`text-[11px] font-semibold ${doc.DgiAlerta ? 'text-brand-magenta' : 'text-zinc-400'}`}
+                            title={doc.DgiEmitidoInferido
+                                ? `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}).\n\nDato RECONSTRUIDO con la lógica vigente al emitir, porque este documento salió antes de que se empezara a guardar el tipo. Usa el documento que el cliente tiene HOY: si se lo editaron después de emitir, el número puede no ser exacto (el CAE del comprobante es la prueba definitiva).\n\nLos documentos que se emitan de ahora en más guardan el tipo real y no necesitan reconstrucción.`
+                                : `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}). Dato guardado en el momento de la emisión.`}
+                        >
+                            Emitido: DGI {doc.DgiTipoEmitido} · {doc.DgiTipoEmitidoNombre}
+                            {doc.DgiEmitidoInferido && <span className="font-normal text-zinc-400"> (inferido)</span>}
+                        </div>
+                    ) : (
+                        <div
+                            className={`text-[11px] font-semibold ${[102, 112, 103, 113].includes(doc.DgiTipoCorrecto) ? 'text-amber-700' : 'text-zinc-400'}`}
+                            title={`Todavía no se envió. Al enviarlo se le pedirá a DGI un CFE tipo ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}).`}
+                        >
+                            Se emitirá: DGI {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
+                        </div>
+                    )}
+
+                    {doc.DgiAlerta && (
+                        <div
+                            className={`${CHIP} bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20`}
+                            title={`Este documento se emitió ante DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), pero le corresponde ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}). Hay que regularizarlo ante DGI: el sistema no lo puede corregir solo.`}
+                        >
+                            <AlertTriangle size={12} /> Debía ser {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
+                        </div>
+                    )}
                 </div>
-                <div className="flex items-center gap-3">
+            )}
+        </>
+    );
+
+    const celdaCliente = (doc) => (
+        <>
+            <div className="text-sm text-zinc-800 font-semibold">
+                {doc.CliNombreFantasia || doc.CliRazonSocial || 'Consumidor Final'}
+            </div>
+            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                {doc.StringIDCliente && (
+                    <span className="text-[10px] font-bold font-mono text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">
+                        {doc.StringIDCliente.trim()}
+                    </span>
+                )}
+                {doc.CliRUT && <span className="text-[11px] text-zinc-400">RUT: {doc.CliRUT}</span>}
+            </div>
+        </>
+    );
+
+    const celdaTotal = (doc) => (
+        <>
+            <div className="text-sm font-black text-zinc-900 tabular-nums whitespace-nowrap">
+                {doc.MonIdMoneda === 1 ? '$ ' : 'US$ '}
+                {Number(doc.DocTotal).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            <div className="mt-1">
+                {doc.DocPagado ? (
+                    <span className={`${CHIP} bg-emerald-50 text-emerald-700 border-emerald-200`} title={doc.MetodoPagoNombre || ''}>
+                        Contado {doc.MetodoPagoNombre ? `(${doc.MetodoPagoNombre.trim()})` : ''}
+                    </span>
+                ) : (
+                    <span className={`${CHIP} bg-zinc-50 text-zinc-600 border-zinc-200`}>
+                        Crédito
+                    </span>
+                )}
+            </div>
+        </>
+    );
+
+    const celdaNumero = (doc) => (
+        <>
+            <div className="font-mono font-bold text-zinc-900 whitespace-nowrap">{doc.DocSerie}-{parseInt(doc.DocNumero, 10) || doc.DocNumero}</div>
+            {doc.RetiroCodigos && (
+                <div className="mt-0.5 font-mono text-xs font-bold text-brand-cyan" title="Nº de retiro que originó este documento">
+                    {doc.RetiroCodigos}
+                </div>
+            )}
+        </>
+    );
+
+    // Acciones según el estado del documento (las mismas que antes, con íconos parejos)
+    const acciones = (doc) => {
+        if (doc.CfeEstado === 'BORRADOR') return (
+            <div className="flex items-center justify-center gap-0.5">
+                <button onClick={() => handleDescargarFacturaPdf(doc)} className={ACCION} title="Vista previa PDF" aria-label="Vista previa PDF">
+                    <Printer className="h-[18px] w-[18px]" />
+                </button>
+                <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
+                <button onClick={() => abrirEdicion(doc)} className={ACCION} title="Editar Borrador" aria-label="Editar borrador">
+                    <Edit className="h-[18px] w-[18px]" />
+                </button>
+                {!esNotaODebito(doc) && (
+                    <button onClick={() => handleCopiar(doc)} className={ACCION} title="Convertir / Copiar como e-Ticket o e-Factura" aria-label="Copiar">
+                        <Copy className="h-[18px] w-[18px]" />
+                    </button>
+                )}
+                <button onClick={() => handleAnular(doc)} className={ACCION_PELIGRO} title="Reversar Documento" aria-label="Reversar">
+                    <XCircle className="h-[18px] w-[18px]" />
+                </button>
+                {/* Si no es fiscal no se muestra nada: el badge "Borrador" de la
+                    columna Estado DGI ya dice que este documento no se envía. */}
+                {isFiscalCfe(doc.DocTipo) && (
+                    <button onClick={() => handleEnviarDGI(doc)}
+                        className="ml-1 inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-brand-cyan text-white text-xs font-bold hover:bg-brand-cyan/90 transition-colors"
+                        title="Enviar a DGI">
+                        <Send className="h-3.5 w-3.5" /> Enviar a DGI
+                    </button>
+                )}
+            </div>
+        );
+        if (doc.CfeEstado === 'PENDIENTE') return (
+            <div className="flex items-center justify-center gap-0.5">
+                <button onClick={() => handleDescargarFacturaPdf(doc)} className={ACCION} title="Descargar Factura PDF" aria-label="Descargar PDF">
+                    <Printer className="h-[18px] w-[18px]" />
+                </button>
+                <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
+                {/* Editar: también NC/ND mientras sigan PENDIENTE (todavía no se
+                    emitieron ante DGI, así que el comprobante no es fiscal aún).
+                    El backend igual valida: editarFactura solo acepta PENDIENTE/BORRADOR. */}
+                <button onClick={() => abrirEdicion(doc)} className={ACCION} aria-label="Editar"
+                    title={esNotaODebito(doc) ? 'Editar esta nota — se puede porque todavía no se envió a DGI' : 'Editar Factura'}>
+                    <Edit className="h-[18px] w-[18px]" />
+                </button>
+                {/* Reversar */}
+                <button onClick={() => handleAnular(doc)} className={ACCION_PELIGRO} title="Reversar Documento" aria-label="Reversar">
+                    <XCircle className="h-[18px] w-[18px]" />
+                </button>
+                {/* Copiar */}
+                {!esNotaODebito(doc) && (
+                    <button onClick={() => handleCopiar(doc)} className={ACCION} title="Copiar Factura" aria-label="Copiar">
+                        <Copy className="h-[18px] w-[18px]" />
+                    </button>
+                )}
+                {isFiscalCfe(doc.DocTipo) && (
+                    <button onClick={() => handleEnviarDGI(doc)} disabled={sendingId === doc.DocIdDocumento}
+                        className="ml-1 inline-flex items-center justify-center w-8 h-8 rounded-lg bg-brand-cyan text-white hover:bg-brand-cyan/90 transition-colors disabled:opacity-50"
+                        title="Enviar a DGI" aria-label="Enviar a DGI">
+                        {sendingId === doc.DocIdDocumento ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
+                    </button>
+                )}
+            </div>
+        );
+        if (doc.CfeEstado === 'ANULADO') return <span className="text-zinc-400 font-bold italic text-xs">ANULADA</span>;
+        return (
+            <div className="flex items-center justify-center gap-0.5">
+                <button onClick={() => handleDownloadPdf(doc.DocIdDocumento)}
+                    className="mr-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition-colors"
+                    title="Descargar PDF">
+                    <FileOutput className="h-3.5 w-3.5 text-brand-cyan" /> PDF
+                </button>
+                <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
+                {/* Copiar (solo si no es nota de crédito o débito) */}
+                {!esNotaODebito(doc) && (
+                    <button onClick={() => handleCopiar(doc)} className={ACCION} title="Copiar Factura" aria-label="Copiar">
+                        <Copy className="h-[18px] w-[18px]" />
+                    </button>
+                )}
+                {/* Nota de Crédito o Débito según el tipo.
+                    BLINDAJE: si este documento es una NC pero DGI lo aceptó
+                    como VENTA (bug del DocTipo truncado → DgiAlerta), NO se
+                    ofrece la Nota de Débito automática. Emitir una ND acá
+                    volvería a SUMAR a la base imponible, cuando lo que hay
+                    que hacer es una NC contra la e-Factura espuria. Requiere
+                    regularización con el contador. */}
+                {isCreditNote(doc.DocTipo) && doc.DgiAlerta ? (
+                    <button
+                        onClick={() => setRegularizarDoc(doc)}
+                        className="ml-1 inline-flex items-center gap-1 text-xs font-bold text-brand-magenta bg-brand-magenta/10 border border-brand-magenta/20 rounded-lg px-2.5 py-1.5 hover:bg-brand-magenta/15 transition-colors"
+                        title={`Esta Nota de Crédito llegó a DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), no como nota de crédito. Requiere regularización fiscal — clic para ver cómo. NO se puede revertir con una Nota de Débito automática.`}
+                    >
+                        <AlertCircle className="h-4 w-4" /> Regularizar
+                    </button>
+                ) : isCreditNote(doc.DocTipo) ? (
+                    <button onClick={() => handleOpenNcModal(doc, 'ND')} className={ACCION_PELIGRO} title="Generar Nota de Débito (Anula NC)" aria-label="Nota de débito">
+                        <XCircle className="h-[18px] w-[18px]" />
+                    </button>
+                ) : (
+                    <button onClick={() => handleOpenNcModal(doc, 'NC')} className={ACCION_PELIGRO} title="Generar Nota de Crédito (Anula Doc.)" aria-label="Nota de crédito">
+                        <XCircle className="h-[18px] w-[18px]" />
+                    </button>
+                )}
+            </div>
+        );
+    };
+
+    const checkDoc = (doc) => doc.CfeEstado === 'PENDIENTE' && isFiscalCfe(doc.DocTipo) && (
+        <input
+            type="checkbox"
+            className={CHECK}
+            aria-label={`Seleccionar ${doc.DocSerie}-${doc.DocNumero}`}
+            checked={selectedDocs.has(doc.DocIdDocumento)}
+            onChange={() => toggleSelection(doc.DocIdDocumento)}
+        />
+    );
+
+    const sinFilas = loading && docs.length === 0 ? (
+        <span className="inline-flex items-center gap-2 text-sm text-zinc-400">
+            <Loader2 size={18} className="animate-spin text-brand-cyan" /> Cargando documentos...
+        </span>
+    ) : docs.length === 0 ? (
+        <div className="flex flex-col items-center justify-center text-center">
+            <SearchX size={40} className="mb-3 text-brand-cyan" />
+            <span className="text-sm font-bold text-zinc-700">No se encontraron documentos contables para los filtros seleccionados.</span>
+            <span className="text-xs text-zinc-400 mt-1">Probá con otras fechas, otro estado u otro cliente.</span>
+        </div>
+    ) : null;
+
+    return (
+        <div className={`${embedded ? '' : 'px-3 sm:px-6 py-5 min-h-full'} w-full text-zinc-700 flex flex-col gap-4`}>
+            <div className="flex flex-wrap items-center gap-3">
+                <FileText size={embedded ? 24 : 30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-[220px] flex-1">
+                    <h1 className={`${embedded ? 'text-lg' : 'text-xl sm:text-2xl'} font-black uppercase tracking-tight text-zinc-900 leading-none`}>
+                        {embedded ? 'Bandeja CFE' : 'Bandeja de facturación electrónica (CFE)'}
+                    </h1>
+                    {!embedded && <p className="text-sm text-zinc-500 mt-1">Documentos emitidos, su envío a DGI y las notas de crédito</p>}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto sm:ml-auto">
                     {selectedDocs.size > 0 && (
                         <button
                             onClick={handleEnviarSeleccionados}
                             disabled={loading || sendingId}
-                            className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-green-600 hover:bg-green-700 font-bold transition-colors shadow-sm disabled:opacity-50"
+                            className={`${BTN_PRINCIPAL} flex-1 sm:flex-none`}
                         >
-                            <Send size={20} />
-                            Enviar Seleccionados ({selectedDocs.size})
+                            <Send size={16} />
+                            Enviar seleccionados ({selectedDocs.size})
                         </button>
                     )}
                     <button
                         onClick={() => setShowNcExternaModal(true)}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-red-600 hover:bg-red-700 font-bold transition-colors shadow-sm"
+                        className={`${BTN_SECUNDARIO} flex-1 sm:flex-none`}
                         title="Nota de crédito sobre una factura emitida en el sistema de facturación anterior"
                     >
-                        <FileX size={20} />
-                        NC Factura Externa
+                        <FileX size={16} className="text-brand-magenta" />
+                        NC factura externa
                     </button>
-                    <button
-                        onClick={abrirNuevaFactura}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-xl text-white bg-blue-600 hover:bg-blue-700 font-bold transition-colors shadow-sm"
-                    >
-                        <Plus size={20} />
-                        Nueva Factura Manual
+                    <button onClick={abrirNuevaFactura} className={`${BTN_PRINCIPAL} flex-1 sm:flex-none`}>
+                        <Plus size={16} />
+                        Nueva factura manual
                     </button>
                 </div>
             </div>
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 mb-6">
-                <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center">
-                    <Search className="h-5 w-5 text-gray-500 mr-2" />
-                    <h3 className="font-semibold text-gray-700">Filtros de Búsqueda</h3>
+            <div className={`${CARD} p-4 grid grid-cols-2 lg:grid-cols-6 gap-3 items-start`}>
+                <div className="min-w-0">
+                    <span className={ETIQUETA}>Desde</span>
+                    <SelectorFecha filtro name="fechaDesde" className="w-full" value={filtros.fechaDesde} onChange={handleFilterChange} placeholder="Desde" aria-label="Fecha desde" />
                 </div>
-                <div className="p-4">
-                    <div className="grid grid-cols-1 md:grid-cols-6 gap-4 items-end">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Desde</label>
-                            <input 
-                                type="date" 
-                                name="fechaDesde" 
-                                value={filtros.fechaDesde} 
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Fecha Hasta</label>
-                            <input 
-                                type="date" 
-                                name="fechaHasta" 
-                                value={filtros.fechaHasta} 
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm"
-                            />
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Estado DGI</label>
-                            <select 
-                                name="estado" 
-                                value={filtros.estado} 
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
-                            >
-                                <option value="">Todos</option>
-                                <option value="PENDIENTE">Pendientes de Envío</option>
-                                <option value="ACEPTADO_DGI">Aceptados por DGI</option>
-                                <option value="RECHAZADO_DGI">Rechazados</option>
-                            </select>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Tipo de Documento</label>
-                             <select 
-                                name="tipo" 
-                                value={filtros.tipo} 
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
-                            >
-                                <option value="">Todos</option>
-                                {tiposExistentes.map(t => (
-                                    <option key={t} value={t}>{getTipoDocName(t)}</option>
-                                ))}
-                            </select>
-                        </div>
-                        {empresas.length > 1 && (
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Empresa</label>
-                            <select
-                                name="empresaId"
-                                value={filtros.empresaId}
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
-                            >
-                                <option value="">Todas</option>
-                                {empresas.map(e => (
-                                    <option key={e.EmpIdEmpresa} value={e.EmpIdEmpresa}>{e.EmpNombreFantasia || e.EmpRazonSocial}</option>
-                                ))}
-                            </select>
-                        </div>
-                        )}
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Método de Pago</label>
-                            <select
-                                name="metodoPagoId"
-                                value={filtros.metodoPagoId}
-                                onChange={handleFilterChange}
-                                className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border bg-white text-sm"
-                            >
-                                <option value="">Todos</option>
-                                {metodosPago.map(m => (
-                                    <option key={m.MPaIdMetodoPago} value={m.MPaIdMetodoPago}>{m.MPaDescripcionMetodo}</option>
-                                ))}
-                            </select>
-                        </div>
-                        <div className="relative" ref={dropdownRef}>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Cliente</label>
-                            {clienteSeleccionado ? (
-                                /* Card del cliente seleccionado */
-                                <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-3 shadow-sm flex flex-col gap-2">
-                                    <div className="flex items-start justify-between">
-                                        <div className="flex items-center gap-2.5 min-w-0">
-                                            <div className="w-9 h-9 rounded-lg bg-white flex items-center justify-center text-emerald-600 border border-emerald-100 shrink-0">
-                                                <User size={18} />
-                                            </div>
-                                            <div className="min-w-0">
-                                                <p className="text-slate-900 text-sm font-extrabold leading-tight truncate">
-                                                    {clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia}
-                                                </p>
-                                                {clienteSeleccionado.IDCliente && String(clienteSeleccionado.IDCliente).trim() && (
-                                                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5 font-mono truncate">
-                                                        IDCliente: {String(clienteSeleccionado.IDCliente).trim()}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        </div>
-                                        {!initialCliente && (
-                                            <button
-                                                type="button"
-                                                onClick={() => handleSelectCliente(null)}
-                                                className="bg-white hover:bg-rose-50 text-gray-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-gray-200 hover:border-rose-200 shrink-0"
-                                                title="Quitar cliente"
-                                            >
-                                                <Trash2 size={15} />
-                                            </button>
+                <div className="min-w-0">
+                    <span className={ETIQUETA}>Hasta</span>
+                    <SelectorFecha filtro name="fechaHasta" className="w-full" value={filtros.fechaHasta} onChange={handleFilterChange} placeholder="Hasta" aria-label="Fecha hasta" />
+                </div>
+                <div className="min-w-0">
+                    <span className={ETIQUETA}>Estado DGI</span>
+                    <Selector filtro name="estado" className="w-full" value={filtros.estado} onChange={handleFilterChange} aria-label="Estado DGI" anchoLista={220}>
+                        <option value="">Todos</option>
+                        <option value="PENDIENTE">Pendientes de Envío</option>
+                        <option value="ACEPTADO_DGI">Aceptados por DGI</option>
+                        <option value="RECHAZADO_DGI">Rechazados</option>
+                    </Selector>
+                </div>
+                <div className="min-w-0">
+                    <span className={ETIQUETA}>Tipo de documento</span>
+                    <Selector filtro name="tipo" className="w-full" value={filtros.tipo} onChange={handleFilterChange} aria-label="Tipo de documento" anchoLista={260}>
+                        <option value="">Todos</option>
+                        {tiposExistentes.map(t => (
+                            <option key={t} value={t}>{getTipoDocName(t)}</option>
+                        ))}
+                    </Selector>
+                </div>
+                {empresas.length > 1 && (
+                    <div className="min-w-0">
+                        <span className={ETIQUETA}>Empresa</span>
+                        <Selector filtro name="empresaId" className="w-full" value={String(filtros.empresaId)} onChange={handleFilterChange} aria-label="Empresa" anchoLista={240}>
+                            <option value="">Todas</option>
+                            {empresas.map(e => (
+                                <option key={e.EmpIdEmpresa} value={String(e.EmpIdEmpresa)}>{e.EmpNombreFantasia || e.EmpRazonSocial}</option>
+                            ))}
+                        </Selector>
+                    </div>
+                )}
+                <div className="min-w-0">
+                    <span className={ETIQUETA}>Método de pago</span>
+                    <Selector filtro name="metodoPagoId" className="w-full" value={String(filtros.metodoPagoId)} onChange={handleFilterChange} aria-label="Método de pago" anchoLista={260}>
+                        <option value="">Todos</option>
+                        {metodosPago.map(m => (
+                            <option key={m.MPaIdMetodoPago} value={String(m.MPaIdMetodoPago)}>{m.MPaDescripcionMetodo}</option>
+                        ))}
+                    </Selector>
+                </div>
+                <div className="relative col-span-2 min-w-0" ref={dropdownRef}>
+                    <span className={ETIQUETA}>Cliente</span>
+                    {clienteSeleccionado ? (
+                        /* Tarjeta del cliente seleccionado */
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2.5 flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2.5 min-w-0">
+                                <User size={18} className="text-brand-cyan shrink-0 mt-0.5" />
+                                <div className="min-w-0">
+                                    <p className="text-zinc-900 text-sm font-bold leading-tight truncate">
+                                        {clienteSeleccionado.Nombre || clienteSeleccionado.NombreFantasia}
+                                    </p>
+                                    <p className="text-[11px] text-zinc-500 mt-0.5 truncate">
+                                        {clienteSeleccionado.IDCliente && String(clienteSeleccionado.IDCliente).trim() && (
+                                            <span className="font-mono font-bold text-zinc-600 mr-2">{String(clienteSeleccionado.IDCliente).trim()}</span>
                                         )}
-                                    </div>
-                                    <div className="flex flex-col gap-0.5 text-[11px] text-slate-500 font-medium border-t border-emerald-100 pt-1.5">
-                                        <div>RUC / CI: <span className="font-mono font-bold text-slate-800">{clienteSeleccionado.CioRuc || 'S/N'}</span></div>
-                                        {clienteSeleccionado.Email && <div className="truncate">Email: <span className="font-mono text-slate-700">{clienteSeleccionado.Email}</span></div>}
-                                        {clienteSeleccionado.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-slate-700">{clienteSeleccionado.TelefonoTrabajo}</span></div>}
-                                    </div>
+                                        RUC / CI: <span className="font-mono font-bold text-zinc-700">{clienteSeleccionado.CioRuc || 'S/N'}</span>
+                                        {clienteSeleccionado.TelefonoTrabajo && <> · Tel: <span className="font-mono text-zinc-700">{clienteSeleccionado.TelefonoTrabajo}</span></>}
+                                    </p>
+                                    {clienteSeleccionado.Email && <p className="text-[11px] text-zinc-500 truncate">Email: <span className="font-mono text-zinc-700">{clienteSeleccionado.Email}</span></p>}
+                                </div>
+                            </div>
+                            {!initialCliente && (
+                                <button
+                                    type="button"
+                                    onClick={() => handleSelectCliente(null)}
+                                    className="p-1.5 rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 transition-colors shrink-0"
+                                    title="Quitar cliente"
+                                    aria-label="Quitar cliente"
+                                >
+                                    <Trash2 size={15} />
+                                </button>
+                            )}
+                        </div>
+                    ) : (
+                        <div className="relative">
+                            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                            <input
+                                type="text"
+                                placeholder="Buscar por nombre, ID, RUC o tel..."
+                                value={clienteSearch}
+                                onChange={handleInputChange}
+                                onFocus={() => setShowClienteDropdown(true)}
+                                aria-label="Cliente"
+                                className={CAMPO}
+                            />
+                            {clienteSearch && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setClienteSearch(''); setFiltros(prev => ({ ...prev, clienteId: '' })); }}
+                                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700"
+                                    aria-label="Borrar cliente"
+                                >
+                                    <XCircle size={16} />
+                                </button>
+                            )}
+                        </div>
+                    )}
+                    {showClienteDropdown && !clienteSeleccionado && (
+                        <div className="absolute z-50 mt-1 w-full max-h-64 overflow-y-auto rounded-xl bg-white py-1 shadow-lg border border-zinc-200">
+                            {clientesFiltrados.length === 0 ? (
+                                <div className="py-2.5 px-3 text-sm text-zinc-400">
+                                    No se encontraron clientes
                                 </div>
                             ) : (
-                                <div className="relative">
-                                    <input
-                                        type="text"
-                                        placeholder="Buscar por nombre, ID, RUC o tel..."
-                                        value={clienteSearch}
-                                        onChange={handleInputChange}
-                                        onFocus={() => setShowClienteDropdown(true)}
-                                        className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm pr-8 bg-white"
-                                    />
-                                    {clienteSearch && (
-                                        <button
-                                            type="button"
-                                            onClick={() => { setClienteSearch(''); setFiltros(prev => ({ ...prev, clienteId: '' })); }}
-                                            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
-                                        >
-                                            <XCircle size={16} />
-                                        </button>
-                                    )}
-                                </div>
-                            )}
-                            {showClienteDropdown && !clienteSeleccionado && (
-                                <div className="absolute z-50 mt-1 w-full max-h-60 overflow-y-auto rounded-md bg-white py-1 text-base shadow-lg ring-1 ring-black ring-opacity-5 focus:outline-none sm:text-sm border border-gray-200">
-                                    {clientesFiltrados.length === 0 ? (
-                                        <div className="relative cursor-default select-none py-2 px-4 text-gray-505">
-                                            No se encontraron clientes
-                                        </div>
-                                    ) : (
-                                        clientesFiltrados.slice(0, 100).map(c => (
-                                            <div
-                                                key={c.CliIdCliente || c.CodCliente}
-                                                onClick={() => handleSelectCliente(c)}
-                                                className={`relative cursor-pointer select-none py-2 px-3 hover:bg-blue-50 text-slate-800 transition-colors ${
-                                                    String(filtros.clienteId) === String(c.CliIdCliente || c.CodCliente) ? 'bg-blue-50 font-semibold text-blue-900' : ''
-                                                }`}
-                                            >
-                                                <div className="flex flex-col">
-                                                    <span className="block truncate text-sm">
-                                                        {c.Nombre || c.NombreFantasia}
-                                                    </span>
-                                                    <span className="block truncate text-xs text-gray-400 mt-0.5">
-                                                        ID: {c.CliIdCliente || c.CodCliente}{c.IDCliente && String(c.IDCliente).trim() ? ` | IDCliente: ${String(c.IDCliente).trim()}` : ''} | RUC: {c.CioRuc || 'S/N'} {c.TelefonoTrabajo ? `| Tel: ${c.TelefonoTrabajo}` : ''}
-                                                    </span>
-                                                </div>
-                                            </div>
-                                        ))
-                                    )}
-                                </div>
-                            )}
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">Nro / Retiro / Orden</label>
-                            <div className="relative">
-                                <input
-                                    type="text"
-                                    name="buscar"
-                                    value={filtros.buscar}
-                                    onChange={handleFilterChange}
-                                    onKeyDown={(e) => { if (e.key === 'Enter') fetchDocumentos(); }}
-                                    placeholder="ET-4049 · RW-21510 · SUB-11554"
-                                    title="Busca por Nro interno (ET-4049), Nº de retiro (RW-21510) o Nº de orden (SUB-11554). Ignora el rango de fechas: encuentra el documento esté donde esté."
-                                    className="w-full rounded-md border-gray-300 shadow-sm focus:border-blue-500 focus:ring-blue-500 p-2 border text-sm pr-8 bg-white"
-                                />
-                                {filtros.buscar && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setFiltros(prev => ({ ...prev, buscar: '' }))}
-                                        className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 focus:outline-none"
-                                        title="Limpiar búsqueda"
+                                clientesFiltrados.slice(0, 100).map(c => (
+                                    <div
+                                        key={c.CliIdCliente || c.CodCliente}
+                                        onClick={() => handleSelectCliente(c)}
+                                        className={`cursor-pointer select-none py-2 px-3 hover:bg-zinc-50 text-zinc-800 transition-colors ${
+                                            String(filtros.clienteId) === String(c.CliIdCliente || c.CodCliente) ? 'bg-brand-cyan/5 font-semibold' : ''
+                                        }`}
                                     >
-                                        <XCircle size={16} />
-                                    </button>
-                                )}
-                            </div>
-                            {filtros.buscar.trim() && (
-                                <p className="text-[10px] text-amber-600 font-medium mt-0.5">
-                                    Busca en TODAS las fechas (ignora Desde/Hasta)
-                                </p>
+                                        <span className="block truncate text-sm">
+                                            {c.Nombre || c.NombreFantasia}
+                                        </span>
+                                        <span className="block truncate text-[11px] text-zinc-400 mt-0.5">
+                                            ID: {c.CliIdCliente || c.CodCliente}{c.IDCliente && String(c.IDCliente).trim() ? ` | IDCliente: ${String(c.IDCliente).trim()}` : ''} | RUC: {c.CioRuc || 'S/N'} {c.TelefonoTrabajo ? `| Tel: ${c.TelefonoTrabajo}` : ''}
+                                        </span>
+                                    </div>
+                                ))
                             )}
                         </div>
-                        <div>
+                    )}
+                </div>
+                <div className="col-span-2 lg:col-span-2 min-w-0">
+                    <span className={ETIQUETA}>Nro / Retiro / Orden</span>
+                    <div className="relative">
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                        <input
+                            type="text"
+                            name="buscar"
+                            value={filtros.buscar}
+                            onChange={handleFilterChange}
+                            onKeyDown={(e) => { if (e.key === 'Enter') fetchDocumentos(); }}
+                            placeholder="ET-4049 · RW-21510 · SUB-11554"
+                            title="Busca por Nro interno (ET-4049), Nº de retiro (RW-21510) o Nº de orden (SUB-11554). Ignora el rango de fechas: encuentra el documento esté donde esté."
+                            aria-label="Nro, retiro u orden"
+                            className={CAMPO}
+                        />
+                        {filtros.buscar && (
                             <button
-                                onClick={fetchDocumentos}
-                                disabled={loading}
-                                className="w-full flex justify-center items-center px-4 py-2 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                                type="button"
+                                onClick={() => setFiltros(prev => ({ ...prev, buscar: '' }))}
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700"
+                                title="Limpiar búsqueda"
+                                aria-label="Limpiar búsqueda"
                             >
-                                {loading ? (
-                                    <svg className="animate-spin -ml-1 mr-2 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                ) : 'Buscar'}
+                                <XCircle size={16} />
                             </button>
-                        </div>
+                        )}
                     </div>
+                    {filtros.buscar.trim() && (
+                        <p className="text-[11px] text-amber-700 font-medium mt-1">
+                            Busca en TODAS las fechas (ignora Desde/Hasta)
+                        </p>
+                    )}
+                </div>
+                <div className="col-span-2 lg:col-span-2">
+                    <span className={`${ETIQUETA} hidden lg:block`}>&nbsp;</span>
+                    <button onClick={fetchDocumentos} disabled={loading} className={`${BTN_PRINCIPAL} w-full`}>
+                        {loading ? <Loader2 size={16} className="animate-spin" /> : <Search size={16} />} Buscar
+                    </button>
                 </div>
             </div>
 
             {error && (
-                <div className="bg-red-50 border-l-4 border-red-400 p-4 mb-6">
-                    <div className="flex">
-                        <div className="flex-shrink-0">
-                            <AlertCircle className="h-5 w-5 text-red-400" />
-                        </div>
-                        <div className="ml-3">
-                            <p className="text-sm text-red-700">{error}</p>
-                        </div>
-                    </div>
+                <div className="flex items-center gap-2 bg-brand-magenta/10 text-brand-magenta p-4 rounded-xl border border-brand-magenta/20 text-sm font-bold">
+                    <AlertCircle size={16} className="shrink-0" /> {error}
                 </div>
             )}
 
-            <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+            <div className="flex items-center justify-between gap-3 px-1 -mb-1">
+                <div className="flex items-center gap-3">
+                    {!conTabla && pendientesFiscales.length > 0 && (
+                        <input type="checkbox" className={CHECK} onChange={toggleAll} aria-label="Seleccionar todos los pendientes"
+                            checked={selectedDocs.size === pendientesFiscales.length} />
+                    )}
+                    <h3 className="text-[11px] font-black uppercase tracking-widest text-zinc-400">Documentos</h3>
+                </div>
+                {!loading && <span className="text-xs font-bold text-zinc-400 tabular-nums">{docs.length} documento{docs.length !== 1 ? 's' : ''}</span>}
+            </div>
+
+            {!conTabla ? (
+                sinFilas ? <div className={`${CARD} px-4 py-12 text-center`}>{sinFilas}</div> : (
+                    <div className="flex flex-col gap-2.5">
+                        {docs.map(doc => (
+                            <div key={doc.DocIdDocumento} className={`${CARD} p-3.5 flex flex-col gap-2.5`}>
+                                <div className="flex items-start justify-between gap-3">
+                                    <div className="flex items-start gap-2.5 min-w-0">
+                                        {checkDoc(doc) && <div className="pt-0.5">{checkDoc(doc)}</div>}
+                                        <div className="min-w-0">{celdaNumero(doc)}</div>
+                                    </div>
+                                    <div className="text-right shrink-0">{getStatusBadge(doc.CfeEstado)}</div>
+                                </div>
+                                <div className="min-w-0">{celdaCliente(doc)}</div>
+                                <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1.5">
+                                    <div className="min-w-[140px] flex-1">{celdaTipo(doc)}</div>
+                                    <div className="text-right ml-auto">{celdaTotal(doc)}</div>
+                                </div>
+                                {doc.CfeEstado === 'ACEPTADO_DGI' && <div className="bg-zinc-50 rounded-xl px-3 py-2">{renderCfeOficialCol(doc)}</div>}
+                                <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-zinc-100">
+                                    {renderDocFecha(doc.DocFechaEmision)}
+                                    <div className="overflow-x-auto">{acciones(doc)}</div>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                )
+            ) : (
+            <div className={`${CARD} overflow-hidden`}>
                 <div className="overflow-x-auto">
-                    <table className="min-w-full divide-y divide-gray-200">
-                        <thead className="bg-gray-50">
+                    <table className="min-w-full text-left">
+                        <thead className="bg-zinc-50 border-b border-zinc-200">
                             <tr>
-                                <th scope="col" className="px-6 py-3 text-left">
-                                    <input 
+                                <th scope="col" className="px-4 py-3 w-10">
+                                    <input
                                         type="checkbox"
-                                        className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                                        className={CHECK}
+                                        aria-label="Seleccionar todos los pendientes"
                                         onChange={toggleAll}
-                                        checked={docs.length > 0 && docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo)).length > 0 && selectedDocs.size === docs.filter(d => d.CfeEstado === 'PENDIENTE' && isFiscalCfe(d.DocTipo)).length}
+                                        checked={docs.length > 0 && pendientesFiscales.length > 0 && selectedDocs.size === pendientesFiscales.length}
                                     />
                                 </th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Fecha</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nro Interno</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Cliente</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Estado DGI</th>
-                                <th scope="col" className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Nro Oficial / CAE</th>
-                                <th scope="col" className="px-6 py-3 text-center text-xs font-medium text-gray-500 uppercase tracking-wider">Acciones</th>
+                                <th scope="col" className={TH}>Fecha</th>
+                                <th scope="col" className={TH}>Tipo</th>
+                                <th scope="col" className={TH}>Nro interno</th>
+                                <th scope="col" className={TH}>Cliente</th>
+                                <th scope="col" className={TH}>Total</th>
+                                <th scope="col" className={TH}>Estado DGI</th>
+                                <th scope="col" className={TH}>Nro oficial / CAE</th>
+                                <th scope="col" className={`${TH} text-center`}>Acciones</th>
                             </tr>
                         </thead>
-                        <tbody className="bg-white divide-y divide-gray-200">
-                            {docs.length === 0 ? (
+                        <tbody className="divide-y divide-zinc-100">
+                            {sinFilas ? (
                                 <tr>
-                                    <td colSpan="9" className="px-6 py-10 text-center text-gray-500">
-                                        No se encontraron documentos contables para los filtros seleccionados.
-                                    </td>
+                                    <td colSpan="9" className="px-4 py-14 text-center">{sinFilas}</td>
                                 </tr>
                             ) : (
                                 docs.map(doc => (
-                                    <tr key={doc.DocIdDocumento} className="hover:bg-gray-50">
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            {doc.CfeEstado === 'PENDIENTE' && isFiscalCfe(doc.DocTipo) && (
-                                                <input 
-                                                    type="checkbox"
-                                                    className="rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                                                    checked={selectedDocs.has(doc.DocIdDocumento)}
-                                                    onChange={() => toggleSelection(doc.DocIdDocumento)}
-                                                />
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {renderDocFecha(doc.DocFechaEmision)}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                                            <div>{getTipoDocName(doc.DocTipo)}</div>
-                                            {/* Nomenclador DGI. Se distingue lo EMITIDO (hecho) de lo que
-                                                CORRESPONDE (cálculo): si no coinciden, la fila se marca. */}
-                                            {doc.DgiTipoCorrecto && (
-                                                <div className="mt-0.5 space-y-0.5">
-                                                    {doc.DgiTipoEmitido ? (
-                                                        <div
-                                                            className={`text-xs font-semibold ${doc.DgiAlerta ? 'text-red-600' : 'text-gray-500'}`}
-                                                            title={doc.DgiEmitidoInferido
-                                                                ? `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}).\n\nDato RECONSTRUIDO con la lógica vigente al emitir, porque este documento salió antes de que se empezara a guardar el tipo. Usa el documento que el cliente tiene HOY: si se lo editaron después de emitir, el número puede no ser exacto (el CAE del comprobante es la prueba definitiva).\n\nLos documentos que se emitan de ahora en más guardan el tipo real y no necesitan reconstrucción.`
-                                                                : `Emitido como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}). Dato guardado en el momento de la emisión.`}
-                                                        >
-                                                            Emitido: DGI {doc.DgiTipoEmitido} · {doc.DgiTipoEmitidoNombre}
-                                                            {doc.DgiEmitidoInferido && <span className="font-normal text-gray-400"> (inferido)</span>}
-                                                        </div>
-                                                    ) : (
-                                                        <div
-                                                            className={`text-xs font-semibold ${[102, 112, 103, 113].includes(doc.DgiTipoCorrecto) ? 'text-amber-700' : 'text-gray-500'}`}
-                                                            title={`Todavía no se envió. Al enviarlo se le pedirá a DGI un CFE tipo ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}).`}
-                                                        >
-                                                            Se emitirá: DGI {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
-                                                        </div>
-                                                    )}
-
-                                                    {doc.DgiAlerta && (
-                                                        <div
-                                                            className="text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5 inline-block"
-                                                            title={`Este documento se emitió ante DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), pero le corresponde ${doc.DgiTipoCorrecto} (${doc.DgiTipoCorrectoNombre}). Hay que regularizarlo ante DGI: el sistema no lo puede corregir solo.`}
-                                                        >
-                                                            ⚠ Debía ser {doc.DgiTipoCorrecto} · {doc.DgiTipoCorrectoNombre}
-                                                        </div>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                            {doc.DocSerie}-{parseInt(doc.DocNumero, 10) || doc.DocNumero}
-                                            {doc.RetiroCodigos && (
-                                                <div className="mt-0.5" title="Nº de retiro que originó este documento">
-                                                    {doc.RetiroCodigos}
-                                                </div>
-                                            )}
-                                        </td>
-                                        <td className="px-6 py-4 text-sm text-gray-500">
-                                            <div className="text-gray-900 font-medium">
-                                                {doc.CliNombreFantasia || doc.CliRazonSocial || 'Consumidor Final'}
-                                            </div>
-                                            <div className="flex items-center gap-2 mt-0.5 flex-wrap">
-                                                {doc.StringIDCliente && (
-                                                    <span className="text-[10px] font-bold text-indigo-500 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded">
-                                                        {doc.StringIDCliente.trim()}
-                                                    </span>
-                                                )}
-                                                {doc.CliRUT && <span className="text-xs text-gray-400">RUT: {doc.CliRUT}</span>}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm font-semibold text-gray-900">
-                                            <div>
-                                                {doc.MonIdMoneda === 1 ? 'UYU ' : 'USD '}
-                                                {Number(doc.DocTotal).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
-                                            </div>
-                                            <div className="mt-1">
-                                                {doc.DocPagado ? (
-                                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-800" title={doc.MetodoPagoNombre || ''}>
-                                                        Contado {doc.MetodoPagoNombre ? `(${doc.MetodoPagoNombre.trim()})` : ''}
-                                                    </span>
-                                                ) : (
-                                                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-100 text-slate-800">
-                                                        Crédito
-                                                    </span>
-                                                )}
-                                            </div>
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap">
-                                            {getStatusBadge(doc.CfeEstado)}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                                            {renderCfeOficialCol(doc)}
-                                        </td>
-                                        <td className="px-6 py-4 whitespace-nowrap text-center text-sm font-medium">
-                                            {doc.CfeEstado === 'BORRADOR' ? (
-                                                <div className="flex items-center justify-center space-x-2">
-                                                    <button
-                                                        onClick={() => handleDescargarFacturaPdf(doc)}
-                                                        className="text-gray-500 hover:text-indigo-600 transition-colors"
-                                                        title="Vista previa PDF"
-                                                    >
-                                                        <Printer className="h-5 w-5" />
-                                                    </button>
-                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
-                                                    <button
-                                                        onClick={() => abrirEdicion(doc)}
-                                                        className="text-gray-500 hover:text-yellow-600 transition-colors"
-                                                        title="Editar Borrador"
-                                                    >
-                                                        <Edit className="h-5 w-5" />
-                                                    </button>
-                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
-                                                        <button
-                                                            onClick={() => handleCopiar(doc)}
-                                                            className="text-gray-500 hover:text-blue-600 transition-colors"
-                                                            title="Convertir / Copiar como e-Ticket o e-Factura"
-                                                        >
-                                                            <Copy className="h-5 w-5" />
-                                                        </button>
-                                                    )}
-                                                    <button
-                                                        onClick={() => handleAnular(doc)}
-                                                        className="text-gray-500 hover:text-red-600 transition-colors"
-                                                        title="Reversar Documento"
-                                                    >
-                                                        <XCircle className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Si no es fiscal no se muestra nada: el badge "Borrador" de la
-                                                        columna Estado DGI ya dice que este documento no se envía. */}
-                                                    {isFiscalCfe(doc.DocTipo) && (
-                                                        <button
-                                                            onClick={() => handleEnviarDGI(doc)}
-                                                            className="text-blue-500 hover:text-blue-700 transition-colors font-bold text-xs border border-blue-200 hover:border-blue-400 bg-blue-50/50 hover:bg-blue-50 px-2 py-1 rounded"
-                                                            title="Enviar a DGI"
-                                                        >
-                                                            Enviar a DGI
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            ) : doc.CfeEstado === 'PENDIENTE' ? (
-                                                <div className="flex items-center justify-center space-x-2">
-                                                    <button
-                                                        onClick={() => handleDescargarFacturaPdf(doc)}
-                                                        className="text-gray-500 hover:text-indigo-600 transition-colors"
-                                                        title="Descargar Factura PDF"
-                                                    >
-                                                        <Printer className="h-5 w-5" />
-                                                    </button>
-                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
-                                                    {/* Editar: también NC/ND mientras sigan PENDIENTE (todavía no se
-                                                        emitieron ante DGI, así que el comprobante no es fiscal aún).
-                                                        El backend igual valida: editarFactura solo acepta PENDIENTE/BORRADOR. */}
-                                                    <button
-                                                        onClick={() => abrirEdicion(doc)}
-                                                        className="text-gray-500 hover:text-yellow-600 transition-colors"
-                                                        title={isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')
-                                                            ? 'Editar esta nota — se puede porque todavía no se envió a DGI'
-                                                            : 'Editar Factura'}
-                                                    >
-                                                        <Edit className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Reversar */}
-                                                    <button
-                                                        onClick={() => handleAnular(doc)}
-                                                        className="text-gray-500 hover:text-red-600 transition-colors"
-                                                        title="Reversar Documento"
-                                                    >
-                                                        <XCircle className="h-5 w-5" />
-                                                    </button>
-                                                    {/* Copiar */}
-                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
-                                                        <button
-                                                            onClick={() => handleCopiar(doc)}
-                                                            className="text-gray-500 hover:text-blue-600 transition-colors"
-                                                            title="Copiar Factura"
-                                                        >
-                                                            <Copy className="h-5 w-5" />
-                                                        </button>
-                                                    )}
-                                                    {isFiscalCfe(doc.DocTipo) && (
-                                                        <button 
-                                                            onClick={() => handleEnviarDGI(doc)}
-                                                            disabled={sendingId === doc.DocIdDocumento}
-                                                            className="inline-flex items-center px-2 py-1 border border-transparent text-xs font-medium rounded shadow-sm text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 disabled:opacity-50"
-                                                            title="Enviar a DGI"
-                                                        >
-                                                            {sendingId === doc.DocIdDocumento ? (
-                                                                <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                                                </svg>
-                                                            ) : (
-                                                                <Send className="h-4 w-4" />
-                                                            )}
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            ) : doc.CfeEstado === 'ANULADO' ? (
-                                                <span className="text-gray-400 font-semibold italic text-xs">ANULADA</span>
-                                            ) : (
-                                                <div className="flex items-center justify-center space-x-2">
-                                                    <button 
-                                                        onClick={() => handleDownloadPdf(doc.DocIdDocumento)}
-                                                        className="inline-flex items-center px-3 py-1.5 border border-gray-300 text-xs font-medium rounded-md text-gray-700 bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-                                                        title="Descargar PDF"
-                                                    >
-                                                        <FileOutput className="mr-1.5 h-3.5 w-3.5 text-red-500" /> PDF
-                                                    </button>
-                                                    <BotonEnviarEmail doc={doc} onClick={setEmailDoc} />
-                                                    {/* Copiar (solo si no es nota de crédito o débito) */}
-                                                    {!(isCreditNote(doc.DocTipo) || String(doc.DocTipo).toUpperCase().includes('DEBITO')) && (
-                                                        <button
-                                                            onClick={() => handleCopiar(doc)}
-                                                            className="text-gray-500 hover:text-blue-600 transition-colors p-1"
-                                                            title="Copiar Factura"
-                                                        >
-                                                            <Copy className="h-5 w-5" />
-                                                        </button>
-                                                    )}
-                                                    {/* Nota de Crédito o Débito según el tipo.
-                                                        BLINDAJE: si este documento es una NC pero DGI lo aceptó
-                                                        como VENTA (bug del DocTipo truncado → DgiAlerta), NO se
-                                                        ofrece la Nota de Débito automática. Emitir una ND acá
-                                                        volvería a SUMAR a la base imponible, cuando lo que hay
-                                                        que hacer es una NC contra la e-Factura espuria. Requiere
-                                                        regularización con el contador. */}
-                                                    {isCreditNote(doc.DocTipo) && doc.DgiAlerta ? (
-                                                        <button
-                                                            onClick={() => setRegularizarDoc(doc)}
-                                                            className="inline-flex items-center gap-1 text-xs font-bold text-red-700 bg-red-50 border border-red-200 rounded px-2 py-1 hover:bg-red-100 transition-colors"
-                                                            title={`Esta Nota de Crédito llegó a DGI como CFE ${doc.DgiTipoEmitido} (${doc.DgiTipoEmitidoNombre}), no como nota de crédito. Requiere regularización fiscal — clic para ver cómo. NO se puede revertir con una Nota de Débito automática.`}
-                                                        >
-                                                            <AlertCircle className="h-4 w-4" /> Regularizar
-                                                        </button>
-                                                    ) : isCreditNote(doc.DocTipo) ? (
-                                                        <button
-                                                            onClick={() => handleOpenNcModal(doc, 'ND')}
-                                                            className="text-gray-500 hover:text-red-500 transition-colors p-1"
-                                                            title="Generar Nota de Débito (Anula NC)"
-                                                        >
-                                                            <XCircle className="h-5 w-5" />
-                                                        </button>
-                                                    ) : (
-                                                        <button
-                                                            onClick={() => handleOpenNcModal(doc, 'NC')}
-                                                            className="text-gray-500 hover:text-red-500 transition-colors p-1"
-                                                            title="Generar Nota de Crédito (Anula Doc.)"
-                                                        >
-                                                            <XCircle className="h-5 w-5" />
-                                                        </button>
-                                                    )}
-                                                </div>
-                                            )}
-                                        </td>
+                                    <tr key={doc.DocIdDocumento} className="hover:bg-zinc-50 transition-colors">
+                                        <td className="px-4 py-3 whitespace-nowrap">{checkDoc(doc)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{renderDocFecha(doc.DocFechaEmision)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{celdaTipo(doc)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap text-sm">{celdaNumero(doc)}</td>
+                                        <td className="px-4 py-3">{celdaCliente(doc)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{celdaTotal(doc)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{getStatusBadge(doc.CfeEstado)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap">{renderCfeOficialCol(doc)}</td>
+                                        <td className="px-4 py-3 whitespace-nowrap text-center">{acciones(doc)}</td>
                                     </tr>
                                 ))
                             )}
@@ -1147,9 +1132,10 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                     </table>
                 </div>
             </div>
+            )}
 
             {(showFacturaModal || copyData) && (
-                <FacturacionManualModal 
+                <FacturacionManualModal
                     initialData={copyData}
                     onClose={() => {
                         setShowFacturaModal(false);
@@ -1174,7 +1160,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             )}
 
             {showNcModal && ncDoc && (
-                <CfeNotaCreditoModal 
+                <CfeNotaCreditoModal
                     doc={ncDoc}
                     lineas={ncLineas}
                     mode={ncMode}
@@ -1214,42 +1200,41 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 cancelText="Cancelar"
             />
 
+            {ventanaConfirmar}
+
             {regularizarDoc && (
-                <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg">
-                        <div className="flex items-center gap-2 px-5 py-3 border-b bg-red-50 rounded-t-xl">
-                            <AlertCircle className="h-5 w-5 text-red-600" />
-                            <h3 className="font-bold text-gray-900">
+                <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-[6000] p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-hidden flex flex-col">
+                        <div className="flex items-start gap-2.5 px-5 py-4 border-b border-zinc-100">
+                            <AlertCircle className="h-5 w-5 text-brand-magenta shrink-0 mt-0.5" />
+                            <h3 className="font-black text-zinc-900">
                                 Nota de Crédito que llegó mal a DGI — {regularizarDoc.DocSerie}-{regularizarDoc.DocNumero}
                             </h3>
                         </div>
-                        <div className="p-5 space-y-3 text-sm text-gray-700">
+                        <div className="p-5 space-y-3 text-sm text-zinc-700 overflow-y-auto">
                             <p>
                                 Esta Nota de Crédito se emitió ante DGI como{' '}
                                 <b>CFE {regularizarDoc.DgiTipoEmitido} · {regularizarDoc.DgiTipoEmitidoNombre}</b> (una venta),
                                 no como nota de crédito. Es decir, en DGI <b>sumó</b> ventas e IVA en vez de restarlos.
                             </p>
-                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
                                 <b className="text-amber-800">Por eso NO se puede revertir con una Nota de Débito.</b>
                                 <p className="mt-1">
                                     Una Nota de Débito volvería a <b>sumar</b> a la base imponible: empeoraría el problema.
                                 </p>
                             </div>
-                            <p className="font-semibold text-gray-900">La regularización es fiscal y la define el contador:</p>
+                            <p className="font-semibold text-zinc-900">La regularización es fiscal y la define el contador:</p>
                             <ol className="list-decimal list-inside space-y-1">
                                 <li>Emitir una <b>Nota de Crédito (112 / 102)</b> contra la <b>e-Factura/e-Ticket espuria</b> ({renderCfeOficialCol(regularizarDoc) ? '' : ''}el comprobante que DGI aceptó, {regularizarDoc.CfeNumeroOficial || 's/nº'}), para neutralizar esa venta.</li>
                                 <li>Emitir la nota de crédito real, ya bien tipada, contra la factura original.</li>
                             </ol>
-                            <p className="text-xs text-gray-500">
+                            <p className="text-xs text-zinc-500">
                                 El sistema no puede hacerlo automáticamente: el comprobante ya existe en DGI con su CAE y no se puede pisar.
                                 Coordiná los pasos con tu contador antes de emitir nada.
                             </p>
                         </div>
-                        <div className="px-5 py-3 border-t bg-gray-50 flex justify-end rounded-b-xl">
-                            <button
-                                onClick={() => setRegularizarDoc(null)}
-                                className="px-4 py-2 text-sm rounded-lg bg-gray-800 text-white font-semibold hover:bg-gray-900"
-                            >
+                        <div className="px-5 py-3 border-t border-zinc-100 flex justify-end">
+                            <button onClick={() => setRegularizarDoc(null)} className={BTN_PRINCIPAL}>
                                 Entendido
                             </button>
                         </div>

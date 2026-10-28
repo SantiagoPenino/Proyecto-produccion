@@ -1,34 +1,99 @@
-import React, { useState, useMemo, useRef } from 'react';
+// ─────────────────────────────────────────────────────────────────────────────
+// Cuadre diario (/caja/cuadre): retiros entregados en un período y su situación de pago (pagado, autorizado con
+// deuda o sin pago), con el detalle de órdenes de cada retiro y la exportación a PDF.
+// Estética nueva (28/10/2026): encabezado, filtros con SelectorFecha / Selector (antes, los del navegador y con
+// emojis en las opciones), resumen y tabla claros (en el celular, una tarjeta por retiro) y la lista de a 50. La
+// búsqueda, el filtro en los resultados y el PDF impreso no se tocaron.
+// ─────────────────────────────────────────────────────────────────────────────
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import api from '../../services/apiClient';
 import {
-    Calendar, Search, Filter, RefreshCw, ChevronDown, ChevronRight,
-    Package, CheckCircle, AlertTriangle, XCircle, Printer, FileText,
-    X, CreditCard, DollarSign, TrendingUp
+    Search, RefreshCw, ChevronDown, ChevronRight, Package, CheckCircle, AlertTriangle, XCircle, Printer, FileText,
+    X, CreditCard
 } from 'lucide-react';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
 
 // ─── HELPERS ──────────────────────────────────────────────────────────────────
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (d) => d ? new Date(d).toLocaleString('es-UY', { dateStyle: 'short', timeStyle: 'short' }) : '—';
 
+// El PDF impreso usa solo el label
 const SITUACION = {
-    pagado:   { label: 'Pagado',       color: 'bg-emerald-100 text-emerald-800 border-emerald-200', icon: <CheckCircle size={11} /> },
-    deuda:    { label: 'Autorizado',   color: 'bg-amber-100 text-amber-800 border-amber-200',        icon: <AlertTriangle size={11} /> },
-    sin_pago: { label: 'Sin pago',     color: 'bg-rose-100 text-rose-800 border-rose-200',           icon: <XCircle size={11} /> },
+    pagado:   { label: 'Pagado',       color: 'bg-emerald-50 text-emerald-700 border-emerald-200',                   icon: <CheckCircle size={11} /> },
+    deuda:    { label: 'Autorizado',   color: 'bg-amber-50 text-amber-700 border-amber-200',                         icon: <AlertTriangle size={11} /> },
+    sin_pago: { label: 'Sin pago',     color: 'bg-brand-magenta/5 text-brand-magenta border-brand-magenta/20',       icon: <XCircle size={11} /> },
 };
+
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const CAMPO = 'w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1.5';
+const TH = 'px-4 py-3 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'text-[11px] font-bold px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-600 whitespace-nowrap';
+
+// En el celular y la tablet, tarjetas en vez de la tabla de 7 columnas (una vista sola: no se dibujan las dos)
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
+// Lista de a 50 (patrón useDeAPoco de Pagos con deuda): un período largo trae cientos de retiros. Al acercarse al
+// final se agregan 50 más; vuelve a 50 cuando cambia la lista. El margen se mide contra el contenedor que scrollea.
+const DE_A = 50;
+const contenedorConScroll = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        if (/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    return null;
+};
+function useDeAPoco(lista) {
+    const [cuantos, setCuantos] = useState(DE_A);
+    useEffect(() => { setCuantos(DE_A); }, [lista]);
+    const centinela = useRef(null);
+    const total = lista.length;
+    useEffect(() => {
+        const el = centinela.current;
+        if (!el || cuantos >= total) return undefined;
+        // También si el aviso quedó arriba de la pantalla (un scroll rápido lo salteó)
+        const obs = new IntersectionObserver(([e]) => {
+            if (e.isIntersecting || (e.rootBounds && e.boundingClientRect.bottom < e.rootBounds.top)) setCuantos(c => c + DE_A);
+        }, { root: contenedorConScroll(el), rootMargin: '0px 0px 600px 0px' });
+        obs.observe(el);
+        return () => obs.disconnect();
+    }, [cuantos, total]);
+    return [Math.min(cuantos, total), centinela];
+}
 
 // ─── BADGE ────────────────────────────────────────────────────────────────────
 
 const SituacionBadge = ({ s }) => {
     const cfg = SITUACION[s] || SITUACION.sin_pago;
     return (
-        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-xs font-bold ${cfg.color}`}>
+        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[11px] font-bold whitespace-nowrap ${cfg.color}`}>
             {cfg.icon} {cfg.label}
         </span>
     );
 };
 
 // ─── RESUMEN STATS ────────────────────────────────────────────────────────────
+
+const kpi = (titulo, valor, sub, colorNum) => (
+    <div className={`${CARD} px-4 py-3.5 min-w-0`}>
+        <div className={ETIQUETA}>{titulo}</div>
+        <div className={`text-2xl font-black tabular-nums ${Number(valor) > 0 ? colorNum : 'text-zinc-300'}`}>{valor}</div>
+        <div className="text-[11px] text-zinc-500 leading-snug">{sub}</div>
+    </div>
+);
 
 const Stats = ({ data }) => {
     const totales = useMemo(() => {
@@ -47,30 +112,13 @@ const Stats = ({ data }) => {
         return m;
     }, [data]);
 
+    const cobrado = Object.entries(monedas).map(([sym, tot]) => `${sym} ${fmt(tot)}`).join(' · ');
     return (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
-            <div className="bg-white rounded-xl border border-slate-200 p-4 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-slate-100 flex items-center justify-center text-slate-500"><TrendingUp size={18} /></div>
-                <div><p className="text-xs font-bold text-slate-400 uppercase">Total entregados</p><p className="text-2xl font-black text-slate-800">{totales.total}</p></div>
-            </div>
-            <div className="bg-white rounded-xl border border-emerald-200 p-4 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600"><CheckCircle size={18} /></div>
-                <div>
-                    <p className="text-xs font-bold text-slate-400 uppercase">Pagados</p>
-                    <p className="text-2xl font-black text-emerald-700">{totales.pagado}</p>
-                    {Object.entries(monedas).map(([sym, tot]) => (
-                        <p key={sym} className="text-xs text-emerald-600 font-bold">{sym} {fmt(tot)}</p>
-                    ))}
-                </div>
-            </div>
-            <div className="bg-white rounded-xl border border-amber-200 p-4 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600"><AlertTriangle size={18} /></div>
-                <div><p className="text-xs font-bold text-slate-400 uppercase">Autorizados (deuda)</p><p className="text-2xl font-black text-amber-700">{totales.deuda}</p></div>
-            </div>
-            <div className="bg-white rounded-xl border border-rose-200 p-4 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center text-rose-600"><XCircle size={18} /></div>
-                <div><p className="text-xs font-bold text-slate-400 uppercase">Sin pago</p><p className="text-2xl font-black text-rose-700">{totales.sin_pago}</p></div>
-            </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {kpi('Total entregados', totales.total, 'Retiros en el período', 'text-zinc-900')}
+            {kpi('Pagados', totales.pagado, cobrado || 'Sin cobros', 'text-emerald-700')}
+            {kpi('Autorizados (deuda)', totales.deuda, 'Entregados con deuda autorizada', 'text-amber-700')}
+            {kpi('Sin pago', totales.sin_pago, 'Sin pago ni deuda registrados', 'text-brand-magenta')}
         </div>
     );
 };
@@ -204,197 +252,258 @@ const CuadreDiarioView = () => {
         setTimeout(() => { win.print(); }, 400);
     };
 
-    return (
-        <div className="min-h-full flex flex-col p-4 lg:p-8 gap-4 font-sans bg-[#f6f8fb]">
-            {/* Header */}
-            <div className="flex items-center justify-between flex-wrap gap-3">
-                <div>
-                    <h2 className="text-2xl font-black text-slate-800 flex items-center gap-2">
-                        <FileText size={24} className="text-indigo-600" /> Cuadre Diario
-                    </h2>
-                    <p className="text-sm text-slate-400 mt-0.5">Retiros entregados y su situación de pago</p>
+    // ── Piezas del render ───────────────────────────────────────────────────────
+    const conTabla = useConTabla();
+    const [cuantos, centinela] = useDeAPoco(filtered);
+    const visibles = filtered.slice(0, cuantos);
+    const faltan = filtered.length - cuantos;
+
+    // En pantalla, la hora de 24 h (fmtDate, con a. m. / p. m., queda para el PDF impreso)
+    const fmtFecha = (d) => (d ? new Date(d).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', year: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '—');
+    const cantidad = (o) => (o.cantidad != null ? fmt(o.cantidad) : '—');
+
+    const tipo = (r) => (r.TipoCliente
+        ? <span className={CHIP}>{r.TipoCliente}</span>
+        : <span className="text-zinc-300">—</span>);
+
+    const pago = (r) => (r.SituacionPago === 'pagado' ? (
+        <div className="flex flex-col gap-0.5 items-start">
+            <span className="inline-flex items-center gap-1.5 text-xs font-bold text-zinc-600">
+                <CreditCard size={12} className="text-brand-cyan shrink-0" /> {r.MetodoPago}
+            </span>
+            <span className="text-emerald-700 font-black text-sm tabular-nums whitespace-nowrap">{r.MonedaPago} {fmt(r.MontoPago)}</span>
+            <span className="text-[11px] text-zinc-400">{fmtFecha(r.FechaPago)}</span>
+        </div>
+    ) : r.SituacionPago === 'deuda' ? (
+        <div className="flex flex-col gap-0.5 items-start">
+            <span className="text-amber-700 font-bold text-xs">{r.DeudaEstado || 'Pendiente'}</span>
+            {r.MontoDeuda > 0 && <span className="text-amber-800 font-black text-sm tabular-nums whitespace-nowrap">$ {fmt(r.MontoDeuda)}</span>}
+            {r.DeudaExplicacion && <span className="text-xs text-zinc-500 italic max-w-[220px] truncate" title={r.DeudaExplicacion}>{r.DeudaExplicacion}</span>}
+        </div>
+    ) : (
+        <span className="text-xs text-zinc-400 italic">Sin registro</span>
+    ));
+
+    const botonOrdenes = (r, isExp, hasOrd, conTexto = false) => (hasOrd ? (
+        <button type="button" onClick={() => setExpandedId(isExp ? null : r.OReIdOrdenRetiro)} aria-expanded={isExp}
+            title={isExp ? 'Ocultar las órdenes' : 'Ver las órdenes del retiro'}
+            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border transition-colors whitespace-nowrap ${isExp ? 'bg-zinc-900 text-white border-zinc-900' : 'bg-white text-zinc-700 border-zinc-200 hover:bg-zinc-50'}`}>
+            {isExp ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+            {r.Ordenes.length}{conTexto ? (r.Ordenes.length !== 1 ? ' órdenes' : ' orden') : ''}
+        </button>
+    ) : (
+        <span className="text-zinc-300 text-xs">{conTexto ? 'Sin órdenes' : '0'}</span>
+    ));
+
+    const detalleOrdenes = (r) => (
+        <div className="rounded-xl border border-zinc-200 bg-white overflow-hidden">
+            <div className="px-4 py-2 border-b border-zinc-100 bg-zinc-50 text-xs font-black text-zinc-700 flex items-center gap-2">
+                <Package size={13} className="text-brand-cyan shrink-0" /> Detalle de órdenes · {r.OrdenRetiro}
+            </div>
+            {conTabla ? (
+                <table className="w-full text-sm">
+                    <thead>
+                        <tr className="border-b border-zinc-100">
+                            <th className={TH}>Código</th>
+                            <th className={TH}>Material / producto</th>
+                            <th className={TH}>Modo</th>
+                            <th className={`${TH} text-center`}>Cantidad</th>
+                            <th className={`${TH} text-right`}>Monto</th>
+                        </tr>
+                    </thead>
+                    <tbody className="divide-y divide-zinc-100">
+                        {r.Ordenes.map((o, i) => (
+                            <tr key={i}>
+                                <td className="px-4 py-2 font-mono font-bold text-zinc-900 whitespace-nowrap">{o.codigo}</td>
+                                <td className="px-4 py-2 text-zinc-700">{o.producto || '—'}</td>
+                                <td className="px-4 py-2">{o.modo ? <span className={CHIP}>{o.modo}</span> : <span className="text-zinc-300">—</span>}</td>
+                                <td className="px-4 py-2 text-center font-bold text-zinc-600 tabular-nums">{cantidad(o)}</td>
+                                <td className="px-4 py-2 text-right font-bold text-zinc-800 tabular-nums whitespace-nowrap">{o.moneda || '$'} {fmt(o.monto)}</td>
+                            </tr>
+                        ))}
+                    </tbody>
+                </table>
+            ) : (
+                <div className="divide-y divide-zinc-100">
+                    {r.Ordenes.map((o, i) => (
+                        <div key={i} className="px-3 py-2.5 flex items-start gap-3">
+                            <div className="min-w-0 flex-1">
+                                <div className="font-mono text-[13px] font-bold text-zinc-900">{o.codigo}</div>
+                                <div className="text-sm text-zinc-600 break-words">{o.producto || '—'}</div>
+                                {o.modo && <span className={`${CHIP} inline-block mt-1`}>{o.modo}</span>}
+                            </div>
+                            <div className="text-right shrink-0">
+                                <div className="font-bold text-zinc-800 tabular-nums whitespace-nowrap">{o.moneda || '$'} {fmt(o.monto)}</div>
+                                <div className="text-[11px] text-zinc-400 tabular-nums">Cant. {cantidad(o)}</div>
+                            </div>
+                        </div>
+                    ))}
                 </div>
-                <button onClick={handlePrint} disabled={filtered.length === 0}
-                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2.5 rounded-xl font-bold shadow-md disabled:opacity-40 transition-all text-sm">
-                    <Printer size={15} /> Exportar PDF
+            )}
+        </div>
+    );
+
+    const masAbajo = faltan > 0 && (
+        <div ref={centinela} className="py-3 text-center text-xs text-zinc-400">Cargando {Math.min(faltan, DE_A)} más…</div>
+    );
+
+    return (
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
+            {/* Encabezado */}
+            <div className="flex flex-wrap items-center gap-3">
+                <FileText size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-[220px] flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Cuadre diario</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Retiros entregados y su situación de pago.</p>
+                </div>
+                <button type="button" onClick={handlePrint} disabled={filtered.length === 0} className={`${BTN_SECUNDARIO} w-full sm:w-auto sm:ml-auto`}>
+                    <Printer size={15} className="text-brand-cyan" /> Exportar PDF
                 </button>
             </div>
 
             {/* Filtros */}
-            <div className="bg-white rounded-xl border border-slate-200 p-4 flex flex-wrap items-end gap-3 shadow-sm">
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                    <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1"><Calendar size={11} /> Desde</label>
-                    <input type="date" value={filters.startDate}
-                        onChange={e => setFilters(f => ({ ...f, startDate: e.target.value }))}
-                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500" />
+            <div className={`${CARD} p-4 grid grid-cols-2 gap-3 lg:flex lg:flex-wrap lg:items-end`}>
+                <div className="min-w-0 lg:w-40">
+                    <span className={ETIQUETA}>Desde</span>
+                    <SelectorFecha filtro resaltar={false} className="w-full" value={filters.startDate} onChange={e => setFilters(f => ({ ...f, startDate: e.target.value }))} aria-label="Desde" />
                 </div>
-                <div className="flex flex-col gap-1 min-w-[140px]">
-                    <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1"><Calendar size={11} /> Hasta</label>
-                    <input type="date" value={filters.endDate}
-                        onChange={e => setFilters(f => ({ ...f, endDate: e.target.value }))}
-                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500" />
+                <div className="min-w-0 lg:w-40">
+                    <span className={ETIQUETA}>Hasta</span>
+                    <SelectorFecha filtro resaltar={false} className="w-full" value={filters.endDate} onChange={e => setFilters(f => ({ ...f, endDate: e.target.value }))} aria-label="Hasta" />
                 </div>
-                <div className="flex flex-col gap-1 flex-1 min-w-[160px]">
-                    <label className="text-xs font-bold text-slate-500 uppercase">Cliente</label>
+                <div className="col-span-2 lg:flex-1 min-w-0 lg:min-w-[220px]">
+                    <span className={ETIQUETA}>Cliente</span>
                     <div className="relative">
-                        <Search size={13} className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
-                        <input type="text" placeholder="Nombre o código..." value={filters.clientFilter}
+                        <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                        <input type="text" placeholder="Nombre o código" aria-label="Cliente" value={filters.clientFilter}
                             onChange={e => setFilters(f => ({ ...f, clientFilter: e.target.value }))}
                             onKeyDown={e => e.key === 'Enter' && fetchDatos()}
-                            className="w-full pl-7 pr-3 py-1.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-500" />
+                            className={CAMPO} />
                     </div>
                 </div>
-                <div className="flex flex-col gap-1 min-w-[160px]">
-                    <label className="text-xs font-bold text-slate-500 uppercase flex items-center gap-1"><Filter size={11} /> Situación</label>
-                    <select value={filters.estado} onChange={e => setFilters(f => ({ ...f, estado: e.target.value }))}
-                        className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm focus:outline-none focus:border-indigo-500">
-                        <option value="">Todos</option>
-                        <option value="pagado">✅ Pagados</option>
-                        <option value="deuda">⚠️ Autorizados (deuda)</option>
-                        <option value="sin_pago">❌ Sin pago</option>
-                    </select>
+                <div className="col-span-2 sm:col-span-1 min-w-0 lg:w-56">
+                    <span className={ETIQUETA}>Situación</span>
+                    <Selector filtro className="w-full" value={filters.estado} onChange={e => setFilters(f => ({ ...f, estado: e.target.value }))} aria-label="Situación">
+                        <option value="">Todas</option>
+                        <option value="pagado">Pagados</option>
+                        <option value="deuda">Autorizados (deuda)</option>
+                        <option value="sin_pago">Sin pago</option>
+                    </Selector>
                 </div>
-                <button onClick={fetchDatos} disabled={loading}
-                    className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg text-sm font-bold transition-all disabled:opacity-50">
-                    {loading ? <RefreshCw size={13} className="animate-spin" /> : <Search size={13} />} Buscar
+                <button type="button" onClick={fetchDatos} disabled={loading} className={`${BTN_PRINCIPAL} col-span-2 sm:col-span-1 self-end`}>
+                    {loading ? <RefreshCw size={15} className="animate-spin" /> : <Search size={15} />} Buscar
                 </button>
             </div>
 
-            {/* Buscador local */}
+            {/* Buscador en los resultados */}
             <div className="relative">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input type="text" placeholder="Buscar en resultados: retiro, cliente, orden, producto..."
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                <input type="text" placeholder="Buscar en los resultados: retiro, cliente, orden, producto" aria-label="Buscar en los resultados"
                     value={busqueda} onChange={e => setBusqueda(e.target.value)}
-                    className="w-full pl-9 pr-8 py-2 border-2 border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500 bg-white shadow-sm" />
+                    className={CAMPO.replace('pr-4', 'pr-9')} />
                 {busqueda && (
-                    <button onClick={() => setBusqueda('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700">
-                        <X size={14} />
+                    <button type="button" onClick={() => setBusqueda('')} aria-label="Borrar la búsqueda" className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700">
+                        <X size={15} />
                     </button>
                 )}
             </div>
 
-            {/* Stats */}
+            {/* Resumen */}
             {filtered.length > 0 && <Stats data={filtered} />}
 
-            {/* Tabla */}
-            <div className="bg-white rounded-xl border border-slate-200 overflow-auto shadow-sm">
-                <table className="w-full text-sm">
-                    <thead className="sticky top-0 bg-slate-100 text-slate-600 text-xs font-black uppercase tracking-wide z-10">
-                        <tr>
-                            <th className="px-4 py-3 text-left">Retiro</th>
-                            <th className="px-4 py-3 text-left">Cliente</th>
-                            <th className="px-4 py-3 text-left">Tipo</th>
-                            <th className="px-4 py-3 text-left">Entrega</th>
-                            <th className="px-4 py-3 text-center">Situación</th>
-                            <th className="px-4 py-3 text-left">Pago / Deuda</th>
-                            <th className="px-4 py-3 text-center">Órdenes</th>
-                        </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100">
-                        {loading ? (
-                            <tr><td colSpan={7} className="text-center py-12 text-slate-400">
-                                <RefreshCw className="inline animate-spin mr-2" size={16} />Cargando cuadre...
-                            </td></tr>
-                        ) : filtered.length === 0 ? (
-                            <tr><td colSpan={7} className="text-center py-12 text-slate-400">
-                                {datos.length === 0
-                                    ? <><FileText size={32} className="mx-auto mb-2 opacity-30" /><p>Seleccioná un período y presioná Buscar</p></>
-                                    : 'No hay resultados con ese filtro de búsqueda.'}
-                            </td></tr>
-                        ) : filtered.map(r => {
-                            const isExp = expandedId === r.OReIdOrdenRetiro;
-                            const hasOrd = r.Ordenes?.length > 0;
-                            const rowBg = r.SituacionPago === 'pagado' ? '' : r.SituacionPago === 'deuda' ? 'bg-amber-50/30' : 'bg-rose-50/20';
-                            return (
-                                <React.Fragment key={r.OReIdOrdenRetiro}>
-                                    <tr className={`hover:bg-slate-50 transition-colors ${isExp ? 'bg-indigo-50/30' : rowBg}`}>
-                                        <td className="px-4 py-3 font-mono font-black text-indigo-700 text-sm">{r.OrdenRetiro}</td>
-                                        <td className="px-4 py-3">
-                                            <div className="font-bold text-slate-800">{r.NombreCliente || '—'}</div>
-                                            <div className="text-xs text-slate-400">Cód: {r.CodigoCliente || '—'}</div>
-                                        </td>
-                                        <td className="px-4 py-3">
-                                            {r.TipoCliente
-                                                ? <span className="px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-lg text-xs font-bold">{r.TipoCliente}</span>
-                                                : <span className="text-slate-300">—</span>}
-                                        </td>
-                                        <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{fmtDate(r.FechaEntrega)}</td>
-                                        <td className="px-4 py-3 text-center"><SituacionBadge s={r.SituacionPago} /></td>
-                                        <td className="px-4 py-3">
-                                            {r.SituacionPago === 'pagado' ? (
-                                                <div className="flex flex-col gap-0.5">
-                                                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-xs font-bold border border-slate-200">
-                                                        <CreditCard size={10} /> {r.MetodoPago}
-                                                    </span>
-                                                    <span className="text-emerald-700 font-black text-sm">{r.MonedaPago} {fmt(r.MontoPago)}</span>
-                                                    <span className="text-xs text-slate-400">{fmtDate(r.FechaPago)}</span>
-                                                </div>
-                                            ) : r.SituacionPago === 'deuda' ? (
-                                                <div className="flex flex-col gap-0.5">
-                                                    <span className="text-amber-700 font-bold text-xs">{r.DeudaEstado || 'Pendiente'}</span>
-                                                    {r.MontoDeuda > 0 && <span className="text-amber-800 font-black text-sm">$ {fmt(r.MontoDeuda)}</span>}
-                                                    {r.DeudaExplicacion && <span className="text-xs text-slate-500 italic max-w-[180px] truncate">{r.DeudaExplicacion}</span>}
-                                                </div>
-                                            ) : (
-                                                <span className="text-xs text-slate-400 italic">Sin registro</span>
-                                            )}
-                                        </td>
-                                        <td className="px-4 py-3 text-center">
-                                            {hasOrd ? (
-                                                <button onClick={() => setExpandedId(isExp ? null : r.OReIdOrdenRetiro)}
-                                                    className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-bold border transition-all ${isExp ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100'}`}>
-                                                    {isExp ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                                                    {r.Ordenes.length}
-                                                </button>
-                                            ) : <span className="text-slate-300 text-xs">0</span>}
-                                        </td>
-                                    </tr>
-                                    {isExp && hasOrd && (
-                                        <tr>
-                                            <td colSpan={7} className="px-8 pb-4 pt-0 bg-indigo-50/50 border-b border-indigo-100">
-                                                <div className="bg-white rounded-xl border border-indigo-200 shadow-sm overflow-hidden">
-                                                    <div className="px-4 py-2 bg-indigo-600 text-white text-xs font-black flex items-center gap-2">
-                                                        <Package size={13} /> Detalle de órdenes · {r.OrdenRetiro}
-                                                    </div>
-                                                    <table className="w-full text-sm">
-                                                        <thead>
-                                                            <tr className="bg-indigo-50 text-indigo-800 text-xs font-black uppercase">
-                                                                <th className="px-4 py-2 text-left">Código</th>
-                                                                <th className="px-4 py-2 text-left">Material / Producto</th>
-                                                                <th className="px-4 py-2 text-left">Modo</th>
-                                                                <th className="px-4 py-2 text-center">Cantidad</th>
-                                                                <th className="px-4 py-2 text-right">Monto</th>
-                                                            </tr>
-                                                        </thead>
-                                                        <tbody className="divide-y divide-indigo-50">
-                                                            {r.Ordenes.map((o, i) => (
-                                                                <tr key={i} className={i % 2 ? 'bg-slate-50' : 'bg-white'}>
-                                                                    <td className="px-4 py-2 font-mono font-black text-blue-700">{o.codigo}</td>
-                                                                    <td className="px-4 py-2 text-slate-700">{o.producto || '—'}</td>
-                                                                    <td className="px-4 py-2">
-                                                                        {o.modo ? <span className="px-2 py-0.5 bg-purple-50 text-purple-700 border border-purple-200 rounded text-xs font-bold">{o.modo}</span> : <span className="text-slate-300">—</span>}
-                                                                    </td>
-                                                                    <td className="px-4 py-2 text-center font-bold text-slate-600">
-                                                                        {o.cantidad != null ? Number(o.cantidad).toFixed(2) : '—'}
-                                                                    </td>
-                                                                    <td className="px-4 py-2 text-right font-bold text-slate-800">
-                                                                        {o.moneda || '$'} {fmt(o.monto)}
-                                                                    </td>
-                                                                </tr>
-                                                            ))}
-                                                        </tbody>
-                                                    </table>
-                                                </div>
+            {/* Retiros */}
+            {loading ? (
+                <div className={`${CARD} py-12 text-center text-sm text-zinc-400`}>
+                    <RefreshCw className="inline animate-spin mr-2 text-brand-cyan" size={16} />Cargando cuadre…
+                </div>
+            ) : filtered.length === 0 ? (
+                <div className={`${CARD} px-6 py-12 flex flex-col items-center text-center`}>
+                    {datos.length === 0 ? (
+                        <>
+                            <FileText size={40} className="text-zinc-300 mb-3" />
+                            <h3 className="text-base font-black text-zinc-800">Elegí un período y tocá Buscar</h3>
+                            <p className="text-sm text-zinc-500 mt-1">Se listan los retiros entregados en esas fechas, con su pago o su deuda.</p>
+                        </>
+                    ) : (
+                        <p className="text-sm text-zinc-500">No hay resultados con esa búsqueda.</p>
+                    )}
+                </div>
+            ) : conTabla ? (
+                <div className={`${CARD} overflow-hidden`}>
+                    <table className="w-full text-sm">
+                        <thead className="bg-zinc-50 border-b border-zinc-200">
+                            <tr>
+                                <th className={TH}>Retiro</th>
+                                <th className={TH}>Cliente</th>
+                                <th className={TH}>Tipo</th>
+                                <th className={TH}>Entrega</th>
+                                <th className={`${TH} text-center`}>Situación</th>
+                                <th className={TH}>Pago / deuda</th>
+                                <th className={`${TH} text-center`}>Órdenes</th>
+                            </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100">
+                            {visibles.map(r => {
+                                const isExp = expandedId === r.OReIdOrdenRetiro;
+                                const hasOrd = r.Ordenes?.length > 0;
+                                const rowBg = r.SituacionPago === 'pagado' ? '' : r.SituacionPago === 'deuda' ? 'bg-amber-50/40' : 'bg-brand-magenta/[0.03]';
+                                return (
+                                    <React.Fragment key={r.OReIdOrdenRetiro}>
+                                        <tr className={`hover:bg-zinc-50 transition-colors align-top ${isExp ? 'bg-brand-cyan/5' : rowBg}`}>
+                                            <td className="px-4 py-3 font-mono font-black text-zinc-900 whitespace-nowrap">{r.OrdenRetiro}</td>
+                                            <td className="px-4 py-3">
+                                                <div className="font-bold text-zinc-800">{r.NombreCliente || '—'}</div>
+                                                <div className="text-xs text-zinc-400">Cód. {r.CodigoCliente || '—'}</div>
                                             </td>
+                                            <td className="px-4 py-3">{tipo(r)}</td>
+                                            <td className="px-4 py-3 text-xs text-zinc-500 whitespace-nowrap">{fmtFecha(r.FechaEntrega)}</td>
+                                            <td className="px-4 py-3 text-center"><SituacionBadge s={r.SituacionPago} /></td>
+                                            <td className="px-4 py-3">{pago(r)}</td>
+                                            <td className="px-4 py-3 text-center">{botonOrdenes(r, isExp, hasOrd)}</td>
                                         </tr>
-                                    )}
-                                </React.Fragment>
-                            );
-                        })}
-                    </tbody>
-                </table>
-            </div>
-            <div className="text-xs text-slate-400 text-right">{filtered.length} retiro{filtered.length !== 1 ? 's' : ''} en el período</div>
+                                        {isExp && hasOrd && (
+                                            <tr className="bg-brand-cyan/5">
+                                                <td colSpan={7} className="px-6 pb-4 pt-1">{detalleOrdenes(r)}</td>
+                                            </tr>
+                                        )}
+                                    </React.Fragment>
+                                );
+                            })}
+                        </tbody>
+                    </table>
+                    {masAbajo}
+                </div>
+            ) : (
+                <div className="flex flex-col gap-3">
+                    {visibles.map(r => {
+                        const isExp = expandedId === r.OReIdOrdenRetiro;
+                        const hasOrd = r.Ordenes?.length > 0;
+                        const borde = r.SituacionPago === 'pagado' ? '' : r.SituacionPago === 'deuda' ? 'border-amber-200' : 'border-brand-magenta/20';
+                        return (
+                            <div key={r.OReIdOrdenRetiro} className={`${CARD} ${borde} p-3.5 flex flex-col gap-2.5`}>
+                                <div className="flex items-start gap-3">
+                                    <div className="min-w-0 flex-1">
+                                        <div className="font-mono font-black text-zinc-900">{r.OrdenRetiro}</div>
+                                        <div className="font-bold text-zinc-800 break-words">{r.NombreCliente || '—'}</div>
+                                        <div className="text-xs text-zinc-400">Cód. {r.CodigoCliente || '—'} · {fmtFecha(r.FechaEntrega)}</div>
+                                    </div>
+                                    <SituacionBadge s={r.SituacionPago} />
+                                </div>
+                                <div className="flex items-end justify-between gap-3">
+                                    <div className="min-w-0">{pago(r)}</div>
+                                    <div className="shrink-0 flex flex-col items-end gap-1.5">
+                                        {r.TipoCliente && tipo(r)}
+                                        {botonOrdenes(r, isExp, hasOrd, true)}
+                                    </div>
+                                </div>
+                                {isExp && hasOrd && detalleOrdenes(r)}
+                            </div>
+                        );
+                    })}
+                    {masAbajo}
+                </div>
+            )}
+            <div className="text-xs text-zinc-400 text-right">{filtered.length} retiro{filtered.length !== 1 ? 's' : ''} en el período</div>
         </div>
     );
 };

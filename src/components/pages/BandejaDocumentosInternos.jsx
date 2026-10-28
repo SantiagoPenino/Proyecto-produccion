@@ -2,11 +2,37 @@ import React, { useState, useEffect, useCallback } from 'react';
 import {
   ArrowDownCircle, ArrowUpCircle, Search, RefreshCw,
   FileText, ChevronLeft, ChevronRight, Receipt, TrendingDown, TrendingUp, Printer,
-  Ban, Pencil, X, AlertTriangle
+  Ban, Pencil, X, AlertTriangle, Loader2, SearchX
 } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import { generarPdfReciboCobro } from '../../utils/pdfGenerator';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
+
+// Estética nueva (27/10/2026): encabezado, totales en tarjetas blancas, filtros con Selector/SelectorFecha, tabla
+// clara (en el celular, una tarjeta por documento) y ventana de anular / editar monto clara. Ingreso en verde,
+// egreso en magenta. La lógica no cambió; el ticket que se imprime tampoco.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const TH = 'px-4 py-3 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+
+// En el celular, tarjetas en vez de la tabla de 8 columnas (una vista sola: no se dibujan las dos ocultando una)
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+  const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MQ_TABLA);
+    const cambio = () => setConTabla(mq.matches);
+    mq.addEventListener('change', cambio);
+    return () => mq.removeEventListener('change', cambio);
+  }, []);
+  return conTabla;
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -21,6 +47,8 @@ const fmtTime = (d) => {
   if (!d) return '';
   return new Date(d).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' });
 };
+// En pantalla, hora de 24 h; fmtTime queda como estaba porque es la del ticket impreso
+const fmtHora = (d) => d ? new Date(d).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }) : '';
 const numSinCeros = (n) => n ? String(parseInt(n, 10) || n) : '';
 const nroDoc = (serie, numero) => {
   const s = serie || '';
@@ -42,7 +70,7 @@ const TIPO_LABELS = {
 };
 const getTipoLabel = (tipo) => TIPO_LABELS[String(tipo||'').trim()] || String(tipo||'').trim() || '—';
 // Botón de icono de la columna Acciones (el color del hover lo pone cada uno)
-const btnAccion = 'inline-flex items-center justify-center w-7 h-7 rounded-lg border border-zinc-200 bg-white text-zinc-400 transition-all shadow-sm';
+const btnAccion = 'inline-flex items-center justify-center w-7 h-7 rounded-lg border border-zinc-200 bg-white text-zinc-400 transition-colors';
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Componente principal
@@ -62,6 +90,7 @@ export default function BandejaDocumentosInternos() {
   });
   const [page, setPage]         = useState(1);
   const LIMIT = 50;
+  const conTabla = useConTabla();
 
   // Data
   const [docs, setDocs]         = useState([]);
@@ -224,237 +253,280 @@ export default function BandejaDocumentosInternos() {
     } finally { setSubmitting(false); }
   };
 
+
+  // ── Piezas del render (tabla en escritorio, tarjetas en el celular) ─────────
+  const chipsTipo = (doc) => {
+    const isIngreso = doc.TipoOperacion === 'INGRESO';
+    // Anulado viene como 0/1: con `&&` directo React pintaba el "0"
+    const anulado = Number(doc.Anulado) === 1;
+    return (
+      <div className="flex flex-wrap gap-1 items-start">
+        <span className={`${CHIP} ${isIngreso
+          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+          : 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'} ${anulado ? 'opacity-50' : ''}`}>
+          {isIngreso ? <ArrowDownCircle size={11}/> : <ArrowUpCircle size={11}/>}
+          {getTipoLabel(doc.TipoDoc || doc.CodTipoDoc)}
+        </span>
+        {anulado && (
+          <span className={`${CHIP} bg-zinc-800 text-white border-zinc-800`}>
+            <Ban size={10}/> Anulado
+          </span>
+        )}
+        <span className={`${CHIP} ${Number(doc.EsCajaAdmin) === 1
+          ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20'
+          : 'bg-zinc-50 text-zinc-500 border-zinc-200'}`}>
+          {Number(doc.EsCajaAdmin) === 1 ? 'Administrativa' : 'Central'}
+        </span>
+      </div>
+    );
+  };
+
+  const total = (doc) => {
+    const isIngreso = doc.TipoOperacion === 'INGRESO';
+    const anulado = Number(doc.Anulado) === 1;
+    return (
+      <span className={`font-black text-sm tabular-nums whitespace-nowrap ${isIngreso ? 'text-emerald-700' : 'text-brand-magenta'} ${anulado ? 'line-through opacity-50' : ''}`}>
+        {doc.Moneda === 'USD' ? 'US$' : '$'} {fmt(doc.Total)}
+      </span>
+    );
+  };
+
+  const acciones = (doc) => {
+    const isIngreso = doc.TipoOperacion === 'INGRESO';
+    const anulado = Number(doc.Anulado) === 1;
+    return (
+      <div className="flex items-center justify-center gap-1">
+        <button onClick={() => handleImprimir(doc)} title="Ticket (impresora térmica)" aria-label="Ticket"
+          className={`${btnAccion} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5`}>
+          <Printer size={14} />
+        </button>
+        {/* Recibo A4: mismo modelo que Caja y el Panel 360 (DocId = transacción de caja) */}
+        {isIngreso && (
+          <button onClick={() => handleReciboA4(doc)} disabled={imprimiendoA4 === doc.DocId} title="Recibo A4" aria-label="Recibo A4"
+            className={`${btnAccion} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5 disabled:opacity-50`}>
+            {imprimiendoA4 === doc.DocId ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
+          </button>
+        )}
+        {!anulado && doc.CodTipoDoc !== 'ANTICIPO' && (
+          <button onClick={() => abrirEditar(doc)} title="Editar monto" aria-label="Editar monto"
+            className={`${btnAccion} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5`}>
+            <Pencil size={14} />
+          </button>
+        )}
+        {!anulado && (
+          <button onClick={() => abrirAnular(doc)} title="Anular documento" aria-label="Anular"
+            className={`${btnAccion} hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`}>
+            <Ban size={14} />
+          </button>
+        )}
+      </div>
+    );
+  };
+
+  const sinFilas = loading ? (
+    <span className="inline-flex items-center gap-2 text-sm text-zinc-400">
+      <Loader2 size={18} className="animate-spin text-brand-cyan" /> Cargando documentos...
+    </span>
+  ) : docs.length === 0 ? (
+    <div className="flex flex-col items-center justify-center text-center">
+      <SearchX size={40} className="mb-3 text-brand-cyan" />
+      <span className="text-sm font-bold text-zinc-700">Sin documentos para el período seleccionado</span>
+      <span className="text-xs text-zinc-400 mt-1">Probá con otras fechas, otro tipo u otra caja.</span>
+    </div>
+  ) : null;
+
+  const paginacion = (
+    <div className="flex items-center justify-between gap-3 px-4 py-3 border-t border-zinc-100">
+      <span className="text-xs text-zinc-400 font-bold tabular-nums">
+        Página {page} · {docs.length} registro{docs.length !== 1 ? 's' : ''}
+      </span>
+      <div className="flex gap-2">
+        <button onClick={handlePrev} disabled={page === 1} className={`${BTN_SECUNDARIO} text-xs px-2.5 py-1.5 disabled:cursor-not-allowed`}>
+          <ChevronLeft size={14}/> Anterior
+        </button>
+        <button onClick={handleNext} disabled={!hasMore} className={`${BTN_SECUNDARIO} text-xs px-2.5 py-1.5 disabled:cursor-not-allowed`}>
+          Siguiente <ChevronRight size={14}/>
+        </button>
+      </div>
+    </div>
+  );
+
   // ────────────────────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="max-w-7xl mx-auto px-4 py-8">
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
 
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center shadow-lg">
-              <Receipt size={20} className="text-white" />
-            </div>
-            <div>
-              <h1 className="text-xl font-black text-zinc-900">Bandeja de Documentos Internos</h1>
-              <p className="text-xs text-zinc-500">Recibos de cobro, egresos y comprobantes no-CFE</p>
-            </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <Receipt size={30} className="text-brand-cyan shrink-0" />
+          <div className="min-w-[220px] flex-1">
+            <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Bandeja de documentos internos</h1>
+            <p className="text-sm text-zinc-500 mt-1">Recibos de cobro, egresos y comprobantes no-CFE</p>
           </div>
-          <button
-            onClick={() => fetchDocs(page, filtros)}
-            className="flex items-center gap-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 font-bold text-xs px-4 py-2 rounded-xl shadow-sm transition-all"
-          >
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
+          <button onClick={() => fetchDocs(page, filtros)} disabled={loading} className={BTN_SECUNDARIO}>
+            <RefreshCw size={15} className={`text-brand-cyan ${loading ? 'animate-spin' : ''}`} />
             Actualizar
           </button>
         </div>
 
-        {/* Tarjetas de resumen */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <SummaryCard label="Ingresos UYU" value={`$ ${fmt(totales.ingUYU)}`} icon={<TrendingUp size={18}/>} color="emerald" />
-          <SummaryCard label="Ingresos USD" value={`U$S ${fmt(totales.ingUSD)}`} icon={<TrendingUp size={18}/>} color="blue" />
-          <SummaryCard label="Egresos UYU" value={`$ ${fmt(totales.egrUYU)}`} icon={<TrendingDown size={18}/>} color="rose" />
-          <SummaryCard label="Egresos USD" value={`U$S ${fmt(totales.egrUSD)}`} icon={<TrendingDown size={18}/>} color="orange" />
-        </div>
-
-        {/* Filtros */}
-        <div className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm mb-5">
-          <div className="flex flex-wrap gap-3 items-end">
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Fecha Desde</label>
-              <input type="date" value={filtros.desde}
-                onChange={e => setFiltros(f => ({...f, desde: e.target.value}))}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white" />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Fecha Hasta</label>
-              <input type="date" value={filtros.hasta}
-                onChange={e => setFiltros(f => ({...f, hasta: e.target.value}))}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white" />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Tipo</label>
-              <select value={filtros.tipo}
-                onChange={e => setFiltros(f => ({...f, tipo: e.target.value}))}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white cursor-pointer min-w-[140px]">
-                <option value="TODOS">Todos</option>
-                <option value="INGRESO">Ingresos / Recibos</option>
-                <option value="EGRESO">Egresos / Gastos</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Caja</label>
-              <select value={filtros.caja}
-                onChange={e => setFiltros(f => ({...f, caja: e.target.value}))}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white cursor-pointer min-w-[150px]">
-                <option value="TODOS">Todas</option>
-                <option value="ADMIN">Administrativa</option>
-                <option value="CENTRAL">Central</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Moneda</label>
-              <select value={filtros.moneda}
-                onChange={e => setFiltros(f => ({...f, moneda: e.target.value}))}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white cursor-pointer min-w-[110px]">
-                <option value="TODOS">Todas</option>
-                <option value="UYU">$ UYU</option>
-                <option value="USD">U$S USD</option>
-              </select>
-            </div>
-            <div className="flex flex-col gap-1 flex-1 min-w-[180px]">
-              <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Cliente / Proveedor</label>
-              <input type="text" value={filtros.cliente}
-                placeholder="Buscar por nombre..."
-                onChange={e => setFiltros(f => ({...f, cliente: e.target.value}))}
-                onKeyDown={e => e.key === 'Enter' && handleBuscar()}
-                className="border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-indigo-500 bg-white" />
-            </div>
-            <button onClick={handleBuscar}
-              className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-black text-sm px-5 py-2 rounded-xl shadow-md transition-all">
-              <Search size={15} />
-              Buscar
-            </button>
+        {/* Tarjetas de resumen (sobre la página que se está viendo) */}
+        <div>
+          <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-2 px-1">Totales de esta página · los anulados no suman</p>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <SummaryCard label="Ingresos $" value={`$ ${fmt(totales.ingUYU)}`} ingreso />
+            <SummaryCard label="Ingresos US$" value={`US$ ${fmt(totales.ingUSD)}`} ingreso />
+            <SummaryCard label="Egresos $" value={`$ ${fmt(totales.egrUYU)}`} />
+            <SummaryCard label="Egresos US$" value={`US$ ${fmt(totales.egrUSD)}`} />
           </div>
         </div>
 
-        {/* Tabla */}
-        <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
+        {/* Filtros */}
+        <div className={`${CARD} p-4 grid grid-cols-2 gap-3 lg:flex lg:flex-wrap lg:items-end`}>
+          <div className="min-w-0 lg:w-40">
+            <span className={ETIQUETA}>Desde</span>
+            <SelectorFecha filtro className="w-full" value={filtros.desde} placeholder="Desde" aria-label="Fecha desde"
+              onChange={e => setFiltros(f => ({...f, desde: e.target.value}))} />
+          </div>
+          <div className="min-w-0 lg:w-40">
+            <span className={ETIQUETA}>Hasta</span>
+            <SelectorFecha filtro className="w-full" value={filtros.hasta} placeholder="Hasta" aria-label="Fecha hasta"
+              onChange={e => setFiltros(f => ({...f, hasta: e.target.value}))} />
+          </div>
+          <div className="min-w-0 lg:w-48">
+            <span className={ETIQUETA}>Tipo</span>
+            <Selector filtro className="w-full" value={filtros.tipo} aria-label="Tipo"
+              onChange={e => setFiltros(f => ({...f, tipo: e.target.value}))}>
+              <option value="TODOS">Todos</option>
+              <option value="INGRESO">Ingresos / Recibos</option>
+              <option value="EGRESO">Egresos / Gastos</option>
+            </Selector>
+          </div>
+          <div className="min-w-0 lg:w-44">
+            <span className={ETIQUETA}>Caja</span>
+            <Selector filtro className="w-full" value={filtros.caja} aria-label="Caja"
+              onChange={e => setFiltros(f => ({...f, caja: e.target.value}))}>
+              <option value="TODOS">Todas</option>
+              <option value="ADMIN">Administrativa</option>
+              <option value="CENTRAL">Central</option>
+            </Selector>
+          </div>
+          <div className="min-w-0 col-span-2 lg:col-span-1 lg:w-36">
+            <span className={ETIQUETA}>Moneda</span>
+            <Selector filtro className="w-full" value={filtros.moneda} aria-label="Moneda"
+              onChange={e => setFiltros(f => ({...f, moneda: e.target.value}))}>
+              <option value="TODOS">Todas</option>
+              <option value="UYU">$ Pesos</option>
+              <option value="USD">US$ Dólares</option>
+            </Selector>
+          </div>
+          <div className="min-w-0 col-span-2 lg:flex-1 lg:min-w-[200px]">
+            <span className={ETIQUETA}>Cliente / proveedor</span>
+            <div className="relative">
+              <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+              <input type="text" value={filtros.cliente}
+                placeholder="Buscar por nombre..."
+                aria-label="Cliente o proveedor"
+                onChange={e => setFiltros(f => ({...f, cliente: e.target.value}))}
+                onKeyDown={e => e.key === 'Enter' && handleBuscar()}
+                className={CAMPO} />
+            </div>
+          </div>
+          <button onClick={handleBuscar} disabled={loading} className={`${BTN_PRINCIPAL} col-span-2 lg:col-span-1`}>
+            {loading ? <Loader2 size={15} className="animate-spin" /> : <Search size={15} />}
+            Buscar
+          </button>
+        </div>
+
+        {/* Tabla / tarjetas */}
+        {!conTabla ? (
+          <div className="flex flex-col gap-2.5">
+            {sinFilas ? <div className={`${CARD} px-4 py-12 text-center`}>{sinFilas}</div> : docs.map((doc, i) => {
+              const anulado = Number(doc.Anulado) === 1;
+              return (
+                <div key={`${doc.TipoOperacion}-${doc.DocId}-${i}`} className={`${CARD} p-3.5 flex flex-col gap-2.5 ${anulado ? 'bg-zinc-50' : ''}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="font-mono font-bold text-zinc-900 text-sm">{nroDoc(doc.Serie, doc.Numero)}</div>
+                      <div className="text-sm font-bold text-zinc-800 mt-0.5">{doc.ClienteNombre || '—'}</div>
+                      {doc.ClienteId != null && <div className="text-[10px] text-zinc-400 font-mono">ID #{doc.ClienteId}</div>}
+                    </div>
+                    <div className="text-right shrink-0">{total(doc)}</div>
+                  </div>
+                  {chipsTipo(doc)}
+                  {doc.Observaciones && <div className="text-xs text-zinc-500 line-clamp-3">{doc.Observaciones}</div>}
+                  <div className="flex items-center justify-between gap-2 pt-2.5 border-t border-zinc-100">
+                    <div className="min-w-0 text-[11px] text-zinc-500">
+                      <span className={`tabular-nums font-semibold text-zinc-700 ${anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)} {fmtHora(doc.Fecha)}</span>
+                      <span> · {doc.MetodoPago || '—'} · {doc.Usuario || '—'}</span>
+                    </div>
+                    <div className="shrink-0">{acciones(doc)}</div>
+                  </div>
+                </div>
+              );
+            })}
+            {!loading && docs.length > 0 && <div className={CARD}>{paginacion}</div>}
+          </div>
+        ) : (
+        <div className={`${CARD} overflow-hidden`}>
           <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="bg-zinc-50 border-b border-zinc-200 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
-                  <th className="px-3 py-3 text-left">Fecha</th>
-                  <th className="px-3 py-3 text-left">Tipo</th>
-                  <th className="px-3 py-3 text-left">N° Doc.</th>
-                  <th className="px-3 py-3 text-left">Cliente / Proveedor</th>
-                  <th className="px-3 py-3 text-left">Concepto</th>
-                  <th className="px-3 py-3 text-left">Medio pago</th>
-                  <th className="px-3 py-3 text-right">Total</th>
+            <table className="w-full text-sm text-left">
+              <thead className="bg-zinc-50 border-b border-zinc-200">
+                <tr>
+                  <th className={TH}>Fecha</th>
+                  <th className={TH}>Tipo</th>
+                  <th className={TH}>N° doc.</th>
+                  <th className={TH}>Cliente / proveedor</th>
+                  <th className={TH}>Concepto</th>
+                  <th className={TH}>Medio de pago</th>
+                  <th className={`${TH} text-right`}>Total</th>
                   {/* Fija a la derecha: las opciones se ven siempre, aunque la tabla scrollee */}
-                  <th className="px-3 py-3 text-center sticky right-0 bg-zinc-50 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)]">Acciones</th>
+                  <th className={`${TH} text-center sticky right-0 bg-zinc-50 shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.08)]`}>Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {loading && (
-                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400 font-bold text-sm">
-                    <RefreshCw size={24} className="animate-spin inline mr-2" />Cargando...
-                  </td></tr>
-                )}
-                {!loading && docs.length === 0 && (
-                  <tr><td colSpan={8} className="text-center py-16 text-zinc-400">
-                    <FileText size={40} className="mx-auto mb-3 opacity-30" />
-                    <p className="font-bold">Sin documentos para el período seleccionado</p>
-                  </td></tr>
-                )}
-                {!loading && docs.map((doc, i) => {
-                  const isIngreso = doc.TipoOperacion === 'INGRESO';
-                  const simb = doc.Moneda === 'USD' ? 'U$S' : '$';
+                {sinFilas ? (
+                  <tr><td colSpan={8} className="px-4 py-14 text-center">{sinFilas}</td></tr>
+                ) : docs.map((doc, i) => {
                   // Anulado viene como 0/1: con `&&` directo React pintaba el "0"
                   const anulado = Number(doc.Anulado) === 1;
                   // Fondo sólido para la columna fija de acciones (si no, se transparenta al scrollear)
-                  const fondoFila = anulado ? 'bg-rose-50' : 'bg-white group-hover:bg-zinc-50';
+                  const fondoFila = anulado ? 'bg-zinc-50' : 'bg-white group-hover:bg-zinc-50';
                   return (
                     <tr key={`${doc.TipoOperacion}-${doc.DocId}-${i}`}
-                      className={`transition-colors group ${anulado ? 'bg-rose-50' : 'hover:bg-zinc-50'}`}>
+                      className={`transition-colors group ${anulado ? 'bg-zinc-50' : 'hover:bg-zinc-50'}`}>
                       {/* Fecha + usuario */}
-                      <td className="px-3 py-3 whitespace-nowrap">
-                        <div className={`font-bold text-zinc-800 text-xs ${anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)}</div>
-                        <div className="text-[10px] text-zinc-400">{fmtTime(doc.Fecha)}</div>
-                        <div className="text-[10px] text-zinc-400 font-bold max-w-[110px] truncate" title={doc.Usuario || ''}>{doc.Usuario || '—'}</div>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className={`font-semibold text-zinc-800 text-xs tabular-nums ${anulado ? 'line-through opacity-60' : ''}`}>{fmtDate(doc.Fecha)}</div>
+                        <div className="text-[11px] text-zinc-400 tabular-nums">{fmtHora(doc.Fecha)}</div>
+                        <div className="text-[11px] text-zinc-400 font-semibold max-w-[110px] truncate" title={doc.Usuario || ''}>{doc.Usuario || '—'}</div>
                       </td>
                       {/* Tipo */}
-                      <td className="px-3 py-3 whitespace-nowrap">
-                        <div className="flex flex-col gap-1 items-start">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-black uppercase tracking-wide ${
-                            isIngreso
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : 'bg-rose-100 text-rose-700'
-                          } ${anulado ? 'opacity-50' : ''}`}>
-                            {isIngreso
-                              ? <ArrowDownCircle size={11}/>
-                              : <ArrowUpCircle size={11}/>}
-                            {getTipoLabel(doc.TipoDoc || doc.CodTipoDoc)}
-                          </span>
-                          {anulado && (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider bg-zinc-800 text-white">
-                              <Ban size={9}/> Anulado
-                            </span>
-                          )}
-                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider ${
-                            Number(doc.EsCajaAdmin) === 1 ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {Number(doc.EsCajaAdmin) === 1 ? 'Administrativa' : 'Central'}
-                          </span>
-                        </div>
-                      </td>
+                      <td className="px-4 py-3">{chipsTipo(doc)}</td>
                       {/* Nro */}
-                      <td className="px-3 py-3 whitespace-nowrap font-black text-xs text-zinc-800">
+                      <td className="px-4 py-3 whitespace-nowrap font-mono font-bold text-xs text-zinc-900">
                         {nroDoc(doc.Serie, doc.Numero)}
                       </td>
                       {/* Cliente */}
-                      <td className="px-3 py-3">
-                        <div className="font-bold text-zinc-800 text-xs max-w-[170px] truncate" title={doc.ClienteNombre || ''}>{doc.ClienteNombre || '—'}</div>
+                      <td className="px-4 py-3">
+                        <div className="font-semibold text-zinc-800 text-sm max-w-[180px] truncate" title={doc.ClienteNombre || ''}>{doc.ClienteNombre || '—'}</div>
                         {doc.ClienteId != null && (
                           <div className="text-[10px] text-zinc-400 font-mono mt-0.5">ID #{doc.ClienteId}</div>
                         )}
                       </td>
                       {/* Concepto (hasta 2 renglones; el texto completo en el tooltip) */}
-                      <td className="px-3 py-3">
-                        <div className="text-xs text-zinc-500 max-w-[220px] line-clamp-2" title={doc.Observaciones}>
+                      <td className="px-4 py-3">
+                        <div className="text-xs text-zinc-500 max-w-[240px] line-clamp-2" title={doc.Observaciones}>
                           {doc.Observaciones || '—'}
                         </div>
                       </td>
                       {/* Medio pago */}
-                      <td className="px-3 py-3">
-                        <span className="text-xs text-zinc-500 font-bold">{doc.MetodoPago || '—'}</span>
+                      <td className="px-4 py-3">
+                        <span className="text-xs text-zinc-600 font-semibold">{doc.MetodoPago || '—'}</span>
                       </td>
                       {/* Total */}
-                      <td className="px-3 py-3 whitespace-nowrap text-right">
-                        <span className={`font-black text-sm ${isIngreso ? 'text-emerald-700' : 'text-rose-700'} ${anulado ? 'line-through opacity-60' : ''}`}>
-                          {simb} {fmt(doc.Total)}
-                        </span>
-                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap text-right">{total(doc)}</td>
                       {/* Acciones (columna fija a la derecha) */}
-                      <td className={`px-3 py-3 sticky right-0 transition-colors shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.12)] ${fondoFila}`}>
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            onClick={() => handleImprimir(doc)}
-                            title="Ticket (impresora térmica)"
-                            className={`${btnAccion} hover:bg-indigo-50 hover:border-indigo-400 hover:text-indigo-600`}
-                          >
-                            <Printer size={14} />
-                          </button>
-                          {/* Recibo A4: mismo modelo que Caja y el Panel 360 (DocId = transacción de caja) */}
-                          {isIngreso && (
-                            <button
-                              onClick={() => handleReciboA4(doc)}
-                              disabled={imprimiendoA4 === doc.DocId}
-                              title="Recibo A4"
-                              className={`${btnAccion} hover:bg-cyan-50 hover:border-cyan-400 hover:text-cyan-700 disabled:opacity-50`}
-                            >
-                              {imprimiendoA4 === doc.DocId ? <RefreshCw size={14} className="animate-spin" /> : <FileText size={14} />}
-                            </button>
-                          )}
-                          {!anulado && doc.CodTipoDoc !== 'ANTICIPO' && (
-                            <button
-                              onClick={() => abrirEditar(doc)}
-                              title="Editar monto"
-                              className={`${btnAccion} hover:bg-amber-50 hover:border-amber-400 hover:text-amber-600`}
-                            >
-                              <Pencil size={14} />
-                            </button>
-                          )}
-                          {!anulado && (
-                            <button
-                              onClick={() => abrirAnular(doc)}
-                              title="Anular documento"
-                              className={`${btnAccion} hover:bg-rose-50 hover:border-rose-400 hover:text-rose-600`}
-                            >
-                              <Ban size={14} />
-                            </button>
-                          )}
-                        </div>
+                      <td className={`px-4 py-3 sticky right-0 transition-colors shadow-[-6px_0_8px_-6px_rgba(0,0,0,0.08)] ${fondoFila}`}>
+                        {acciones(doc)}
                       </td>
                     </tr>
                   );
@@ -464,88 +536,78 @@ export default function BandejaDocumentosInternos() {
           </div>
 
           {/* Paginación */}
-          <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-100 bg-zinc-50/50">
-            <span className="text-xs text-zinc-400 font-bold">
-              Página {page} · {docs.length} registro{docs.length !== 1 ? 's' : ''}
-            </span>
-            <div className="flex gap-2">
-              <button onClick={handlePrev} disabled={page === 1}
-                className="flex items-center gap-1 text-xs font-black px-3 py-1.5 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
-                <ChevronLeft size={14}/> Anterior
-              </button>
-              <button onClick={handleNext} disabled={!hasMore}
-                className="flex items-center gap-1 text-xs font-black px-3 py-1.5 rounded-lg border border-zinc-200 bg-white hover:bg-zinc-50 disabled:opacity-40 disabled:cursor-not-allowed transition-all">
-                Siguiente <ChevronRight size={14}/>
-              </button>
-            </div>
-          </div>
+          {paginacion}
         </div>
-      </div>
+        )}
 
       {/* Modal: Anular / Editar monto */}
       {modal && (
-        <div className="fixed inset-0 bg-slate-900/60 flex items-center justify-center p-4 z-[1200]" onClick={cerrarModal}>
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center p-4 z-[6000]" onClick={cerrarModal}>
           <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden" onClick={e => e.stopPropagation()}>
-            <div className={`px-6 py-4 flex items-center justify-between ${modal.tipo === 'anular' ? 'bg-rose-50' : 'bg-amber-50'}`}>
+            <div className="px-6 py-4 flex items-center justify-between border-b border-zinc-100">
               <div className="flex items-center gap-2">
                 {modal.tipo === 'anular'
-                  ? <Ban size={18} className="text-rose-600" />
-                  : <Pencil size={18} className="text-amber-600" />}
-                <h3 className="font-black text-zinc-800">{modal.tipo === 'anular' ? 'Anular documento' : 'Editar monto'}</h3>
+                  ? <Ban size={18} className="text-brand-magenta" />
+                  : <Pencil size={18} className="text-brand-cyan" />}
+                <h3 className="text-lg font-black text-zinc-900">{modal.tipo === 'anular' ? 'Anular documento' : 'Editar monto'}</h3>
               </div>
-              <button onClick={cerrarModal} className="text-zinc-400 hover:text-zinc-700"><X size={18} /></button>
+              <button onClick={cerrarModal} aria-label="Cerrar"
+                className="text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors">
+                <X size={18} />
+              </button>
             </div>
 
             <div className="p-6 space-y-4">
               {/* Resumen del documento */}
-              <div className="bg-zinc-50 rounded-xl p-3 text-xs">
-                <div className="flex justify-between">
+              <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-3 text-xs space-y-1">
+                <div className="flex justify-between gap-3">
                   <span className="text-zinc-400 font-bold">Documento</span>
-                  <span className="font-black text-zinc-700">{nroDoc(modal.doc.Serie, modal.doc.Numero)}</span>
+                  <span className="font-mono font-bold text-zinc-800">{nroDoc(modal.doc.Serie, modal.doc.Numero)}</span>
                 </div>
-                <div className="flex justify-between mt-1">
+                <div className="flex justify-between gap-3">
                   <span className="text-zinc-400 font-bold">{modal.doc.TipoOperacion === 'INGRESO' ? 'Cliente' : 'Proveedor'}</span>
-                  <span className="font-bold text-zinc-700 truncate max-w-[180px]">{modal.doc.ClienteNombre || '—'}</span>
+                  <span className="font-bold text-zinc-800 truncate max-w-[200px]">{modal.doc.ClienteNombre || '—'}</span>
                 </div>
-                <div className="flex justify-between mt-1">
+                <div className="flex justify-between gap-3">
                   <span className="text-zinc-400 font-bold">Total actual</span>
-                  <span className="font-black text-zinc-700">{modal.doc.Moneda === 'USD' ? 'U$S' : '$'} {fmt(modal.doc.Total)}</span>
+                  <span className="font-black text-zinc-900 tabular-nums">{modal.doc.Moneda === 'USD' ? 'US$' : '$'} {fmt(modal.doc.Total)}</span>
                 </div>
               </div>
 
               {modal.tipo === 'editar' && (
-                <div className="space-y-1">
-                  <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Nuevo monto</label>
-                  <input type="number" step="0.01" min="0" value={nuevoMonto} autoFocus
+                <div>
+                  <label htmlFor="nuevo-monto" className={ETIQUETA}>Nuevo monto</label>
+                  <input id="nuevo-monto" type="number" step="0.01" min="0" value={nuevoMonto} autoFocus
                     onChange={e => setNuevoMonto(e.target.value)}
-                    className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-amber-500" />
+                    className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm font-bold text-zinc-800 tabular-nums focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
                 </div>
               )}
 
-              <div className="space-y-1">
-                <label className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">
+              <div>
+                <label htmlFor="motivo-doc" className={ETIQUETA}>
                   Motivo {modal.tipo === 'editar' ? '(opcional)' : ''}
                 </label>
-                <textarea rows={2} value={motivo} onChange={e => setMotivo(e.target.value)}
+                <textarea id="motivo-doc" rows={2} value={motivo} onChange={e => setMotivo(e.target.value)}
                   placeholder="Motivo de la operación..."
-                  className="w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm text-zinc-800 outline-none focus:border-indigo-500 resize-none" />
+                  className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 resize-none" />
               </div>
 
               {modal.tipo === 'editar' && (
-                <div className="flex items-start gap-2 text-[11px] text-amber-700 bg-amber-50 rounded-lg p-2">
+                <div className="flex items-start gap-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
                   <AlertTriangle size={14} className="shrink-0 mt-0.5" />
                   <span>Se anulará el documento actual y se generará uno nuevo con el monto corregido (nuevo N°).</span>
                 </div>
               )}
 
-              <div className="flex gap-2 pt-1">
-                <button onClick={cerrarModal} disabled={submitting}
-                  className="flex-1 py-2.5 rounded-xl border border-zinc-200 font-black text-sm text-zinc-600 hover:bg-zinc-50 disabled:opacity-50">
+              <div className="flex justify-end gap-2 pt-1">
+                <button onClick={cerrarModal} disabled={submitting} className={BTN_SECUNDARIO}>
                   Cancelar
                 </button>
                 <button onClick={modal.tipo === 'anular' ? confirmarAnular : confirmarEditar} disabled={submitting}
-                  className={`flex-1 py-2.5 rounded-xl font-black text-sm text-white disabled:opacity-50 ${modal.tipo === 'anular' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-amber-600 hover:bg-amber-700'}`}>
-                  {submitting ? 'Procesando...' : (modal.tipo === 'anular' ? 'Anular' : 'Guardar cambios')}
+                  className={modal.tipo === 'anular'
+                    ? 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-magenta text-white text-sm font-bold hover:bg-brand-magenta/90 transition-colors disabled:opacity-50'
+                    : BTN_PRINCIPAL}>
+                  {submitting ? <><Loader2 size={15} className="animate-spin" /> Procesando...</> : (modal.tipo === 'anular' ? 'Anular' : 'Guardar cambios')}
                 </button>
               </div>
             </div>
@@ -557,20 +619,14 @@ export default function BandejaDocumentosInternos() {
 }
 
 // ── Tarjeta de resumen ────────────────────────────────────────────────────────
-function SummaryCard({ label, value, icon, color }) {
-  const colors = {
-    emerald: 'bg-emerald-50 border-emerald-200 text-emerald-700',
-    blue:    'bg-blue-50 border-blue-200 text-blue-700',
-    rose:    'bg-rose-50 border-rose-200 text-rose-700',
-    orange:  'bg-orange-50 border-orange-200 text-orange-700',
-  };
+function SummaryCard({ label, value, ingreso = false }) {
+  const Icono = ingreso ? TrendingUp : TrendingDown;
   return (
-    <div className={`border rounded-2xl p-4 shadow-sm flex items-center gap-3 ${colors[color]}`}>
-      <div className="shrink-0 opacity-80">{icon}</div>
-      <div>
-        <div className="text-[10px] font-black uppercase tracking-widest opacity-70">{label}</div>
-        <div className="font-black text-sm">{value}</div>
+    <div className={`${CARD} px-4 py-3.5 flex flex-col gap-1.5 min-w-0`}>
+      <div className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest text-zinc-400">
+        <Icono size={15} className={ingreso ? 'text-emerald-600' : 'text-brand-magenta'} /> {label}
       </div>
+      <div className="text-lg font-black text-zinc-900 tabular-nums truncate">{value}</div>
     </div>
   );
 }

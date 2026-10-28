@@ -13,6 +13,29 @@ import api from '../../../services/apiClient';
 
 const API = '/rrhh/descuento-trabajadores';
 
+// Estética nueva (28/10/2026): ícono del título en brand-cyan sin fondo, tarjetas blancas con borde, índigo → brand-cyan,
+// quitar y errores en magenta, grises zinc, ventanas en z-[6000] sin cabeceras de color, y en el celular la lista va en tarjetas.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-9 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ROTULO = 'text-[10px] font-black uppercase tracking-wide text-zinc-400';
+// Acciones chicas de las filas (Aplicar, Vincular, Elegir, Quitar)
+const BTN_FILA = 'inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold transition-colors disabled:opacity-50';
+const BTN_FILA_SEC = `${BTN_FILA} border border-zinc-200 bg-white text-zinc-700 hover:bg-zinc-50`;
+
+// Tabla en pantallas anchas; en el celular, tarjetas. Se dibuja una sola de las dos vistas.
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
 // ── Formato ──────────────────────────────────────────────────────────────────
 // La cuenta se nombra por su ID de cliente (lo que la gente reconoce); debajo, el nombre y la CI.
 const tituloCuenta = (c) => (c.idCliente || c.nombreFantasia || c.nombre || `Cliente ${c.cliIdCliente}`).trim();
@@ -53,7 +76,7 @@ const errorDe = (e) => e?.response?.data?.error || e?.message || 'Error desconoc
 // ── Piezas chicas ────────────────────────────────────────────────────────────
 const BotonLapiz = ({ onClick, titulo }) => (
     <button type="button" onClick={onClick} title={titulo} aria-label={titulo}
-        className="p-1 rounded-md text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 transition-colors">
+        className="p-1 rounded-md text-zinc-400 hover:text-brand-cyan hover:bg-brand-cyan/10 transition-colors">
         <Pencil size={12} />
     </button>
 );
@@ -64,22 +87,22 @@ const FichaRRHH = ({ trabajador, onEditarCi, onDesvincular }) => {
     if (!trabajador) return null;
     return (
         <div className="flex items-start gap-1.5 min-w-0">
-            <IdCard size={14} className="text-emerald-600 mt-0.5 shrink-0" />
+            <IdCard size={14} className="text-brand-cyan mt-0.5 shrink-0" />
             <div className="min-w-0">
-                <div className="text-xs font-bold text-slate-700 truncate">{trabajador.nombre}</div>
-                <div className="text-[11px] text-slate-500 truncate">{[trabajador.area, trabajador.puesto].filter(Boolean).join(' · ') || 'Sin área'}</div>
+                <div className="text-xs font-bold text-zinc-800 truncate">{trabajador.nombre}</div>
+                <div className="text-[11px] text-zinc-500 truncate">{[trabajador.area, trabajador.puesto].filter(Boolean).join(' · ') || 'Sin área'}</div>
                 <div className="flex items-center gap-1 flex-wrap">
                     {onEditarCi && (
-                        <span className="inline-flex items-center text-[11px] font-mono text-slate-400">
+                        <span className="inline-flex items-center text-[11px] font-mono text-zinc-400">
                             CI {trabajador.cedula}<BotonLapiz onClick={onEditarCi} titulo="Corregir la cédula del trabajador" />
                         </span>
                     )}
                     {trabajador.porVinculo ? (
-                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 border border-indigo-100 rounded px-1 py-px">
+                        <span className="inline-flex items-center gap-0.5 text-[10px] font-bold text-brand-cyan bg-brand-cyan/10 border border-brand-cyan/20 rounded-full px-1.5 py-px">
                             <Link2 size={10} /> Vinculado
                             {onDesvincular && (
                                 <button type="button" onClick={onDesvincular} title="Desvincular" aria-label="Desvincular"
-                                    className="ml-0.5 text-indigo-400 hover:text-rose-600"><Unlink size={10} /></button>
+                                    className="ml-0.5 text-brand-cyan/60 hover:text-brand-magenta"><Unlink size={10} /></button>
                             )}
                         </span>
                     ) : null}
@@ -92,8 +115,8 @@ const FichaRRHH = ({ trabajador, onEditarCi, onDesvincular }) => {
 // Cuenta de cliente: ID en negrita, debajo nombre y CI (con lápiz si se puede corregir).
 const Cuenta = ({ c, onEditarCi, grande = false }) => (
     <div className="min-w-0">
-        <div className={`font-bold text-slate-800 truncate ${grande ? 'text-base' : 'text-sm'}`}>{tituloCuenta(c)}</div>
-        <div className="text-xs text-slate-500 flex items-center gap-0.5 min-w-0">
+        <div className={`font-bold text-zinc-800 truncate ${grande ? 'text-base' : 'text-sm'}`}>{tituloCuenta(c)}</div>
+        <div className="text-xs text-zinc-500 flex items-center gap-0.5 min-w-0">
             <span className="truncate">{detalleCuenta(c)}</span>
             {onEditarCi && <BotonLapiz onClick={onEditarCi} titulo="Corregir el CI/RUT de la cuenta" />}
         </div>
@@ -103,8 +126,8 @@ const Cuenta = ({ c, onEditarCi, grande = false }) => (
 const Casilla = ({ checked, onChange, children }) => (
     <label className="flex items-start gap-2.5 cursor-pointer select-none">
         <input type="checkbox" checked={checked} onChange={e => onChange(e.target.checked)}
-            className="mt-0.5 w-4 h-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-400" />
-        <span className="text-sm text-slate-700">{children}</span>
+            className="mt-0.5 w-4 h-4 accent-[#006E97]" />
+        <span className="text-sm text-zinc-700">{children}</span>
     </label>
 );
 
@@ -120,9 +143,9 @@ const Ventana = ({ onClose, bloqueada = false, ancho = 'max-w-md', etiqueta, chi
         return () => window.removeEventListener('keydown', alTeclear);
     }, [onClose, bloqueada]);
     return (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => !bloqueada && onClose()}>
+        <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-4" onClick={() => !bloqueada && onClose()}>
             <div role="dialog" aria-modal="true" aria-label={etiqueta}
-                className={`bg-white rounded-2xl shadow-2xl w-full ${ancho} max-h-[90vh] flex flex-col overflow-hidden`}
+                className={`bg-white rounded-2xl border border-zinc-200 shadow-xl w-full ${ancho} max-h-[90vh] flex flex-col overflow-hidden`}
                 onClick={e => e.stopPropagation()}>
                 {children}
             </div>
@@ -131,27 +154,28 @@ const Ventana = ({ onClose, bloqueada = false, ancho = 'max-w-md', etiqueta, chi
 };
 
 const CabeceraVentana = ({ icono: Icono, color = 'indigo', titulo, subtitulo, onClose }) => {
-    const colores = { indigo: 'bg-indigo-50 text-indigo-600', rose: 'bg-rose-50 text-rose-600', amber: 'bg-amber-50 text-amber-600' };
+    // Ícono sin fondo de color: brand-cyan, magenta para quitar
+    const colores = { indigo: 'text-brand-cyan', rose: 'text-brand-magenta', amber: 'text-amber-600' };
     return (
         <div className="px-6 pt-6 pb-2 flex items-start gap-4">
-            <div className={`w-11 h-11 rounded-full flex items-center justify-center shrink-0 ${colores[color]}`}><Icono size={20} /></div>
+            <Icono size={24} className={`shrink-0 mt-0.5 ${colores[color]}`} />
             <div className="min-w-0 flex-1">
-                <h3 className="text-lg font-black text-slate-800">{titulo}</h3>
-                {subtitulo && <p className="text-sm text-slate-500">{subtitulo}</p>}
+                <h3 className="text-lg font-black text-zinc-800">{titulo}</h3>
+                {subtitulo && <p className="text-sm text-zinc-500">{subtitulo}</p>}
             </div>
-            {onClose && <button type="button" onClick={onClose} title="Cerrar" className="p-1.5 rounded-lg text-slate-400 hover:bg-slate-100"><X size={18} /></button>}
+            {onClose && <button type="button" onClick={onClose} title="Cerrar" className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><X size={18} /></button>}
         </div>
     );
 };
 
 const PieVentana = ({ children }) => (
-    <div className="px-6 py-4 mt-2 border-t border-slate-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">{children}</div>
+    <div className="px-6 py-4 mt-2 border-t border-zinc-100 flex flex-col-reverse sm:flex-row sm:justify-end gap-2">{children}</div>
 );
 const BotonSecundario = ({ children, ...p }) => (
-    <button type="button" {...p} className="px-4 py-2.5 rounded-xl font-bold text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-50 inline-flex items-center justify-center gap-1.5">{children}</button>
+    <button type="button" {...p} className="px-4 py-2.5 rounded-xl font-bold text-sm text-zinc-600 border border-zinc-200 hover:bg-zinc-50 disabled:opacity-50 inline-flex items-center justify-center gap-1.5">{children}</button>
 );
 const BotonPrincipal = ({ children, color = 'indigo', cargando, ...p }) => (
-    <button type="button" {...p} className={`px-4 py-2.5 rounded-xl font-bold text-sm text-white disabled:opacity-60 inline-flex items-center justify-center gap-2 shadow-sm ${color === 'rose' ? 'bg-rose-600 hover:bg-rose-700' : 'bg-indigo-600 hover:bg-indigo-700'}`}>
+    <button type="button" {...p} className={`px-4 py-2.5 rounded-xl font-bold text-sm text-white disabled:opacity-60 inline-flex items-center justify-center gap-2 transition-colors ${color === 'rose' ? 'bg-brand-magenta hover:bg-brand-magenta/90' : 'bg-brand-cyan hover:bg-brand-cyan/90'}`}>
         {cargando && <Loader2 size={16} className="animate-spin" />}{children}
     </button>
 );
@@ -159,28 +183,28 @@ const BotonPrincipal = ({ children, color = 'indigo', cargando, ...p }) => (
 // ── Ayuda ────────────────────────────────────────────────────────────────────
 // Réplicas de los botones de la pantalla, para que el texto los muestre tal cual se ven.
 const MuestraAplicar = () => (
-    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] bg-indigo-600 text-white px-2 py-0.5 align-middle"><UserPlus size={12} /> Aplicar</span>
+    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] bg-brand-cyan text-white px-2 py-0.5 align-middle"><UserPlus size={12} /> Aplicar</span>
 );
 const MuestraQuitar = () => (
-    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] text-rose-600 border border-rose-200 bg-white px-2 py-0.5 align-middle"><UserMinus size={12} /> Quitar</span>
+    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] text-zinc-500 border border-zinc-200 bg-white px-2 py-0.5 align-middle"><UserMinus size={12} /> Quitar</span>
 );
 const MuestraVincular = ({ texto = 'Vincular' }) => (
-    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] text-indigo-700 border border-indigo-200 bg-indigo-50 px-2 py-0.5 align-middle"><Link2 size={12} /> {texto}</span>
+    <span className="inline-flex items-center gap-1 rounded-md font-bold text-[11px] text-zinc-700 border border-zinc-200 bg-white px-2 py-0.5 align-middle"><Link2 size={12} className="text-brand-cyan" /> {texto}</span>
 );
 const MuestraLapiz = () => (
-    <span className="inline-flex items-center justify-center rounded-md text-indigo-600 bg-indigo-50 w-5 h-5 align-middle"><Pencil size={11} /></span>
+    <span className="inline-flex items-center justify-center rounded-md text-brand-cyan bg-brand-cyan/10 w-5 h-5 align-middle"><Pencil size={11} /></span>
 );
 
 const SeccionAyuda = ({ titulo, children }) => (
     <section>
-        <h3 className="text-xs font-black text-indigo-700 uppercase tracking-wide mb-2">{titulo}</h3>
-        <div className="text-sm text-slate-600 leading-relaxed flex flex-col gap-2">{children}</div>
+        <h3 className="text-xs font-black text-brand-cyan uppercase tracking-wide mb-2">{titulo}</h3>
+        <div className="text-sm text-zinc-600 leading-relaxed flex flex-col gap-2">{children}</div>
     </section>
 );
 
 const Campo = ({ nombre, children }) => (
     <li className="flex flex-col sm:flex-row gap-0.5 sm:gap-3">
-        <span className="sm:w-36 shrink-0 font-bold text-slate-800">{nombre}</span>
+        <span className="sm:w-36 shrink-0 font-bold text-zinc-800">{nombre}</span>
         <span>{children}</span>
     </li>
 );
@@ -189,13 +213,13 @@ const AyudaModal = ({ perfil, onClose }) => {
     const nombrePerfil = perfil?.nombre || 'Descuento Trabajadores 10%';
     return (
         <Ventana onClose={onClose} ancho="max-w-2xl" etiqueta="Ayuda">
-            <div className="bg-gradient-to-r from-indigo-600 to-indigo-700 px-6 py-4 flex items-center gap-3">
-                <HelpCircle size={22} className="text-white shrink-0" />
+            <div className="px-6 py-4 border-b border-zinc-100 flex items-center gap-3">
+                <HelpCircle size={24} className="text-brand-cyan shrink-0" />
                 <div className="flex-1 min-w-0">
-                    <div className="text-white font-black text-lg">Cómo usar esta pantalla</div>
-                    <div className="text-indigo-100 text-sm">Descuento a Trabajadores</div>
+                    <div className="text-zinc-900 font-black text-lg leading-tight">Cómo usar esta pantalla</div>
+                    <div className="text-zinc-500 text-sm">Descuento a Trabajadores</div>
                 </div>
-                <button type="button" onClick={onClose} title="Cerrar" className="p-1.5 rounded-lg text-white hover:bg-white/15"><X size={20} /></button>
+                <button type="button" onClick={onClose} title="Cerrar" className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><X size={20} /></button>
             </div>
 
             <div className="p-6 overflow-y-auto flex flex-col gap-6">
@@ -310,24 +334,24 @@ const ConfirmarQuitarModal = ({ cliente, perfil, procesando, onConfirmar, onCanc
     return (
         <Ventana onClose={onCancelar} bloqueada={procesando} etiqueta="Quitar descuento">
             <CabeceraVentana icono={UserMinus} color="rose" titulo="Quitar descuento"
-                subtitulo={<>Se le va a quitar el perfil <b className="text-slate-700">{perfil?.nombre || 'Descuento Trabajadores'}</b> a:</>} />
-            <div className="mx-6 mt-2 bg-slate-50 border border-slate-200 rounded-xl p-4 flex flex-col gap-3">
+                subtitulo={<>Se le va a quitar el perfil <b className="text-zinc-700">{perfil?.nombre || 'Descuento Trabajadores'}</b> a:</>} />
+            <div className="mx-6 mt-2 bg-zinc-50 border border-zinc-200 rounded-xl p-4 flex flex-col gap-3">
                 <Cuenta c={cliente} grande />
                 <FichaRRHH trabajador={cliente.trabajador} />
                 {cliente.otrosPerfiles?.length > 0 && (
-                    <div className="text-xs text-slate-500">
+                    <div className="text-xs text-zinc-500">
                         Mantiene: {cliente.otrosPerfiles.map(p => (
-                            <span key={p} className="inline-block font-semibold bg-white text-slate-600 border border-slate-200 rounded px-1.5 py-0.5 mr-1">{p}</span>
+                            <span key={p} className="inline-block font-semibold bg-white text-zinc-600 border border-zinc-200 rounded px-1.5 py-0.5 mr-1">{p}</span>
                         ))}
                     </div>
                 )}
             </div>
-            <p className="px-6 mt-4 text-sm text-slate-600">
+            <p className="px-6 mt-4 text-sm text-zinc-600">
                 Los pedidos que se coticen desde ahora van a <b>precio normal</b>. Si te equivocás, lo podés volver a aplicar desde el buscador.
             </p>
             <PieVentana>
                 <button ref={cancelarRef} type="button" onClick={onCancelar} disabled={procesando}
-                    className="px-4 py-2.5 rounded-xl font-bold text-sm text-slate-600 border border-slate-200 hover:bg-slate-50 disabled:opacity-50">
+                    className="px-4 py-2.5 rounded-xl font-bold text-sm text-zinc-600 border border-zinc-200 hover:bg-zinc-50 disabled:opacity-50">
                     Cancelar
                 </button>
                 <BotonPrincipal color="rose" onClick={onConfirmar} disabled={procesando} cargando={procesando}>
@@ -377,16 +401,16 @@ const EditarCiModal = ({ edicion, onClose, onGuardado }) => {
             <CabeceraVentana icono={Pencil} titulo={esCuenta ? 'CI / RUT de la cuenta' : 'Cédula del trabajador'} subtitulo={quien} onClose={guardando ? null : onClose} />
             <div className="px-6 flex flex-col gap-3">
                 <div>
-                    <label className="block text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">{esCuenta ? 'CI o RUT' : 'Cédula'}</label>
+                    <label className="block text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1">{esCuenta ? 'CI o RUT' : 'Cédula'}</label>
                     <input ref={inputRef} type="text" inputMode="numeric" value={valor}
                         onChange={e => { setValor(e.target.value); setError(null); }}
                         onKeyDown={e => { if (e.key === 'Enter') guardar(); }}
                         placeholder={esCuenta ? 'Ej: 5.413.264-9 o 217654320018' : 'Ej: 5.413.264-9'}
-                        className="w-full border border-slate-300 rounded-xl px-4 py-2.5 text-lg font-mono outline-none focus:ring-2 focus:ring-indigo-400" />
-                    <div className="text-xs text-slate-400 mt-1">Actual: {(ciActual || '').trim() || 'vacío'}</div>
+                        className="w-full bg-white border border-zinc-200 rounded-xl px-4 py-2.5 text-lg font-mono text-zinc-800 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
+                    <div className="text-xs text-zinc-400 mt-1">Actual: {(ciActual || '').trim() || 'vacío'}</div>
                 </div>
                 {d && !formatoOk && (
-                    <div className="text-xs text-rose-600">{esCuenta ? 'Una CI tiene de 6 a 8 dígitos y un RUT, 12.' : 'Una cédula tiene de 6 a 8 dígitos.'}</div>
+                    <div className="text-xs text-brand-magenta">{esCuenta ? 'Una CI tiene de 6 a 8 dígitos y un RUT, 12.' : 'Una cédula tiene de 6 a 8 dígitos.'}</div>
                 )}
                 {verificadorMal && (
                     <div className="flex items-start gap-2 text-xs font-semibold text-amber-800 bg-amber-50 border border-amber-200 rounded-lg p-2.5">
@@ -396,12 +420,12 @@ const EditarCiModal = ({ edicion, onClose, onGuardado }) => {
                             : 'El dígito verificador no coincide: revisá que esté bien escrita.'}
                     </div>
                 )}
-                <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2.5">
+                <div className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-lg p-2.5">
                     {esCuenta
                         ? 'Es el documento que va en las facturas de este cliente. Se guarda solo con números.'
                         : 'Cambia la cédula en la planilla de trabajadores. A un vendedor no se le puede cambiar desde acá: sus clientes están asignados por esa cédula.'}
                 </div>
-                {error && <div className="text-sm text-rose-700 bg-rose-50 border border-rose-200 rounded-lg p-2.5">{error}</div>}
+                {error && <div className="text-sm text-brand-magenta bg-brand-magenta/5 border border-brand-magenta/20 rounded-lg p-2.5">{error}</div>}
             </div>
             <PieVentana>
                 <BotonSecundario onClick={onClose} disabled={guardando}>Cancelar</BotonSecundario>
@@ -488,27 +512,27 @@ const VincularModal = ({ inicio, perfil, onClose, onHecho }) => {
         <Ventana onClose={onClose} bloqueada={guardando} ancho="max-w-xl" etiqueta="Vincular">
             <CabeceraVentana icono={Link2}
                 titulo={desdeTrabajador ? 'Vincular cuenta de cliente' : 'Vincular trabajador'}
-                subtitulo={desdeTrabajador ? <>Elegí la cuenta de <b className="text-slate-700">{inicio.trabajador.nombre}</b></> : <>Elegí el trabajador de la cuenta <b className="text-slate-700">{tituloCuenta(inicio.cuenta)}</b></>}
+                subtitulo={desdeTrabajador ? <>Elegí la cuenta de <b className="text-zinc-700">{inicio.trabajador.nombre}</b></> : <>Elegí el trabajador de la cuenta <b className="text-zinc-700">{tituloCuenta(inicio.cuenta)}</b></>}
                 onClose={guardando ? null : onClose} />
 
             {!enConfirmacion ? (
                 <div className="px-6 pb-6 flex flex-col gap-3 overflow-hidden">
                     <div className="relative">
-                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                         <input autoFocus type="text" value={q} onChange={e => setQ(e.target.value)}
                             placeholder={desdeTrabajador ? 'ID de cliente, nombre, código o cédula…' : 'Nombre o cédula del trabajador…'}
-                            className="w-full border border-slate-300 rounded-xl pl-9 pr-9 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-400" />
-                        {buscando && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />}
+                            className={CAMPO} />
+                        {buscando && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 animate-spin" />}
                     </div>
-                    <p className="text-xs text-slate-400">No importan los acentos ni el orden de las palabras. Si no aparece, probá con menos palabras{desdeTrabajador ? ', el ID de cliente o la cédula' : ' o la cédula'}.</p>
-                    <ul className="divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-y-auto max-h-80">
+                    <p className="text-xs text-zinc-400">No importan los acentos ni el orden de las palabras. Si no aparece, probá con menos palabras{desdeTrabajador ? ', el ID de cliente o la cédula' : ' o la cédula'}.</p>
+                    <ul className="divide-y divide-zinc-100 border border-zinc-200 rounded-xl overflow-y-auto max-h-80">
                         {!buscando && q.trim().length >= 2 && resultados.length === 0 && (
-                            <li className="px-4 py-6 text-center text-sm text-slate-400">
+                            <li className="px-4 py-6 text-center text-sm text-zinc-400">
                                 Sin resultados.{desdeTrabajador && ' Si no tiene cuenta, hay que crearla en Gestión Clientes.'}
                             </li>
                         )}
                         {resultados.map(r => (
-                            <li key={desdeTrabajador ? r.cliIdCliente : r.cedula} className="flex items-center gap-3 px-4 py-2.5 hover:bg-slate-50">
+                            <li key={desdeTrabajador ? r.cliIdCliente : r.cedula} className="flex items-center gap-3 px-4 py-2.5 hover:bg-zinc-50">
                                 <div className="flex-1 min-w-0">
                                     {desdeTrabajador ? (
                                         <>
@@ -520,12 +544,11 @@ const VincularModal = ({ inicio, perfil, onClose, onHecho }) => {
                                     ) : (
                                         <>
                                             <FichaRRHH trabajador={r.trabajador} />
-                                            <div className="text-[11px] font-mono text-slate-400 pl-5">CI {r.cedula}</div>
+                                            <div className="text-[11px] font-mono text-zinc-400 pl-5">CI {r.cedula}</div>
                                         </>
                                     )}
                                 </div>
-                                <button type="button" onClick={() => elegir(r)}
-                                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-bold text-indigo-700 border border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
+                                <button type="button" onClick={() => elegir(r)} className={`${BTN_FILA_SEC} shrink-0`}>
                                     Elegir
                                 </button>
                             </li>
@@ -536,14 +559,14 @@ const VincularModal = ({ inicio, perfil, onClose, onHecho }) => {
                 <>
                     <div className="px-6 flex flex-col gap-4 overflow-y-auto">
                         <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3 items-center">
-                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 min-w-0">
-                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-wide mb-1">Trabajador</div>
+                            <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 min-w-0">
+                                <div className="text-[10px] font-black text-zinc-400 uppercase tracking-wide mb-1">Trabajador</div>
                                 <FichaRRHH trabajador={trabajador} />
-                                <div className="text-[11px] font-mono text-slate-500 pl-5 mt-0.5">CI {trabajador.cedula}</div>
+                                <div className="text-[11px] font-mono text-zinc-500 pl-5 mt-0.5">CI {trabajador.cedula}</div>
                             </div>
-                            <Link2 size={18} className="text-indigo-400 justify-self-center rotate-90 sm:rotate-0" />
-                            <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 min-w-0">
-                                <div className="text-[10px] font-black text-slate-400 uppercase tracking-wide mb-1">Cuenta de cliente</div>
+                            <Link2 size={18} className="text-brand-cyan/60 justify-self-center rotate-90 sm:rotate-0" />
+                            <div className="bg-zinc-50 border border-zinc-200 rounded-xl p-3 min-w-0">
+                                <div className="text-[10px] font-black text-zinc-400 uppercase tracking-wide mb-1">Cuenta de cliente</div>
                                 <Cuenta c={cuenta} />
                             </div>
                         </div>
@@ -555,7 +578,7 @@ const VincularModal = ({ inicio, perfil, onClose, onHecho }) => {
                             </div>
                         )}
 
-                        <div className="flex flex-col gap-3 border border-slate-200 rounded-xl p-4">
+                        <div className="flex flex-col gap-3 border border-zinc-200 rounded-xl p-4">
                             {mismaCi ? (
                                 <ListoOk>La cuenta ya tiene la CI {trabajador.cedula}.</ListoOk>
                             ) : (
@@ -569,7 +592,7 @@ const VincularModal = ({ inicio, perfil, onClose, onHecho }) => {
                                             Reemplazalo solo si está mal; si es el RUT de su empresa, dejalo: el vínculo funciona igual.
                                         </p>
                                     ) : (
-                                        <p className="text-xs text-slate-500 ml-6">La cuenta no tiene documento: conviene cargarlo, también sirve para sus facturas.</p>
+                                        <p className="text-xs text-zinc-500 ml-6">La cuenta no tiene documento: conviene cargarlo, también sirve para sus facturas.</p>
                                     )}
                                 </div>
                             )}
@@ -616,6 +639,7 @@ const DescuentoTrabajadoresPage = () => {
     const cancelarQuitar = useCallback(() => setAQuitar(null), []);
     const cerrarEdicionCi = useCallback(() => setEdicionCi(null), []);
     const cerrarVinculo = useCallback(() => setVinculo(null), []);
+    const conTabla = useConTabla();
 
     // Buscador para aplicar el descuento
     const [busqueda, setBusqueda] = useState('');
@@ -723,49 +747,74 @@ const DescuentoTrabajadoresPage = () => {
             type="button"
             onClick={() => aplicar(c)}
             disabled={enCurso != null || !perfil}
-            className="inline-flex items-center gap-1.5 rounded-lg font-bold text-xs bg-indigo-600 hover:bg-indigo-700 text-white disabled:opacity-50 transition-colors px-2.5 py-1.5"
+            className={`${BTN_FILA} bg-brand-cyan hover:bg-brand-cyan/90 text-white`}
         >
             {enCurso === c.cliIdCliente ? <Loader2 size={14} className="animate-spin" /> : <UserPlus size={14} />} Aplicar
         </button>
     );
     const botonVincular = (texto, onClick) => (
-        <button type="button" onClick={onClick}
-            className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-bold text-indigo-700 border border-indigo-200 bg-indigo-50 hover:bg-indigo-100">
-            <Link2 size={14} /> {texto}
+        <button type="button" onClick={onClick} className={BTN_FILA_SEC}>
+            <Link2 size={14} className="text-brand-cyan" /> {texto}
+        </button>
+    );
+    const botonQuitar = (c) => (
+        <button type="button" onClick={() => setAQuitar(c)} disabled={enCurso != null}
+            className={`${BTN_FILA} border border-zinc-200 bg-white text-zinc-500 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`}>
+            {enCurso === c.cliIdCliente ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />} Quitar
         </button>
     );
 
+    // Celdas de la lista, para la tabla y para las tarjetas del celular
+    const celdaCuenta = (c) => (
+        <>
+            <div className="font-bold text-zinc-800 truncate">{c.existeCliente ? tituloCuenta(c) : `Cliente ${c.cliIdCliente} (no existe)`}</div>
+            <div className="text-xs text-zinc-500 truncate">{detalleCuenta(c, { conCi: false })}</div>
+        </>
+    );
+    const celdaCi = (c) => (
+        <span className="inline-flex items-center gap-0.5">
+            <span className={`text-xs font-mono ${(c.cioRuc || '').trim() ? 'text-zinc-600' : 'text-zinc-300'}`}>{(c.cioRuc || '').trim() || '—'}</span>
+            {c.existeCliente && <BotonLapiz onClick={() => editarCiCuenta(c)} titulo="Corregir el CI/RUT de la cuenta" />}
+        </span>
+    );
+    const celdaFicha = (c) => (c.trabajador
+        ? <FichaRRHH trabajador={c.trabajador}
+            onEditarCi={() => editarCiTrabajador(c.trabajador)}
+            onDesvincular={() => desvincular(c.trabajador, c)} />
+        : c.existeCliente && botonVincular('Vincular trabajador', () => setVinculo({ desde: 'cuenta', cuenta: { ...c, tieneDescuento: true } })));
+    const celdaOtros = (c) => (c.otrosPerfiles.length === 0
+        ? <span className="text-zinc-300 text-xs">—</span>
+        : <div className="flex flex-wrap gap-1">{c.otrosPerfiles.map(p => (
+            <span key={p} className="text-[11px] font-bold bg-zinc-50 text-zinc-600 border border-zinc-200 rounded-full px-2 py-0.5">{p}</span>
+        ))}</div>);
+
     return (
-        <div className="h-full overflow-y-auto bg-slate-50">
-            <div className="max-w-6xl mx-auto p-4 md:p-6 flex flex-col gap-5">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
+            <div className="flex flex-col gap-4">
 
                 {/* Encabezado */}
-                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5 flex flex-col md:flex-row md:items-center gap-4">
-                    <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div className="w-11 h-11 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center shrink-0">
-                            <BadgePercent size={22} />
-                        </div>
-                        <div className="min-w-0">
-                            <h1 className="text-xl font-black text-slate-800">Descuento a Trabajadores</h1>
-                            <p className="text-sm text-slate-500 truncate">
-                                {perfil
-                                    ? <>Perfil de precios <span className="font-semibold text-slate-700">{perfil.nombre}</span> · se aplica en: <span className="font-semibold text-slate-700">{perfil.categoria}</span></>
-                                    : 'Clientes con el perfil de precios de trabajadores'}
-                            </p>
-                        </div>
+                <div className="flex flex-wrap items-center gap-3">
+                    <BadgePercent size={30} className="text-brand-cyan shrink-0" />
+                    <div className="min-w-[220px] flex-1">
+                        <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Descuento a Trabajadores</h1>
+                        <p className="text-sm text-zinc-500 mt-1">
+                            {perfil
+                                ? <>Perfil de precios <span className="font-semibold text-zinc-700">{perfil.nombre}</span> · se aplica en: <span className="font-semibold text-zinc-700">{perfil.categoria}</span></>
+                                : 'Clientes con el perfil de precios de trabajadores'}
+                        </p>
                     </div>
-                    <div className="flex items-center gap-3">
-                        <div className="text-right">
-                            <div className="text-2xl font-black text-indigo-700 leading-none">{cargando ? '…' : clientes.length}</div>
-                            <div className="text-[11px] font-bold text-slate-400 uppercase tracking-wide">con descuento</div>
+                    <div className="flex items-center gap-2 w-full sm:w-auto sm:ml-auto">
+                        <div className={`${CARD} px-4 py-2 flex items-baseline gap-2 mr-auto sm:mr-1`}>
+                            <span className="text-2xl font-black text-zinc-900 leading-none tabular-nums">{cargando ? '…' : clientes.length}</span>
+                            <span className={ROTULO}>con descuento</span>
                         </div>
-                        <button type="button" onClick={recargarTodo} disabled={cargando} title="Actualizar"
-                            className="p-2.5 rounded-xl border border-slate-200 text-slate-500 hover:bg-slate-50 hover:text-slate-700 disabled:opacity-50">
-                            <RefreshCw size={16} className={cargando ? 'animate-spin' : ''} />
+                        <button type="button" onClick={recargarTodo} disabled={cargando} title="Actualizar" aria-label="Actualizar"
+                            className={`${BTN_SECUNDARIO} py-2.5`}>
+                            <RefreshCw size={16} className={`text-brand-cyan ${cargando ? 'animate-spin' : ''}`} />
                         </button>
                         <button type="button" onClick={() => setVerAyuda(true)} title="Ayuda: cómo usar esta pantalla" aria-label="Ayuda"
-                            className="p-2.5 rounded-xl border border-indigo-200 text-indigo-600 bg-indigo-50 hover:bg-indigo-100">
-                            <HelpCircle size={16} />
+                            className={`${BTN_SECUNDARIO} py-2.5`}>
+                            <HelpCircle size={16} className="text-brand-cyan" /> <span className="hidden sm:inline">Ayuda</span>
                         </button>
                     </div>
                 </div>
@@ -785,7 +834,7 @@ const DescuentoTrabajadoresPage = () => {
                 )}
 
                 {errorCarga && (
-                    <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-xl p-4 text-sm flex items-center gap-2">
+                    <div className="bg-brand-magenta/5 border border-brand-magenta/20 text-brand-magenta rounded-xl p-4 text-sm flex items-center gap-2">
                         <AlertTriangle size={16} className="shrink-0" /> No se pudo cargar la lista: {errorCarga}
                     </div>
                 )}
@@ -803,35 +852,35 @@ const DescuentoTrabajadoresPage = () => {
 
                 {/* Aplicar a una cuenta */}
                 {perfil && (
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
-                        <h2 className="text-sm font-black text-slate-700 uppercase tracking-wide mb-3 flex items-center gap-2">
-                            <UserPlus size={16} className="text-indigo-500" /> Aplicar el descuento
+                    <div className={`${CARD} p-4 sm:p-5`}>
+                        <h2 className="text-sm font-black text-zinc-800 uppercase tracking-wide mb-3 flex items-center gap-2">
+                            <UserPlus size={16} className="text-brand-cyan" /> Aplicar el descuento
                         </h2>
                         <div className="relative">
-                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                             <input type="text" value={busqueda} onChange={e => setBusqueda(e.target.value)}
                                 placeholder="Buscar cuenta por ID de cliente, nombre, código o cédula…"
-                                className="w-full border border-slate-300 rounded-xl pl-9 pr-9 py-2.5 text-sm outline-none focus:ring-2 focus:ring-indigo-400" />
-                            {buscando && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" />}
+                                className={CAMPO} />
+                            {buscando && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 animate-spin" />}
                         </div>
 
                         {busqueda.trim().length >= 2 && !buscando && resultados.length === 0 && (
-                            <p className="text-sm text-slate-400 mt-3">Sin resultados para “{busqueda.trim()}”.</p>
+                            <p className="text-sm text-zinc-400 mt-3">Sin resultados para “{busqueda.trim()}”.</p>
                         )}
 
                         {resultados.length > 0 && (
-                            <ul className="mt-3 divide-y divide-slate-100 border border-slate-200 rounded-xl overflow-hidden">
+                            <ul className="mt-3 divide-y divide-zinc-100 border border-zinc-200 rounded-xl overflow-hidden">
                                 {resultados.map(c => (
-                                    <li key={c.cliIdCliente} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 py-2.5 hover:bg-slate-50">
+                                    <li key={c.cliIdCliente} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-4 py-2.5 hover:bg-zinc-50">
                                         <div className="flex-1 min-w-0"><Cuenta c={c} /></div>
                                         <div className="sm:w-56">
                                             {c.trabajador
                                                 ? <FichaRRHH trabajador={c.trabajador} />
-                                                : <span className="text-[11px] text-slate-400">Sin trabajador vinculado</span>}
+                                                : <span className="text-[11px] text-zinc-400">Sin trabajador vinculado</span>}
                                         </div>
                                         <div className="sm:w-28 sm:text-right">
                                             {c.tieneDescuento
-                                                ? <span className="inline-flex items-center gap-1 text-xs font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5"><Check size={14} /> Ya lo tiene</span>
+                                                ? <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-full px-2.5 py-1"><Check size={13} /> Ya lo tiene</span>
                                                 : botonAplicar(c)}
                                         </div>
                                     </li>
@@ -843,20 +892,21 @@ const DescuentoTrabajadoresPage = () => {
 
                 {/* Quiénes lo tienen */}
                 {perfil && (
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-                        <div className="px-5 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center gap-3">
-                            <h2 className="text-sm font-black text-slate-700 uppercase tracking-wide flex-1">Trabajadores con el descuento</h2>
+                    <div className={`${CARD} overflow-hidden`}>
+                        <div className="px-5 py-4 border-b border-zinc-100 flex flex-col sm:flex-row sm:items-center gap-3">
+                            <h2 className="text-sm font-black text-zinc-800 uppercase tracking-wide flex-1">Trabajadores con el descuento</h2>
                             <div className="relative sm:w-72">
-                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
                                 <input type="text" value={filtro} onChange={e => setFiltro(e.target.value)} placeholder="Filtrar la lista…"
-                                    className="w-full border border-slate-200 rounded-lg pl-8 pr-3 py-2 text-sm outline-none focus:ring-2 focus:ring-indigo-300" />
+                                    className="w-full pl-8 pr-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15" />
                             </div>
                         </div>
 
+                        {conTabla ? (
                         <div className="overflow-x-auto">
                             <table className="w-full text-sm">
                                 <thead>
-                                    <tr className="bg-slate-50 text-[11px] font-black text-slate-500 uppercase tracking-wide text-left">
+                                    <tr className="bg-zinc-50 border-b border-zinc-200 text-[10px] font-black text-zinc-400 uppercase tracking-wide text-left">
                                         <th className="px-5 py-2.5">Cuenta de cliente</th>
                                         <th className="px-3 py-2.5">CI / RUT</th>
                                         <th className="px-3 py-2.5">Ficha RRHH</th>
@@ -865,79 +915,82 @@ const DescuentoTrabajadoresPage = () => {
                                         <th className="px-5 py-2.5 text-right"></th>
                                     </tr>
                                 </thead>
-                                <tbody className="divide-y divide-slate-100">
+                                <tbody className="divide-y divide-zinc-100">
                                     {cargando && clientes.length === 0 && (
-                                        <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400"><Loader2 size={20} className="inline animate-spin" /></td></tr>
+                                        <tr><td colSpan={6} className="px-5 py-10 text-center"><Loader2 size={20} className="inline animate-spin text-brand-cyan" /></td></tr>
                                     )}
                                     {!cargando && clientesFiltrados.length === 0 && (
-                                        <tr><td colSpan={6} className="px-5 py-10 text-center text-slate-400">
+                                        <tr><td colSpan={6} className="px-5 py-10 text-center text-zinc-400">
                                             {clientes.length === 0 ? 'Nadie tiene el descuento aplicado.' : 'Ninguna cuenta coincide con el filtro.'}
                                         </td></tr>
                                     )}
                                     {clientesFiltrados.map(c => (
-                                        <tr key={c.cliIdCliente} className="hover:bg-slate-50/70">
-                                            <td className="px-5 py-3 max-w-[260px]">
-                                                <div className="font-bold text-slate-800 truncate">{c.existeCliente ? tituloCuenta(c) : `Cliente ${c.cliIdCliente} (no existe)`}</div>
-                                                <div className="text-xs text-slate-500 truncate">{detalleCuenta(c, { conCi: false })}</div>
-                                            </td>
-                                            <td className="px-3 py-3 whitespace-nowrap">
-                                                <span className="inline-flex items-center gap-0.5">
-                                                    <span className={`text-xs font-mono ${(c.cioRuc || '').trim() ? 'text-slate-600' : 'text-slate-300'}`}>{(c.cioRuc || '').trim() || '—'}</span>
-                                                    {c.existeCliente && <BotonLapiz onClick={() => editarCiCuenta(c)} titulo="Corregir el CI/RUT de la cuenta" />}
-                                                </span>
-                                            </td>
-                                            <td className="px-3 py-3 max-w-[240px]">
-                                                {c.trabajador
-                                                    ? <FichaRRHH trabajador={c.trabajador}
-                                                        onEditarCi={() => editarCiTrabajador(c.trabajador)}
-                                                        onDesvincular={() => desvincular(c.trabajador, c)} />
-                                                    : c.existeCliente && botonVincular('Vincular trabajador', () => setVinculo({ desde: 'cuenta', cuenta: { ...c, tieneDescuento: true } }))}
-                                            </td>
-                                            <td className="px-3 py-3">
-                                                {c.otrosPerfiles.length === 0
-                                                    ? <span className="text-slate-300 text-xs">—</span>
-                                                    : <div className="flex flex-wrap gap-1">{c.otrosPerfiles.map(p => (
-                                                        <span key={p} className="text-[11px] font-semibold bg-slate-100 text-slate-600 border border-slate-200 rounded px-1.5 py-0.5">{p}</span>
-                                                    ))}</div>}
-                                            </td>
-                                            <td className="px-3 py-3 text-xs text-slate-500 whitespace-nowrap">{fecha(c.ultimaActualizacion)}</td>
-                                            <td className="px-5 py-3 text-right">
-                                                <button type="button" onClick={() => setAQuitar(c)} disabled={enCurso != null}
-                                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold text-rose-600 border border-rose-200 hover:bg-rose-50 disabled:opacity-50 transition-colors">
-                                                    {enCurso === c.cliIdCliente ? <Loader2 size={14} className="animate-spin" /> : <UserMinus size={14} />} Quitar
-                                                </button>
-                                            </td>
+                                        <tr key={c.cliIdCliente} className="hover:bg-zinc-50">
+                                            <td className="px-5 py-3 max-w-[260px]">{celdaCuenta(c)}</td>
+                                            <td className="px-3 py-3 whitespace-nowrap">{celdaCi(c)}</td>
+                                            <td className="px-3 py-3 max-w-[240px]">{celdaFicha(c)}</td>
+                                            <td className="px-3 py-3">{celdaOtros(c)}</td>
+                                            <td className="px-3 py-3 text-xs text-zinc-500 whitespace-nowrap">{fecha(c.ultimaActualizacion)}</td>
+                                            <td className="px-5 py-3 text-right">{botonQuitar(c)}</td>
                                         </tr>
                                     ))}
                                 </tbody>
                             </table>
                         </div>
+                        ) : (
+                        <ul className="divide-y divide-zinc-100 border-t border-zinc-100">
+                            {cargando && clientes.length === 0 && (
+                                <li className="px-4 py-10 text-center"><Loader2 size={20} className="inline animate-spin text-brand-cyan" /></li>
+                            )}
+                            {!cargando && clientesFiltrados.length === 0 && (
+                                <li className="px-4 py-10 text-center text-sm text-zinc-400">
+                                    {clientes.length === 0 ? 'Nadie tiene el descuento aplicado.' : 'Ninguna cuenta coincide con el filtro.'}
+                                </li>
+                            )}
+                            {clientesFiltrados.map(c => (
+                                <li key={c.cliIdCliente} className="px-4 py-3 flex flex-col gap-2.5">
+                                    <div className="flex items-start gap-3">
+                                        <div className="min-w-0 flex-1 text-sm">{celdaCuenta(c)}</div>
+                                        {botonQuitar(c)}
+                                    </div>
+                                    <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-zinc-50 border border-zinc-100 px-3 py-2.5">
+                                        <div className="min-w-0"><dt className={ROTULO}>CI / RUT</dt><dd>{celdaCi(c)}</dd></div>
+                                        <div className="min-w-0"><dt className={ROTULO}>Actualizado</dt><dd className="text-xs text-zinc-600">{fecha(c.ultimaActualizacion)}</dd></div>
+                                        {c.otrosPerfiles.length > 0 && (
+                                            <div className="col-span-2 min-w-0"><dt className={ROTULO}>Otros perfiles</dt><dd className="mt-0.5">{celdaOtros(c)}</dd></div>
+                                        )}
+                                    </dl>
+                                    <div className="min-w-0">{celdaFicha(c)}</div>
+                                </li>
+                            ))}
+                        </ul>
+                        )}
                     </div>
                 )}
 
                 {/* Cuentas de trabajadores (vinculadas o con su cédula) que no tienen el descuento */}
                 {perfil && sugeridos.length > 0 && (
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className={`${CARD} overflow-hidden`}>
                         <button type="button" onClick={() => setVerSugeridos(v => !v)}
-                            className="w-full px-5 py-4 flex items-center gap-2 text-left hover:bg-slate-50">
-                            {verSugeridos ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
-                            <span className="text-sm font-black text-slate-700 uppercase tracking-wide flex-1">Trabajadores sin el descuento</span>
+                            className="w-full px-5 py-4 flex items-center gap-2 text-left hover:bg-zinc-50">
+                            {verSugeridos ? <ChevronDown size={16} className="text-zinc-400" /> : <ChevronRight size={16} className="text-zinc-400" />}
+                            <span className="text-sm font-black text-zinc-800 uppercase tracking-wide flex-1">Trabajadores sin el descuento</span>
                             <span className="text-xs font-bold bg-amber-50 text-amber-700 border border-amber-200 rounded-full px-2.5 py-0.5">{sugeridos.length}</span>
                         </button>
                         {verSugeridos && (
                             <>
-                                <p className="px-5 pb-3 text-xs text-slate-500">
+                                <p className="px-5 pb-3 text-xs text-zinc-500">
                                     Trabajadores de la planilla con una cuenta de cliente (vinculada o con su misma cédula) que no tiene el descuento.
                                     <b> Aplicar</b> se lo pone a la cuenta de la derecha. Revisá que sea de esa persona: si la cédula está mal cargada,
                                     la cuenta puede ser de otro.
                                 </p>
-                                <div className="hidden md:grid grid-cols-[minmax(0,15rem)_1.25rem_minmax(0,1fr)_6rem] gap-3 px-5 py-2 bg-slate-50 border-t border-slate-100 text-[11px] font-black text-slate-500 uppercase tracking-wide">
+                                <div className="hidden md:grid grid-cols-[minmax(0,15rem)_1.25rem_minmax(0,1fr)_6rem] gap-3 px-5 py-2 bg-zinc-50 border-t border-zinc-100 text-[11px] font-black text-zinc-500 uppercase tracking-wide">
                                     <span>Trabajador (planilla RRHH)</span>
                                     <span />
                                     <span>Cuenta de cliente que recibe el descuento</span>
                                     <span />
                                 </div>
-                                <ul className="divide-y divide-slate-100 border-t border-slate-100">
+                                <ul className="divide-y divide-zinc-100 border-t border-zinc-100">
                                     {sugeridos.map(s => {
                                         const coincide = coincidenciaNombre(s.trabajador?.nombre, s);
                                         return (
@@ -945,7 +998,7 @@ const DescuentoTrabajadoresPage = () => {
                                                 <FichaRRHH trabajador={s.trabajador}
                                                     onEditarCi={() => editarCiTrabajador(s.trabajador)}
                                                     onDesvincular={() => desvincular(s.trabajador, s)} />
-                                                <ArrowRight size={16} className="hidden md:block text-slate-300" />
+                                                <ArrowRight size={16} className="hidden md:block text-zinc-300" />
                                                 <div className="min-w-0">
                                                     <Cuenta c={s} onEditarCi={() => editarCiCuenta(s)} />
                                                     {coincide === 'no' && (
@@ -955,7 +1008,7 @@ const DescuentoTrabajadoresPage = () => {
                                                         </div>
                                                     )}
                                                     {coincide === 'parcial' && (
-                                                        <div className="mt-1 text-[11px] text-slate-500">El nombre coincide solo en parte: revisá que sea la misma persona.</div>
+                                                        <div className="mt-1 text-[11px] text-zinc-500">El nombre coincide solo en parte: revisá que sea la misma persona.</div>
                                                     )}
                                                     {s.otraCuentaConDescuento && (
                                                         <div className="mt-1 text-[11px] text-emerald-700">Ya tiene el descuento en otra cuenta: <b>{s.otraCuentaConDescuento}</b>.</div>
@@ -973,16 +1026,16 @@ const DescuentoTrabajadoresPage = () => {
 
                 {/* Trabajadores de la planilla sin ninguna cuenta */}
                 {perfil && sinCuenta.length > 0 && (
-                    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    <div className={`${CARD} overflow-hidden`}>
                         <button type="button" onClick={() => setVerSinCuenta(v => !v)}
-                            className="w-full px-5 py-4 flex items-center gap-2 text-left hover:bg-slate-50">
-                            {verSinCuenta ? <ChevronDown size={16} className="text-slate-400" /> : <ChevronRight size={16} className="text-slate-400" />}
-                            <span className="text-sm font-black text-slate-700 uppercase tracking-wide flex-1">Trabajadores sin cuenta de cliente</span>
-                            <span className="text-xs font-bold bg-slate-100 text-slate-600 border border-slate-200 rounded-full px-2.5 py-0.5">{sinCuenta.length}</span>
+                            className="w-full px-5 py-4 flex items-center gap-2 text-left hover:bg-zinc-50">
+                            {verSinCuenta ? <ChevronDown size={16} className="text-zinc-400" /> : <ChevronRight size={16} className="text-zinc-400" />}
+                            <span className="text-sm font-black text-zinc-800 uppercase tracking-wide flex-1">Trabajadores sin cuenta de cliente</span>
+                            <span className="text-xs font-bold bg-zinc-100 text-zinc-600 border border-zinc-200 rounded-full px-2.5 py-0.5">{sinCuenta.length}</span>
                         </button>
                         {verSinCuenta && (
                             <>
-                                <div className="px-5 pb-4 text-xs text-slate-600 flex flex-col gap-1.5">
+                                <div className="px-5 pb-4 text-xs text-zinc-600 flex flex-col gap-1.5">
                                     <p>
                                         No tienen ninguna cuenta vinculada ni con su cédula, así que <b>todavía no se les puede aplicar el descuento</b>.
                                         Puede que tengan cuenta sin la cédula cargada, o que no tengan.
@@ -992,7 +1045,7 @@ const DescuentoTrabajadoresPage = () => {
                                         <li>Si no tiene cuenta, creásela en Gestión Clientes con su cédula en CI/RUT. Después va a aparecer en <b>Trabajadores sin el descuento</b>.</li>
                                     </ol>
                                 </div>
-                                <ul className="divide-y divide-slate-100 border-t border-slate-100">
+                                <ul className="divide-y divide-zinc-100 border-t border-zinc-100">
                                     {sinCuenta.map(t => (
                                         <li key={t.cedula} className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 px-5 py-2.5">
                                             <div className="flex-1 min-w-0">

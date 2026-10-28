@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
+import { Package, CheckCircle2, XCircle } from 'lucide-react';
 import CajaPanelPago from '../CajaPanelPago';
 import CajaVentaDirectaTab from '../CajaVentaDirectaTab';
 import { evaluarDocumentoDGI } from '../../../utils/dgiComprobante';
@@ -230,29 +231,32 @@ export default function VentaRolloAdelantoPage() {
   };
 
   return (
-    /* El scroll lo maneja el contenedor externo de MainAppContent */
-    <div className="bg-slate-100 pb-8">
-      <div className="max-w-[1400px] mx-auto p-4 flex flex-col gap-4">
+    /* El scroll lo maneja el contenedor externo de MainAppContent.
+       Estética nueva (28/10/2026): encabezado, marco y aviso DGI de esta pantalla. CajaPanelPago y CajaVentaDirectaTab
+       son de la Caja y quedan como están (Santiago: la Caja no se toca por ahora). */
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700">
+      <div className="flex flex-col gap-4">
 
         {/* ── Header ── */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm px-6 py-4 flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-black text-slate-800 tracking-tight">Venta de Rollo por Adelantado</h1>
-            <p className="text-xs text-slate-400 font-semibold mt-0.5">Atención al Cliente — Caja Administrativa</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <Package size={30} className="text-brand-cyan shrink-0" />
+          <div className="min-w-[220px] flex-1">
+            <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Venta de rollo por adelantado</h1>
+            <p className="text-sm text-zinc-500 mt-1">Atención al cliente · Caja administrativa</p>
           </div>
-          <div className="flex items-center gap-2 flex-wrap justify-end">
+          <div className="flex items-center gap-2 flex-wrap sm:justify-end">
             {/* Número de documento */}
-            <span className="text-xs font-black text-slate-600 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg font-mono">
+            <span className="text-xs font-bold text-zinc-700 bg-white border border-zinc-200 px-3 py-1.5 rounded-xl font-mono">
               {numDocActual}
             </span>
             {/* TC */}
             {cotizacion && (
-              <div className="flex items-center gap-1.5 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
-                <span className="text-[9px] font-black text-amber-500 uppercase tracking-widest">TC</span>
-                <span className="text-sm font-black text-amber-800 font-mono">${fmt(cotizacion)}</span>
+              <div className="flex items-center gap-1.5 bg-white border border-zinc-200 rounded-xl px-3 py-1.5">
+                <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">TC</span>
+                <span className="text-sm font-black text-zinc-900 tabular-nums">${fmt(cotizacion)}</span>
               </div>
             )}
-            <span className="text-[10px] font-black text-slate-500 bg-slate-100 border border-slate-200 px-3 py-1.5 rounded-lg uppercase tracking-widest">
+            <span className="text-[10px] font-black text-brand-cyan bg-brand-cyan/10 border border-brand-cyan/20 px-3 py-1.5 rounded-xl uppercase tracking-widest">
               {ROTULO_TIPO_DOC[tipoDoc] || 'Comprobante'} · {esVentaCredito ? 'Crédito' : 'Contado'}
               {esVentaCredito ? ' · Queda en cuenta corriente' : ' · Sin efectivo'}
             </span>
@@ -295,7 +299,7 @@ export default function VentaRolloAdelantoPage() {
         </div>
 
         {/* ── Formulario de venta — el bloque DGI va DEBAJO del cliente, vía slot del tab ── */}
-        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden" style={{ minHeight: '620px' }}>
+        <div className="bg-white rounded-2xl border border-zinc-200 overflow-hidden" style={{ minHeight: '620px' }}>
           <CajaVentaDirectaTab
             allowedTipos={['RECURSO']}
             debajoCliente={esComprobanteFiscal ? (
@@ -303,9 +307,9 @@ export default function VentaRolloAdelantoPage() {
                 <div className={`rounded-xl border px-3 py-2 flex items-start gap-2 text-[11px] font-bold ${
                   dgiEstado.ok
                     ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                    : 'bg-rose-50 border-rose-200 text-rose-800'
+                    : 'bg-brand-magenta/10 border-brand-magenta/20 text-brand-magenta'
                 }`}>
-                  <span className="text-sm leading-none">{dgiEstado.ok ? '✓' : '✗'}</span>
+                  {dgiEstado.ok ? <CheckCircle2 size={14} className="shrink-0 mt-0.5" /> : <XCircle size={14} className="shrink-0 mt-0.5" />}
                   <div className="flex flex-col">
                     <span className="text-[9px] font-black uppercase tracking-widest opacity-70">
                       Requisito DGI — {ROTULO_TIPO_DOC[tipoDoc]}

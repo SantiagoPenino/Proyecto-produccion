@@ -3,6 +3,7 @@ import Lottie from 'lottie-react';
 import loadingAnim from '../../assets/animations/Loading.json';
 import { useAuth } from '../auth/AuthContext';
 import { apiClient } from '../api/apiClient';
+import Swal from 'sweetalert2';
 import { CreditCard, AlertCircle, ChevronRight, CheckCircle, Package } from 'lucide-react';
 import { CustomButton } from '../pautas/CustomButton';
 
@@ -29,6 +30,10 @@ export const UnpaidPickupsView = () => {
         fetchRetiros();
     }, []);
 
+    const avisarError = (text) => Swal.fire({ icon: 'error', title: 'No se pudo pagar', text, background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+    const simDe = (c) => (/US|U\$/i.test(String(c || '')) ? 'US$' : '$');
+    const fmt2 = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
     const handlePay = async (retiro) => {
         setPayingId(retiro.OrdIdRetiro);
         
@@ -36,12 +41,8 @@ export const UnpaidPickupsView = () => {
         const payWindow = window.open('about:blank', '_blank');
         
         try {
-            const payload = {
-                ordenRetiro: retiro.OrdIdRetiro,
-                totalAmount: retiro.Monto,
-                activeCurrency: retiro.Moneda || 'UYU',
-                bultosJSON: retiro.BultosJSON
-            };
+            // Moneda, importes y total los recalcula el servidor al momento de pagar
+            const payload = { ordenRetiro: retiro.OrdIdRetiro };
 
             const res = await apiClient.post('/web-retiros/payment', payload);
             const url = res?.url || res?.data?.url;
@@ -57,12 +58,12 @@ export const UnpaidPickupsView = () => {
                 }
             } else {
                 if (payWindow) payWindow.close();
-                alert("No se pudo obtener el link de pago.");
+                avisarError('No se pudo obtener el link de pago.');
             }
         } catch (error) {
             if (payWindow) payWindow.close();
             console.error("Error generating payment link:", error);
-            alert("Error al contactar la pasarela de pagos.");
+            avisarError(error?.message || 'Error al contactar la pasarela de pagos.');
         } finally {
             setPayingId(null);
         }
@@ -125,7 +126,7 @@ export const UnpaidPickupsView = () => {
                                         {bultos.slice(0, 3).map((b, i) => (
                                             <div key={i} className="flex justify-between text-sm">
                                                 <span className="text-zinc-400 truncate mr-3" title={b.desc}>{b.desc || b.orderNumber}</span>
-                                                <span className="font-bold text-custom-cyan shrink-0">${b.amount}</span>
+                                                <span className="font-bold text-custom-cyan shrink-0">{simDe(b.currency)} {fmt2(b.amount)}</span>
                                             </div>
                                         ))}
                                         {bultos.length > 3 && (
@@ -144,6 +145,11 @@ export const UnpaidPickupsView = () => {
                                             <span className="text-xs text-zinc-500 mr-1">{retiro.Moneda === 'USD' ? 'US$' : '$'}</span>
                                             {Number(retiro.Monto || 0).toFixed(2)}
                                         </p>
+                                        {retiro.Cotizacion && (
+                                            <p className="text-xs text-zinc-500">
+                                                Incluye US$ {fmt2(retiro.Dolares)} convertidos a $ {fmt2(retiro.DolaresEnPesos)} (dólar a $ {fmt2(retiro.Cotizacion)})
+                                            </p>
+                                        )}
                                     </div>
 
                                     <CustomButton

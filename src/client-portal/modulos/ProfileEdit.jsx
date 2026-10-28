@@ -128,7 +128,8 @@ export const ProfileEdit = () => {
             });
             setMessage({ type: 'success', text: 'Datos actualizados correctamente' });
         } catch (err) {
-            setMessage({ type: 'error', text: 'Error al guardar los cambios' });
+            // 400 = un dato que no se puede guardar (por ejemplo, la dirección de más de 80 caracteres): se dice cuál
+            setMessage({ type: 'error', text: err?.status === 400 && err.message ? err.message : 'Error al guardar los cambios' });
         } finally {
             setSaving(false);
         }

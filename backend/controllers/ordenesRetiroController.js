@@ -1,6 +1,6 @@
 const { getPool, sql } = require('../config/db');
 const moment = require('moment-timezone');
-const { crearRetiro, marcarEntregado } = require('../services/retiroService');
+const { crearRetiro, marcarEntregado, recalcularTotalRetiro } = require('../services/retiroService');
 const logger = require('../utils/logger');
 const { esDeadlock } = require('../utils/reintentarDeadlock');
 const { SQL_RECALC_MONTO_TOTAL } = require('../utils/montoTotalPedido');
@@ -34,13 +34,9 @@ const createOrdenRetiro = async (req, res) => {
 
     const ordIds = orderIdResults.recordset.map(r => r.OrdIdOrden);
 
-    // Determinar la moneda: si alguna sub-orden está en dólares (2), todo el retiro queda dolarizado ('USD'), si no en pesos ('UYU').
-    let monedaFuerte = 'UYU'; // Default
-    if (orderIdResults.recordset.some(r => parseInt(r.MonIdMoneda, 10) === 2)) {
-      monedaFuerte = 'USD';
-    }
-
-    // Crear retiro usando servicio unificado (el service determina el estado por tipo de cliente)
+    // Crear retiro usando servicio unificado (el service determina el estado por tipo de cliente).
+    // La moneda la decide el service con las órdenes: todas en dólares → dólares; pesos o
+    // mezcladas → pesos, con los dólares convertidos (antes: alguna en dólares → todo en dólares).
     transaction = await pool.transaction();
     await transaction.begin();
 
@@ -48,7 +44,6 @@ const createOrdenRetiro = async (req, res) => {
       ordIds, totalCost, lugarRetiro,
       usuarioAlta: UsuarioAlta,
       formaRetiro: 'RL',
-      moneda: monedaFuerte,
       direccion, departamento, localidad, agenciaId
     });
 
@@ -1281,14 +1276,8 @@ const editarCostoOrden = async (req, res) => {
 
     // Actualizar total del retiro si corresponde
     if (cleanRetiroId) {
-      const sumRes = await transaction.request()
-        .input('RetiroId', sql.Int, cleanRetiroId)
-        .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
-      const nuevoTotal = sumRes.recordset[0].Total || 0;
-      await transaction.request()
-        .input('RetiroId', sql.Int,          cleanRetiroId)
-        .input('Total',    sql.Decimal(18,2), nuevoTotal)
-        .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+      // Convierte si el retiro mezcla pesos y dólares (antes sumaba sin convertir)
+      await recalcularTotalRetiro(transaction, cleanRetiroId);
     }
 
     // Actualizar PedidosCobranza / PedidosCobranzaDetalle si hay registros vinculados.
@@ -1582,14 +1571,7 @@ const desvincularOrdenRetiro = async (req, res) => {
     if (retiroQuedaVacio) {
       await cancelarRetiroCompleto(transaction, cleanRetiroId, formaRetiro, UsuarioModif);
     } else {
-      const sumRes = await transaction.request()
-        .input('RetiroId', sql.Int, cleanRetiroId)
-        .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
-      const nuevoTotal = sumRes.recordset[0].Total || 0;
-      await transaction.request()
-        .input('RetiroId', sql.Int, cleanRetiroId)
-        .input('Total', sql.Decimal(18, 2), nuevoTotal)
-        .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+      await recalcularTotalRetiro(transaction, cleanRetiroId);
     }
 
     await transaction.commit();
@@ -1716,14 +1698,7 @@ const cancelarOrdenCaja = async (req, res) => {
       if (retiroQuedaVacio) {
         await cancelarRetiroCompleto(transaction, cleanRetiroId, formaRetiro, UsuarioModif);
       } else {
-        const sumRes = await transaction.request()
-          .input('RetiroId', sql.Int, cleanRetiroId)
-          .query('SELECT SUM(OrdCostoFinal) AS Total FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
-        const nuevoTotal = sumRes.recordset[0].Total || 0;
-        await transaction.request()
-          .input('RetiroId', sql.Int, cleanRetiroId)
-          .input('Total', sql.Decimal(18, 2), nuevoTotal)
-          .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total WHERE OReIdOrdenRetiro = @RetiroId');
+        await recalcularTotalRetiro(transaction, cleanRetiroId);
       }
     }
 

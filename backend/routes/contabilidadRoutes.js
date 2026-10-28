@@ -232,6 +232,7 @@ router.get('/cfe/nomencladores', cfeCtrl.getNomencladores);
 router.get('/cfe/tipos-existentes', cfeCtrl.getTiposDocumentosExistentes);
 router.get('/cfe/config-dgi', cfeCtrl.getConfigDGI);
 router.put('/cfe/config-dgi', cfeCtrl.updateConfigDGI);
+router.post('/cfe/config-dgi/actualizar-ui', cfeCtrl.actualizarValorUIDesdeBCU); // trae la UI del BCU en el momento
 router.get('/cfe/documentos', cfeCtrl.getDocumentosCFE);
 router.post('/cfe/documentos/:id/enviar', cfeCtrl.enviarADGI);
 router.get('/cfe/documentos/:id/preview-dgi', cfeCtrl.previewDGI);   // Qué CFE se le pediría a DGI (no emite nada)

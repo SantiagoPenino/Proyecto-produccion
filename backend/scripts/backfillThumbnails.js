@@ -12,6 +12,15 @@
  *   --dias=N  solo archivos subidos en los últimos N días (incremental)
  *   --lock    no arranca si ya hay otra corrida viva (lockfile con PID)
  *   --quiet   no lista los que ya existen, solo lo que hace
+ *
+ * Archivos grandes (INF-SIS-2026-08, 27/10): antes bajaba el archivo entero a la memoria y, si fallaba,
+ * lo reintentaba cada 10 minutos (el banner de 2,7 GB de EUV-38376 dejaba al proceso en 2,9 GB). Ahora:
+ *   · mira el tamaño en Drive sin bajarlo;
+ *   · hasta THUMB_MAX_MB (1 GB por defecto) lo baja a un temporal EN DISCO y hace la miniatura por ruta;
+ *   · arriba de eso no lo baja: usa la miniatura de Drive (Drive tarda en generarla: las primeras 2 horas
+ *     se espera a la corrida siguiente);
+ *   · lo que no da miniatura queda con la marca {ArchivoID}.sin-miniatura y no se vuelve a intentar
+ *     (--force y --noDocERP la ignoran, para reintentar a mano).
  */
 
 const path = require('path');
@@ -19,8 +28,12 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 const { sql, getPool } = require('../config/db');
 const driveService = require('../services/driveService');
-const { generateThumbnail } = require('../utils/thumbnailGenerator');
+const {
+    generateThumbnailFromPath, generateImageThumbnail, tieneMarcaSinMiniatura, marcarSinMiniatura, LIMITE_BYTES,
+} = require('../utils/thumbnailGenerator');
 const fs = require('fs');
+const os = require('os');
+const { pipeline } = require('stream/promises');
 
 // ── CLI args ──────────────────────────────────────────────
 const args = Object.fromEntries(
@@ -62,6 +75,26 @@ function thumbnailExists(codigoOrden, archivoId) {
     return fs.existsSync(path.join(THUMBNAILS_DIR, String(codigoOrden), `${archivoId}.jpg`));
 }
 
+// Temporales de descarga (fuera de la carpeta de miniaturas). Si una corrida muere a mitad de camino,
+// el temporal queda: la corrida siguiente borra los de más de un día.
+const TMP_DIR = path.join(os.tmpdir(), 'backfill-thumbnails');
+function limpiarTemporalesViejos() {
+    try {
+        fs.mkdirSync(TMP_DIR, { recursive: true });
+        const limite = Date.now() - 24 * 3600 * 1000;
+        for (const f of fs.readdirSync(TMP_DIR)) {
+            const p = path.join(TMP_DIR, f);
+            try { if (fs.statSync(p).mtimeMs < limite) fs.unlinkSync(p); } catch (e) { console.log(`  ⚠️  No se pudo borrar el temporal viejo ${p}: ${e.message}`); }
+        }
+    } catch (e) {
+        console.log(`  ⚠️  No se pudo revisar ${TMP_DIR}: ${e.message}`);
+    }
+}
+
+const fmtMB = (bytes) => `${(bytes / 1024 / 1024).toLocaleString('es-UY', { maximumFractionDigits: 0 })} MB`;
+// Drive genera su miniatura un rato después de la subida: hasta 2 horas, se espera a la corrida siguiente.
+const ESPERA_MINIATURA_DRIVE_MS = 2 * 3600 * 1000;
+
 // ── Lock (para cron): si otra corrida sigue viva, salir sin hacer nada ────
 const LOCK_FILE = path.join(require('os').tmpdir(), 'backfill-thumbnails.lock');
 function tomarLock() {
@@ -83,6 +116,7 @@ function tomarLock() {
 // ── Main ──────────────────────────────────────────────────
 async function main() {
     if (LOCK) tomarLock();
+    limpiarTemporalesViejos();
     const pool = await getPool();
 
     console.log('🔍 Consultando archivos PDF en ArchivosOrden...');
@@ -93,6 +127,7 @@ async function main() {
             ao.NombreArchivo,
             ao.RutaAlmacenamiento,
             ao.TipoArchivo,
+            DATEDIFF(minute, ao.FechaSubida, GETDATE()) AS MinutosDesdeSubida,
             o.CodigoOrden,
             o.NoDocERP
         FROM ArchivosOrden ao WITH(NOLOCK)
@@ -121,21 +156,35 @@ async function main() {
         process.exit(0);
     }
 
-    let ok = 0, skip = 0, fail = 0;
+    let ok = 0, skip = 0, fail = 0, marcados = 0, esperando = 0;
+    // Con --force o --noDocERP se reintenta lo marcado (es a mano: la marca es para el cron)
+    const respetarMarca = !FORCE && !FILTER_DOC;
+
+    const marcar = (CodigoOrden, ArchivoID, label, motivo) => {
+        marcarSinMiniatura(CodigoOrden, ArchivoID, motivo);
+        console.log(`  🚫 Sin miniatura, no se reintenta: ${label} — ${motivo}`);
+        marcados++;
+    };
 
     // Procesar en chunks de CONCURRENCY
     for (let i = 0; i < rows.length; i += CONCURRENCY) {
         const chunk = rows.slice(i, i + CONCURRENCY);
-        const trabajoAntes = ok + fail; // para saltear la pausa si el chunk fue puro skip
+        const trabajoAntes = ok + fail + marcados; // para saltear la pausa si el chunk fue puro skip
 
         await Promise.all(chunk.map(async row => {
-            const { ArchivoID, NombreArchivo, RutaAlmacenamiento, CodigoOrden } = row;
+            const { ArchivoID, NombreArchivo, RutaAlmacenamiento, CodigoOrden, MinutosDesdeSubida } = row;
             const fileId = extractDriveId(RutaAlmacenamiento);
             const label  = `[${CodigoOrden} / ArchivoID=${ArchivoID}] ${NombreArchivo}`;
 
             // Saltar si ya existe (salvo --force, que regenera)
             if (!FORCE && thumbnailExists(CodigoOrden, ArchivoID)) {
                 if (!QUIET) console.log(`  ⏭️  Ya existe: ${label}`);
+                skip++;
+                return;
+            }
+            // Ya se intentó y no dio miniatura: no se baja de nuevo
+            if (respetarMarca && tieneMarcaSinMiniatura(CodigoOrden, ArchivoID)) {
+                if (!QUIET) console.log(`  ⏭️  Marcado sin miniatura: ${label}`);
                 skip++;
                 return;
             }
@@ -150,32 +199,54 @@ async function main() {
                 return;
             }
 
+            // Errores de Drive o de red no dejan marca: pueden ser pasajeros y se reintentan en la corrida
+            // siguiente (no cuestan memoria: lo que no se baja no ocupa).
+            let tmp = null;
             try {
-                console.log(`  ⬇️  Descargando: ${label}`);
-                const { stream } = await driveService.getFileStream(fileId);
+                const meta = await driveService.getFileMeta(fileId);
 
-                // Convertir stream a buffer
-                const chunks = [];
-                await new Promise((resolve, reject) => {
-                    stream.on('data', d => chunks.push(d));
-                    stream.on('end', resolve);
-                    stream.on('error', reject);
-                });
-                const buffer = Buffer.concat(chunks);
+                if (meta.size > LIMITE_BYTES) {
+                    // Demasiado grande para rasterizar acá: la miniatura de Drive, sin bajar el archivo
+                    const img = await driveService.getThumbnailImage(fileId, 1000, meta.thumbnailLink)
+                        .catch(e => { console.log(`  ⚠️  No se pudo traer la miniatura de Drive: ${label} — ${e.message}`); return null; });
+                    const thumbPath = img && await generateImageThumbnail(img, CodigoOrden, ArchivoID);
+                    if (thumbPath) {
+                        console.log(`  ✅ OK con la miniatura de Drive (${fmtMB(meta.size)}): ${thumbPath}`);
+                        ok++;
+                    } else if ((MinutosDesdeSubida ?? Infinity) * 60000 < ESPERA_MINIATURA_DRIVE_MS) {
+                        console.log(`  ⏳ ${fmtMB(meta.size)}, Drive todavía no tiene miniatura: ${label} — se espera a la corrida siguiente`);
+                        esperando++;
+                    } else {
+                        marcar(CodigoOrden, ArchivoID, label, `${fmtMB(meta.size)}: más que el límite de ${fmtMB(LIMITE_BYTES)} y Drive no tiene miniatura`);
+                    }
+                    return;
+                }
+
+                // Hasta el límite: a un temporal en disco (stream, no memoria) y miniatura por ruta
+                console.log(`  ⬇️  Descargando (${fmtMB(meta.size)}): ${label}`);
+                fs.mkdirSync(TMP_DIR, { recursive: true });
+                tmp = path.join(TMP_DIR, `${ArchivoID}_${process.pid}.tmp`);
+                const { stream } = await driveService.getFileStream(fileId);
+                await pipeline(stream, fs.createWriteStream(tmp));
 
                 console.log(`  🖼️  Generando thumbnail...`);
-                const thumbPath = await generateThumbnail(buffer, CodigoOrden, ArchivoID, NombreArchivo);
-
-                if (thumbPath) {
-                    console.log(`  ✅ OK: ${thumbPath}`);
+                const r = await generateThumbnailFromPath(tmp, CodigoOrden, ArchivoID, NombreArchivo);
+                if (r.url) {
+                    console.log(`  ✅ OK: ${r.url}`);
                     ok++;
-                } else {
-                    console.log(`  ❌ Puppeteer no generó thumbnail: ${label}`);
+                } else if (r.reintentar) {
+                    console.log(`  ❌ ${r.motivo}: ${label} — se reintenta en la corrida siguiente`);
                     fail++;
+                } else {
+                    marcar(CodigoOrden, ArchivoID, label, r.motivo);
                 }
             } catch (err) {
                 console.log(`  ❌ Error: ${label} — ${err.message}`);
                 fail++;
+            } finally {
+                if (tmp && fs.existsSync(tmp)) {
+                    try { fs.unlinkSync(tmp); } catch (e) { console.log(`  ⚠️  No se pudo borrar el temporal ${tmp}: ${e.message}`); }
+                }
             }
         }));
 
@@ -183,17 +254,19 @@ async function main() {
         // trabajo real (descargó/generó). Los salteos por "ya existe" son instantáneos:
         // sin esta condición, una corrida sin nada que hacer dormía 500ms por archivo
         // (~12 min para 3 días de archivos) y el cron vivía ocupado al pedo.
-        if (i + CONCURRENCY < rows.length && (ok + fail) > trabajoAntes) await sleep(500);
+        if (i + CONCURRENCY < rows.length && (ok + fail + marcados) > trabajoAntes) await sleep(500);
     }
 
-    if (QUIET && ok === 0 && fail === 0) {
+    if (QUIET && ok === 0 && fail === 0 && marcados === 0 && esperando === 0) {
         console.log(`✅ ${new Date().toISOString()} — nada nuevo (${skip} al día).`);
     } else {
         console.log(`\n──────────────────────────────────────`);
-        console.log(`✅ OK:      ${ok}`);
-        console.log(`⏭️  Skip:   ${skip}`);
-        console.log(`❌ Fail:   ${fail}`);
-        console.log(`📦 Total:  ${total}`);
+        console.log(`✅ OK:        ${ok}`);
+        console.log(`⏭️  Skip:     ${skip}`);
+        console.log(`🚫 Marcados: ${marcados}`);
+        console.log(`⏳ Esperando a Drive: ${esperando}`);
+        console.log(`❌ Fail:     ${fail}`);
+        console.log(`📦 Total:    ${total}`);
         console.log(`──────────────────────────────────────`);
     }
     process.exit(0);

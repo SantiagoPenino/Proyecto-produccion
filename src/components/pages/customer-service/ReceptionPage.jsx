@@ -4,9 +4,32 @@ import { jsPDF } from 'jspdf';
 import { receptionService } from '../../../services/api';
 import api from '../../../services/apiClient';
 import ClienteTelaMetros from '../../common/ClienteTelaMetros';
+import { toast } from 'sonner';
+import {
+    PackagePlus, Package, Spool, Search, Loader2, UserRound, BadgeCheck, X, AlertTriangle, Lock, Zap, Check,
+    Plus, Trash2, Printer, RotateCcw, History, RefreshCw, Hash, Inbox, Tag, Receipt, Mail, Phone, CheckCircle2, XCircle,
+} from 'lucide-react';
+import Selector from '../../ui/Selector';
 
 import ActiveStockPage from './ActiveStockPage';
 
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_CHICO = 'inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-600 hover:bg-zinc-50 hover:text-zinc-800 transition-colors';
+const ROTULO = 'text-[10px] font-black uppercase tracking-widest text-zinc-400';
+const ETIQUETA = `block ${ROTULO} mb-1.5`;
+const ERROR = 'text-xs font-bold text-brand-magenta mt-1.5';
+// Campo de texto: `clases` lleva el padding y lo propio de cada uno; con error, borde y fondo magenta.
+const campo = (error, clases = 'px-3 py-2.5') => `w-full border rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 outline-none transition-colors focus:ring-2 ${error
+    ? 'bg-brand-magenta/5 border-brand-magenta/50 focus:border-brand-magenta focus:ring-brand-magenta/15'
+    : 'bg-white border-zinc-200 hover:border-zinc-300 focus:border-brand-cyan focus:ring-brand-cyan/15'} ${clases}`;
+// Filas de bobinas: en pantallas anchas una fila (#, largo, ancho, peso, excedente, quitar); en el celular un bloque de 2 columnas.
+const GRILLA_BOBINA = 'sm:grid-cols-[32px_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_32px]';
+
+// Estética nueva (27/10/2026): encabezado con el próximo código, formulario e historial claros, tipo de ingreso en
+// pastillas, selects con el Selector propio, bobinas en bloques de 2 columnas en el celular, reimpresiones siempre a la
+// vista y avisos con toast en vez de alert. La lógica no cambió; las etiquetas y el ticket que se imprimen tampoco.
 const ReceptionPage = () => {
     const [activeTab, setActiveTab] = useState('reception'); // 'reception' | 'stock'
     // Data Lists
@@ -639,739 +662,822 @@ const ReceptionPage = () => {
 
         } catch (e) {
             console.error("Error generating QR or Print:", e);
-            alert("Error al generar impresión.");
+            toast.error("Error al generar impresión.");
         }
     };
 
     return (
-        <div className="p-6 bg-slate-50 min-h-screen">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
             <iframe ref={iframeRef} className="hidden" title="PrintFrame" />
             <iframe ref={iframeTicketRef} className="hidden" title="TicketFrame" />
 
-            <div className="max-w-6xl mx-auto space-y-6">
-
-                {/* HEADERS & TABS */}
-                <div className="flex flex-col gap-4">
-                    <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 flex justify-between items-center">
-                        <div>
-                            <h1 className="text-2xl font-bold text-slate-800">Atención al Cliente</h1>
-                            <p className="text-slate-500 text-sm">Gestion de Ingresos y Despachos</p>
-                        </div>
-                        {activeTab === 'reception' && (
-                            <div className="px-4 py-2 bg-emerald-100 text-emerald-700 rounded-lg font-mono font-bold text-xl border border-emerald-200">
-                                {nextCode}
-                            </div>
-                        )}
-                    </div>
-
-                    {/* TABS REMOVED - ONLY RECEPTION VIEW AVAILABLE */}
+            {/* HEADERS & TABS */}
+            <div className="flex flex-wrap items-center gap-3">
+                <PackagePlus size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-[220px] flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Recepción</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Atención al cliente · ingreso de telas y paquetes de prendas</p>
                 </div>
+                {activeTab === 'reception' && (
+                    <div className="w-full sm:w-auto sm:ml-auto flex items-center justify-between sm:justify-start gap-3 rounded-xl border border-zinc-200 bg-white px-4 py-2"
+                        title="Código que va a tomar el próximo ingreso">
+                        <span className={ROTULO}>Próximo código</span>
+                        <span className="font-mono text-xl font-black text-brand-cyan tabular-nums leading-none">{nextCode}</span>
+                    </div>
+                )}
+                {/* TABS REMOVED - ONLY RECEPTION VIEW AVAILABLE */}
+            </div>
 
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* LEFT COLUMN: FORM */}
-                    <div className="lg:col-span-2 space-y-6">
-                        {/* ... form content ... */}
+            <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_340px] xl:grid-cols-[minmax(0,1fr)_400px] gap-4 items-start">
+                {/* LEFT COLUMN: FORM */}
+                {/* MAIN FORM CARD */}
+                <div className={`${CARD} min-w-0`}>
 
-                        {/* MAIN FORM CARD */}
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 space-y-6">
+                    {/* ── 1. Tipo de ingreso y cliente (estilo CAJA) ── */}
+                    <div className="p-4 sm:p-5 flex flex-col gap-4">
 
-                            {/* ── 1. Selector de cliente estilo CAJA ── */}
-                            <div className="space-y-3">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">1. Seleccionar Cliente *</label>
-                                    {clienteObj && (
-                                        <span className="flex items-center gap-1 text-emerald-600 text-[9px] font-black bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-full">
-                                            VERIFICADO ✓
-                                        </span>
+                        {/* ── Tipo de Ingreso (siempre visible) ── */}
+                        <div>
+                            <span className={ETIQUETA}>Tipo de ingreso *</span>
+                            <div className="grid grid-cols-2 w-full sm:w-auto sm:inline-grid rounded-xl border border-zinc-200 bg-white p-1 gap-1" role="radiogroup" aria-label="Tipo de ingreso">
+                                {[['PAQUETE DE PRENDAS', 'Paquete de prendas', Package, 'Paquete'], ['TELA DE CLIENTE', 'Tela de cliente', Spool, 'Tela de cliente']].map(([valor, texto, Icono, corto]) => (
+                                    <button key={valor} type="button" role="radio" aria-checked={formData.tipo === valor}
+                                        // Como el select de antes: solo cambia (y limpia los servicios) si se elige el otro tipo
+                                        onClick={() => { if (formData.tipo !== valor) setFormData({ ...formData, tipo: valor, servicios: [] }); }}
+                                        className={`inline-flex items-center justify-center gap-2 px-3 sm:px-4 py-2 rounded-lg text-sm font-bold whitespace-nowrap transition-colors ${formData.tipo === valor ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+                                        <Icono size={15} className={`shrink-0 ${formData.tipo === valor ? 'text-white' : 'text-brand-cyan'}`} />
+                                        <span className="min-[420px]:hidden">{corto}</span>
+                                        <span className="hidden min-[420px]:inline">{texto}</span>
+                                    </button>
+                                ))}
+                            </div>
+                        </div>
+
+                        {/* ── Selector de cliente estilo CAJA ── */}
+                        <div className="flex flex-col gap-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className={ROTULO}>Cliente *</span>
+                                {clienteObj && (
+                                    <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                        <BadgeCheck size={13} /> Verificado
+                                    </span>
+                                )}
+                            </div>
+
+                            {/* ── Buscador (solo si no hay cliente seleccionado) ── */}
+                            {!clienteObj ? (
+                                <div className="flex flex-col gap-2">
+                                    <div className="relative">
+                                        <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                                        <input
+                                            value={qCliente}
+                                            onChange={e => setQCliente(e.target.value)}
+                                            placeholder="Buscar por nombre, IDCliente, teléfono..."
+                                            aria-label="Buscar cliente"
+                                            className={campo(errors.clienteId, 'pl-9 pr-10 py-2.5 font-semibold')}
+                                        />
+                                        {buscandoCli && (
+                                            <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-cyan animate-spin" />
+                                        )}
+                                    </div>
+                                    {errors.clienteId && <p className="text-xs font-bold text-brand-magenta">{errors.clienteId}</p>}
+
+                                    {/* Resultados de búsqueda */}
+                                    {clienteResultados.length > 0 && (
+                                        <div className="flex flex-col gap-1.5 max-h-64 overflow-y-auto">
+                                            {clienteResultados.map((c, i) => {
+                                                const nombre = c.Nombre?.trim() || c.NombreFantasia?.trim() || c.IDCliente;
+                                                const fantasia = c.NombreFantasia?.trim();
+                                                return (
+                                                    <button
+                                                        key={c.CliIdCliente || c.IDCliente || i}
+                                                        type="button"
+                                                        onClick={() => seleccionarClienteCompleto(c)}
+                                                        className="w-full text-left px-3 py-2.5 bg-white border border-zinc-200 rounded-xl hover:border-brand-cyan/40 hover:bg-brand-cyan/5 transition-colors flex flex-col gap-1 group"
+                                                    >
+                                                        <div className="flex items-start justify-between gap-2">
+                                                            <span className="min-w-0 break-words text-sm font-bold text-zinc-800 group-hover:text-brand-cyan transition-colors leading-tight">{nombre}</span>
+                                                            {(c.IDCliente || c.CliIdCliente) && (
+                                                                <span className="shrink-0 text-[11px] font-mono font-bold text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">{c.IDCliente || c.CliIdCliente}</span>
+                                                            )}
+                                                        </div>
+                                                        {fantasia && nombre !== fantasia && (
+                                                            <span className="text-xs text-zinc-500 italic">"{fantasia}"</span>
+                                                        )}
+                                                        {(c.Email || c.Telefono) && (
+                                                            <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-zinc-400">
+                                                                {c.Email && <span className="inline-flex items-center gap-1 min-w-0 break-all"><Mail size={11} className="shrink-0" /> {c.Email}</span>}
+                                                                {c.Telefono && <span className="inline-flex items-center gap-1"><Phone size={11} className="shrink-0" /> {c.Telefono}</span>}
+                                                            </div>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+                                    {qCliente.trim().length >= 2 && !buscandoCli && clienteResultados.length === 0 && (
+                                        <p className="text-center py-3 text-zinc-500 text-xs font-semibold">No se encontraron clientes</p>
+                                    )}
+                                    {!qCliente.trim() && (
+                                        <p className="text-center py-3 text-zinc-400 text-xs">Use el buscador para encontrar un cliente...</p>
                                     )}
                                 </div>
-
-                                {/* ── Tipo de Ingreso (siempre visible) ── */}
-                                <div>
-                                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Tipo de Ingreso *</label>
-                                    <select
-                                        className="w-full p-2.5 border border-slate-200 rounded-xl font-bold text-slate-700 focus:ring-2 focus:ring-indigo-400 outline-none bg-white shadow-sm"
-                                        value={formData.tipo}
-                                        onChange={(e) => setFormData({ ...formData, tipo: e.target.value, servicios: [] })}
-                                    >
-                                        <option value="PAQUETE DE PRENDAS">📦 Paquete de Prendas</option>
-                                        <option value="TELA DE CLIENTE">🧵 Tela de Cliente</option>
-                                    </select>
-                                </div>
-
-                                {/* ── Buscador (solo si no hay cliente seleccionado) ── */}
-                                {!clienteObj ? (
-                                    <div className="space-y-2">
-                                        <div className="relative flex items-center group/search">
-                                            <div className="absolute left-3.5 text-slate-400 group-focus-within/search:text-indigo-500 transition-colors">
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                            ) : (
+                                /* ── Tarjeta cliente seleccionado ── */
+                                <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4 flex flex-col gap-3">
+                                    <div className="flex items-start justify-between gap-3">
+                                        <div className="flex items-start gap-3 min-w-0">
+                                            <UserRound size={22} className="text-brand-cyan shrink-0 mt-0.5" />
+                                            <div className="min-w-0">
+                                                <p className="text-sm font-black text-zinc-900 leading-tight tracking-tight break-words">
+                                                    {clienteObj.Nombre?.trim() || clienteObj.NombreFantasia?.trim()}
+                                                </p>
+                                                <p className="text-[11px] text-zinc-400 font-bold uppercase tracking-wider mt-0.5 font-mono break-all">
+                                                    IDCLIENTE: {clienteObj.IDCliente || clienteObj.CliIdCliente || '—'}
+                                                </p>
                                             </div>
-                                            <input
-                                                value={qCliente}
-                                                onChange={e => setQCliente(e.target.value)}
-                                                placeholder="Buscar por nombre, IDCliente, teléfono..."
-                                                className={`w-full bg-slate-50 border ${errors.clienteId ? 'border-red-400' : 'border-slate-200'} hover:border-slate-300 focus:border-indigo-400 focus:bg-white rounded-xl pl-10 pr-10 py-2.5 text-sm font-bold text-slate-700 placeholder-slate-400 outline-none transition-all shadow-sm`}
-                                            />
-                                            {buscandoCli && (
-                                                <div className="absolute right-3.5">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-indigo-400 animate-spin"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={limpiarCliente}
+                                            className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-500 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 transition-colors"
+                                            title="Cambiar cliente"
+                                        >
+                                            <X size={14} /> Cambiar
+                                        </button>
+                                    </div>
+
+                                    {/* Datos del cliente */}
+                                    {(clienteObj.Email || clienteObj.Telefono || clienteObj.TelefonoTrabajo || clienteObj.Direccion || clienteObj.DireccionTrabajo) && (
+                                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-x-4 gap-y-2 border-t border-zinc-200 pt-3">
+                                            {clienteObj.Email && (
+                                                <div className="min-w-0">
+                                                    <span className={`block ${ROTULO}`}>Email</span>
+                                                    <span className="text-xs font-mono text-zinc-700 break-all">{clienteObj.Email}</span>
+                                                </div>
+                                            )}
+                                            {(clienteObj.Telefono || clienteObj.TelefonoTrabajo) && (
+                                                <div className="min-w-0">
+                                                    <span className={`block ${ROTULO}`}>Teléfono</span>
+                                                    <span className="text-xs font-mono text-zinc-700 break-all">{clienteObj.Telefono || clienteObj.TelefonoTrabajo}</span>
+                                                </div>
+                                            )}
+                                            {(clienteObj.Direccion || clienteObj.DireccionTrabajo) && (
+                                                <div className="min-w-0">
+                                                    <span className={`block ${ROTULO}`}>Dirección</span>
+                                                    <span className="text-xs text-zinc-700 break-words">{clienteObj.Direccion || clienteObj.DireccionTrabajo}</span>
                                                 </div>
                                             )}
                                         </div>
-                                        {errors.clienteId && <p className="text-xs text-red-500 font-bold">{errors.clienteId}</p>}
+                                    )}
 
-                                        {/* Resultados de búsqueda */}
-                                        {clienteResultados.length > 0 && (
-                                            <div className="flex flex-col gap-1.5 mt-1 max-h-64 overflow-y-auto">
-                                                {clienteResultados.map((c, i) => {
-                                                    const nombre = c.Nombre?.trim() || c.NombreFantasia?.trim() || c.IDCliente;
-                                                    const fantasia = c.NombreFantasia?.trim();
+                                    {/* ── Spec 39: ¿esta PRE repone una solicitud de insumo abierta? ── */}
+                                    {solicitudesAbiertas.length > 0 && (
+                                        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                                            <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-amber-700 mb-1.5">
+                                                <AlertTriangle size={12} /> ¿Repone una solicitud de insumo abierta?
+                                            </span>
+                                            <Selector
+                                                className="w-full font-semibold"
+                                                value={String(solicitudRepone)}
+                                                onChange={e => setSolicitudRepone(e.target.value)}
+                                                aria-label="Solicitud de insumo que repone"
+                                                anchoLista={360}
+                                            >
+                                                <option value="">No, es un ingreso común</option>
+                                                {solicitudesAbiertas.map(s => (
+                                                    <option key={s.SolicitudID} value={String(s.SolicitudID)}>
+                                                        Sí: solicitud #{s.SolicitudID} · {s.CodigoMadre} · {s.Tipo === 'PRENDA_CLIENTE' ? 'prendas' : 'tela'} dañada ({s.Cantidad != null ? `${Number(s.Cantidad)} ${String(s.Unidad || '').trim()}` : s.Motivo})
+                                                    </option>
+                                                ))}
+                                            </Selector>
+                                            {solicitudRepone && <p className="text-[11px] text-amber-700 mt-1.5">Al guardar, la orden de falla nace con esta PRE y la solicitud #{solicitudRepone} pasa a Resuelta.</p>}
+                                        </div>
+                                    )}
+
+                                    {/* ── Badges informativos de tela (solo display, compactos) ── */}
+                                    {formData.tipo === 'TELA DE CLIENTE' && saldosTela.length > 0 && (
+                                        <div className="border-t border-zinc-200 pt-3">
+                                            <span className={ETIQUETA}>Stock de tela actual</span>
+                                            <div className="flex flex-wrap gap-1.5">
+                                                {saldosTela.map((s, i) => {
+                                                    const libre = parseFloat(s.MetrosLibres || s.MetrosDisponibles || 0);
+                                                    const pct   = parseFloat(s.PorcentajeConsumido || 0);
+                                                    const dotColor = pct >= 80 ? 'bg-brand-magenta' : pct >= 50 ? 'bg-amber-400' : 'bg-brand-cyan';
                                                     return (
-                                                        <button
-                                                            key={c.CliIdCliente || c.IDCliente || i}
-                                                            type="button"
-                                                            onClick={() => seleccionarClienteCompleto(c)}
-                                                            className="w-full text-left p-3 bg-slate-50 hover:bg-indigo-50 border border-slate-200 hover:border-indigo-300 rounded-xl cursor-pointer transition-all flex flex-col gap-1 group"
-                                                        >
-                                                            <div className="flex items-start justify-between">
-                                                                <span className="text-slate-800 font-extrabold text-sm group-hover:text-indigo-600 transition-colors leading-tight">{nombre}</span>
-                                                                {(c.IDCliente || c.CliIdCliente) && (
-                                                                    <span className="text-[9px] bg-slate-200 text-slate-600 px-1.5 py-0.5 rounded font-mono font-black shrink-0 ml-2">{c.IDCliente || c.CliIdCliente}</span>
-                                                                )}
-                                                            </div>
-                                                            {fantasia && nombre !== fantasia && (
-                                                                <span className="text-[10px] text-slate-500 italic">"{fantasia}"</span>
+                                                        // La clave lleva la tela y la posición: un cliente puede tener varias telas con el mismo InsumoID
+                                                        <span key={`${s.InsumoID}-${s.TipoTela}-${i}`}
+                                                            className="inline-flex items-center gap-1.5 max-w-full px-2.5 py-1 rounded-full border border-zinc-200 bg-white text-[11px] font-bold text-zinc-700">
+                                                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
+                                                            <span className="uppercase tracking-tight truncate">{s.TipoTela}</span>
+                                                            <span className="font-mono text-zinc-900 shrink-0">{Number(libre).toFixed(2)}m</span>
+                                                            {s.CantidadBultos > 0 && (
+                                                                <span className="text-zinc-300 font-normal">·</span>
                                                             )}
-                                                            <div className="flex flex-wrap gap-x-3 text-[10px] text-slate-400 font-medium border-t border-slate-200/60 pt-1 mt-0.5">
-                                                                {c.Email && <span>✉ {c.Email}</span>}
-                                                                {c.Telefono && <span>📞 {c.Telefono}</span>}
-                                                            </div>
-                                                        </button>
+                                                            {s.CantidadBultos > 0 && (
+                                                                <span className="font-mono text-zinc-500 shrink-0">{s.CantidadBultos} bob</span>
+                                                            )}
+                                                        </span>
                                                     );
                                                 })}
                                             </div>
-                                        )}
-                                        {qCliente.trim().length >= 2 && !buscandoCli && clienteResultados.length === 0 && (
-                                            <p className="text-center py-4 text-slate-400 text-xs font-semibold">No se encontraron clientes</p>
-                                        )}
-                                        {!qCliente.trim() && (
-                                            <p className="text-center py-4 text-slate-300 text-xs font-semibold">Use el buscador para encontrar un cliente...</p>
-                                        )}
-                                    </div>
-                                ) : (
-                                    /* ── Tarjeta cliente seleccionado ── */
-                                    <div className="bg-indigo-500/5 border border-indigo-500/20 rounded-xl p-4 shadow-sm space-y-3">
-                                        <div className="flex items-start justify-between">
-                                            <div className="flex items-center gap-3">
-                                                <div className="w-10 h-10 rounded-xl bg-white flex items-center justify-center text-indigo-500 border border-indigo-200/60 shadow-sm">
-                                                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
-                                                </div>
-                                                <div>
-                                                    <p className="text-slate-800 text-sm font-extrabold leading-tight tracking-tight">
-                                                        {clienteObj.Nombre?.trim() || clienteObj.NombreFantasia?.trim()}
-                                                    </p>
-                                                    <p className="text-[10px] text-slate-400 font-bold uppercase tracking-wider mt-0.5 font-mono">
-                                                        IDCLIENTE: {clienteObj.IDCliente || clienteObj.CliIdCliente || '—'}
-                                                    </p>
-                                                </div>
-                                            </div>
-                                            <button
-                                                type="button"
-                                                onClick={limpiarCliente}
-                                                className="bg-white hover:bg-rose-50 text-slate-400 hover:text-rose-600 p-1.5 rounded-lg transition-all border border-slate-200 hover:border-rose-200 shadow-sm"
-                                                title="Cambiar cliente"
-                                            >
-                                                <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                                            </button>
-                                        </div>
-
-                                        {/* Datos del cliente */}
-                                        <div className="flex flex-col gap-1 text-[11px] text-slate-500 font-medium border-t border-slate-200/60 pt-2.5">
-                                            {clienteObj.Email && <div>Email: <span className="font-mono text-slate-700">{clienteObj.Email}</span></div>}
-                                            {(clienteObj.Telefono || clienteObj.TelefonoTrabajo) && <div>Teléfono: <span className="font-mono text-slate-700">{clienteObj.Telefono || clienteObj.TelefonoTrabajo}</span></div>}
-                                            {(clienteObj.Direccion || clienteObj.DireccionTrabajo) && <div>Dirección: <span className="text-slate-700">{clienteObj.Direccion || clienteObj.DireccionTrabajo}</span></div>}
-                                        </div>
-
-                                        {/* ── Spec 39: ¿esta PRE repone una solicitud de insumo abierta? ── */}
-                                        {solicitudesAbiertas.length > 0 && (
-                                            <div className="border-t border-slate-200/60 pt-2.5">
-                                                <p className="text-[9px] font-black text-amber-600 uppercase tracking-widest mb-1">¿Repone una solicitud de insumo abierta?</p>
-                                                <select
-                                                    value={solicitudRepone}
-                                                    onChange={e => setSolicitudRepone(e.target.value)}
-                                                    className="w-full p-2 border border-amber-300 bg-amber-50 rounded-xl text-xs font-bold text-slate-700 outline-none"
-                                                >
-                                                    <option value="">No, es un ingreso común</option>
-                                                    {solicitudesAbiertas.map(s => (
-                                                        <option key={s.SolicitudID} value={s.SolicitudID}>
-                                                            Sí: solicitud #{s.SolicitudID} · {s.CodigoMadre} · {s.Tipo === 'PRENDA_CLIENTE' ? 'prendas' : 'tela'} dañada ({s.Cantidad != null ? `${Number(s.Cantidad)} ${String(s.Unidad || '').trim()}` : s.Motivo})
-                                                        </option>
-                                                    ))}
-                                                </select>
-                                                {solicitudRepone && <p className="text-[10px] text-amber-700 mt-1">Al guardar, la orden de falla nace con esta PRE y la solicitud #{solicitudRepone} pasa a Resuelta.</p>}
-                                            </div>
-                                        )}
-
-                                        {/* ── Badges informativos de tela (solo display, compactos) ── */}
-                                        {formData.tipo === 'TELA DE CLIENTE' && saldosTela.length > 0 && (
-                                            <div className="border-t border-slate-200/60 pt-2.5">
-                                                <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Stock de tela actual</p>
-                                                <div className="flex flex-wrap gap-1.5">
-                                                    {saldosTela.map(s => {
-                                                        const libre = parseFloat(s.MetrosLibres || s.MetrosDisponibles || 0);
-                                                        const pct   = parseFloat(s.PorcentajeConsumido || 0);
-                                                        const dotColor = pct >= 80 ? 'bg-rose-400' : pct >= 50 ? 'bg-amber-400' : 'bg-cyan-400';
-                                                        return (
-                                                            <span key={s.InsumoID}
-                                                                className="inline-flex items-center gap-1.5 px-2 py-1 rounded-lg bg-slate-800 border border-slate-700 text-[10px] font-bold text-slate-200 whitespace-nowrap">
-                                                                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotColor}`} />
-                                                                <span className="uppercase tracking-tight text-slate-300">{s.TipoTela}</span>
-                                                                <span className="font-mono text-cyan-400">{Number(libre).toFixed(2)}m</span>
-                                                                {s.CantidadBultos > 0 && (
-                                                                    <span className="text-slate-500 font-normal">·</span>
-                                                                )}
-                                                                {s.CantidadBultos > 0 && (
-                                                                    <span className="text-amber-400 font-mono">{s.CantidadBultos} bob</span>
-                                                                )}
-                                                            </span>
-                                                        );
-                                                    })}
-                                                </div>
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* 2. Dynamic Content (Services or Tela) */}
-                            <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
-                                {formData.tipo === 'PAQUETE DE PRENDAS' || formData.tipo === 'TELA DE CLIENTE' ? (
-                                    <div className="space-y-4">
-                                        {/* DESCRIPCIÓN DE TELA SI ES TELA */}
-                                        {/* FORMULARIO TELA DE CLIENTE */}
-                                        {formData.tipo === 'TELA DE CLIENTE' && (
-                                            <div className="space-y-4 animate-in fade-in slide-in-from-top-2 duration-300">
-
-                                                {/* ── 1. Área Destino ── */}
-                                                <div>
-                                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Área Destino *</label>
-                                                    <select
-                                                        className={`w-full p-2.5 border rounded-lg font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 ${errors.areaDestino ? 'border-red-500 bg-red-50' : 'border-slate-300'}`}
-                                                        value={formData.areaDestino}
-                                                        onChange={(e) => setFormData({ ...formData, areaDestino: e.target.value })}
-                                                    >
-                                                        <option value="">-- Seleccionar --</option>
-                                                        {areasList.filter(a => {
-                                                            const id   = a.AreaID;
-                                                            const name = a.Nombre.toUpperCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
-                                                            return ['SB','TWC'].includes(id) || name.includes('SUBLIMA') || name.includes('CORTE');
-                                                        }).map(a => (
-                                                            <option key={a.AreaID} value={a.AreaID}>{a.Nombre}</option>
-                                                        ))}
-                                                    </select>
-                                                    {errors.areaDestino && <p className="text-xs text-red-500 mt-1">{errors.areaDestino}</p>}
-                                                </div>
-
-                                                {/* ── Insumo fijo TELA CLIENTE ── */}
-                                                <div>
-                                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Insumo / Material</label>
-                                                    {insumosList.find(i => i.Nombre.toUpperCase().includes('TELA CLIENTE')) ? (
-                                                        <div className="w-full p-2.5 border border-slate-200 bg-slate-100 rounded-lg text-slate-600 font-bold select-none flex items-center justify-between">
-                                                            <span>{insumosList.find(i => i.Nombre.toUpperCase().includes('TELA CLIENTE')).Nombre}</span>
-                                                            <i className="fa-solid fa-lock text-slate-400 text-xs"></i>
-                                                        </div>
-                                                    ) : (
-                                                        <select
-                                                            className={`w-full p-2.5 border rounded-lg font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 ${errors.insumoId ? 'border-red-500 bg-red-50' : 'border-slate-300'}`}
-                                                            value={formData.insumoId}
-                                                            onChange={(e) => setFormData({ ...formData, insumoId: e.target.value })}
-                                                        >
-                                                            <option value="">-- Seleccionar --</option>
-                                                            {insumosList.map(ins => (
-                                                                <option key={ins.InsumoID} value={ins.InsumoID}>{ins.Nombre}</option>
-                                                            ))}
-                                                        </select>
-                                                    )}
-                                                    {errors.insumoId && <p className="text-xs text-red-500 mt-1">{errors.insumoId}</p>}
-                                                </div>
-
-                                                {/* Pregunta sumar-a-existente eliminada — cada ingreso es una bobina nueva independiente */}
-
-
-                                                {/* ── 3. Selector de tela existente (solo si sumarAExistente=true) ── */}
-                                                {sumarAExistente === true && saldosTela.length > 0 && (
-                                                    <div className="space-y-2">
-                                                        <label className="block text-xs font-bold text-slate-500 uppercase">Seleccionar tela a sumar *</label>
-                                                        <div className="space-y-1.5">
-                                                            {saldosTela.map(s => {
-                                                                const libre = parseFloat(s.MetrosLibres || s.MetrosDisponibles || 0);
-                                                                const pct   = parseFloat(s.PorcentajeConsumido || 0);
-                                                                const isSel = telaSeleccionada?.InsumoID === s.InsumoID && telaSeleccionada?.TipoTela === s.TipoTela;
-                                                                const barColor = pct >= 80 ? 'bg-rose-400' : pct >= 50 ? 'bg-amber-400' : 'bg-cyan-400';
-                                                                return (
-                                                                    <button key={`${s.InsumoID}-${s.TipoTela}`} type="button"
-                                                                        onClick={() => {
-                                                                            setTelaSeleccionada(isSel ? null : s);
-                                                                            setFormData(p => ({ ...p, telaCliente: isSel ? '' : s.TipoTela }));
-                                                                        }}
-                                                                        className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl border transition-all ${
-                                                                            isSel
-                                                                                ? 'bg-indigo-700 border-indigo-400 ring-2 ring-indigo-400 shadow-md'
-                                                                                : 'bg-slate-800 border-slate-700 hover:border-indigo-400'
-                                                                        }`}
-                                                                    >
-                                                                        <div className={`shrink-0 ${isSel ? 'text-indigo-200' : 'text-cyan-500'}`}>
-                                                                            <svg xmlns="http://www.w3.org/2000/svg" width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M13 2L4.09 12.97 12 12 11 22l8.91-10.97L12 12l1-10z"/></svg>
-                                                                        </div>
-                                                                        <span className={`text-[11px] font-black uppercase tracking-tight truncate flex-1 text-left ${isSel ? 'text-white' : 'text-slate-300'}`}>
-                                                                            {s.TipoTela}
-                                                                        </span>
-                                                                        <span className={`font-black font-mono text-sm shrink-0 ${isSel ? 'text-indigo-200' : 'text-white'}`}>
-                                                                            {Number(libre).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
-                                                                            <span className="text-[9px] ml-1 uppercase text-cyan-400">mts</span>
-                                                                        </span>
-                                                                        <div className="w-12 shrink-0">
-                                                                            <div className="w-full h-1 bg-slate-600 rounded-full overflow-hidden">
-                                                                                <div className={`h-full ${barColor}`} style={{ width: `${Math.min(pct,100)}%` }} />
-                                                                            </div>
-                                                                        </div>
-                                                                        {isSel && (
-                                                                            <div className="shrink-0 w-5 h-5 rounded-full bg-indigo-400 flex items-center justify-center">
-                                                                                <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
-                                                                            </div>
-                                                                        )}
-                                                                    </button>
-                                                                );
-                                                            })}
-                                                        </div>
-                                                    </div>
-                                                )}
-
-                                                {/* ── 4. Tabla de Bobinas (Largo × Ancho × Peso) ── */}
-                                                {(
-                                                    <div className="space-y-3">
-                                                        <div className="flex items-center justify-between">
-                                                            <label className="block text-xs font-bold text-slate-500 uppercase">Medidas por Bobina *</label>
-                                                            <span className="text-xs text-slate-400">
-                                                                Total: <strong>{formData.bobinas.reduce((s,b) => s + (parseFloat(b.largo)||0), 0).toFixed(2)} m</strong>
-                                                                {' · '}{formData.bobinas.length} bobina{formData.bobinas.length !== 1 ? 's' : ''}
-                                                            </span>
-                                                        </div>
-
-                                                        {/* Cabecera tabla */}
-                                                        <div className="grid gap-1" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 1.4fr 28px'}}>
-                                                            <div />
-                                                            <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Largo (m)</div>
-                                                            <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Ancho (m)</div>
-                                                            <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Peso (kg)</div>
-                                                            <div className="text-[10px] font-bold text-slate-400 uppercase text-center">Excedente</div>
-                                                            <div />
-                                                        </div>
-
-                                                        {/* Filas de bobinas */}
-                                                        {formData.bobinas.map((bob, idx) => (
-                                                            <div key={idx} className="grid gap-1 items-center" style={{gridTemplateColumns:'28px 1fr 1fr 1fr 1.4fr 28px'}}>
-                                                                <span className="text-xs font-bold text-slate-400 text-center">{idx+1}</span>
-                                                                <input
-                                                                    type="number" step="0.01" placeholder="0.00"
-                                                                    className={`w-full p-2 border rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 text-center ${
-                                                                        errors.metros ? 'border-red-500 bg-red-50' : 'border-slate-300'
-                                                                    }`}
-                                                                    value={bob.largo}
-                                                                    onChange={e => {
-                                                                        const nb = [...formData.bobinas];
-                                                                        nb[idx] = { ...nb[idx], largo: e.target.value };
-                                                                        setFormData({ ...formData, bobinas: nb });
-                                                                    }}
-                                                                />
-                                                                <input
-                                                                    type="number" step="0.01" placeholder="0.00"
-                                                                    className={`w-full p-2 border rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 text-center ${
-                                                                        errors.metros ? 'border-red-500 bg-red-50' : 'border-slate-300'
-                                                                    }`}
-                                                                    value={bob.ancho}
-                                                                    onChange={e => {
-                                                                        const nb = [...formData.bobinas];
-                                                                        nb[idx] = { ...nb[idx], ancho: e.target.value };
-                                                                        setFormData({ ...formData, bobinas: nb });
-                                                                    }}
-                                                                />
-                                                                <input
-                                                                    type="number" step="0.01" placeholder="0.00"
-                                                                    className="w-full p-2 border border-slate-300 rounded-lg text-sm font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500 text-center"
-                                                                    value={bob.peso}
-                                                                    onChange={e => {
-                                                                        const nb = [...formData.bobinas];
-                                                                        nb[idx] = { ...nb[idx], peso: e.target.value };
-                                                                        setFormData({ ...formData, bobinas: nb });
-                                                                    }}
-                                                                />
-                                                                <select
-                                                                    className="w-full p-2 border border-slate-300 rounded-lg text-[11px] font-bold text-slate-600 outline-none focus:ring-2 focus:ring-blue-500"
-                                                                    value={bob.decisionExcedente || ''}
-                                                                    title="Qué hacer con lo que sobre de esta bobina cuando se termine de consumir"
-                                                                    onChange={e => {
-                                                                        const nb = [...formData.bobinas];
-                                                                        nb[idx] = { ...nb[idx], decisionExcedente: e.target.value };
-                                                                        setFormData({ ...formData, bobinas: nb });
-                                                                    }}
-                                                                >
-                                                                    <option value="">Sin decidir</option>
-                                                                    <option value="DEVOLVER">Devolver al cliente</option>
-                                                                    <option value="QUEDA">Queda para otras órdenes</option>
-                                                                </select>
-                                                                <button
-                                                                    type="button"
-                                                                    onClick={() => {
-                                                                        if (formData.bobinas.length === 1) return;
-                                                                        setFormData({ ...formData, bobinas: formData.bobinas.filter((_,i) => i !== idx) });
-                                                                    }}
-                                                                    className="flex items-center justify-center w-6 h-6 rounded-full text-slate-400 hover:text-red-500 hover:bg-red-50 transition-colors disabled:opacity-30"
-                                                                    disabled={formData.bobinas.length === 1}
-                                                                    title="Eliminar bobina"
-                                                                >✕</button>
-                                                            </div>
-                                                        ))}
-
-                                                        {/* Botón agregar */}
-                                                        <button
-                                                            type="button"
-                                                            onClick={() => setFormData({ ...formData, bobinas: [...formData.bobinas, { largo: '', ancho: '', peso: '' }] })}
-                                                            className="w-full py-2 border-2 border-dashed border-slate-300 rounded-lg text-xs font-bold text-slate-500 hover:border-blue-400 hover:text-blue-500 hover:bg-blue-50 transition-colors"
-                                                        >
-                                                            + Agregar bobina
-                                                        </button>
-
-                                                        {/* Lote Proveedor (general) */}
-                                                        <div>
-                                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Lote Proveedor</label>
-                                                            <input
-                                                                type="text"
-                                                                className="w-full p-2.5 border border-slate-300 rounded-lg font-bold text-slate-700 outline-none focus:ring-2 focus:ring-blue-500"
-                                                                placeholder="Opcional..."
-                                                                value={formData.loteProv}
-                                                                onChange={(e) => setFormData({ ...formData, loteProv: e.target.value })}
-                                                            />
-                                                        </div>
-
-                                                        {errors.metros && <p className="text-xs text-red-500">{errors.metros}</p>}
-                                                    </div>
-                                                )}
-
-                                                {/* ── 5. Tipo de Tela / Descripción ── */}
-                                                {(
-                                                    <div>
-                                                        <div className="flex items-center justify-between mb-2">
-                                                            <label className="text-xs font-bold text-slate-500 uppercase">Tipo de Tela / Descripción *</label>
-                                                            {telaSeleccionada && (
-                                                                <span className="flex items-center gap-1 text-[9px] font-black text-indigo-600 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded-full">
-                                                                    🔒 Sumando a tela existente
-                                                                </span>
-                                                            )}
-                                                        </div>
-                                                        <input
-                                                            type="text"
-                                                            readOnly={!!telaSeleccionada}
-                                                            className={`w-full p-3 border rounded-lg font-bold focus:ring-2 outline-none transition-all ${
-                                                                errors.telaCliente
-                                                                    ? 'border-red-500 bg-red-50'
-                                                                    : telaSeleccionada
-                                                                        ? 'border-indigo-300 bg-indigo-50 text-indigo-700 cursor-not-allowed focus:ring-0'
-                                                                        : 'border-slate-300 focus:ring-blue-500'
-                                                            }`}
-                                                            placeholder="Ej: Algodón Jersey Negro..."
-                                                            value={formData.telaCliente}
-                                                            onChange={(e) => !telaSeleccionada && setFormData({ ...formData, telaCliente: e.target.value })}
-                                                        />
-                                                        {telaSeleccionada && (
-                                                            <p className="text-[9px] text-indigo-500 font-bold mt-1">Descripción bloqueada — corresponde a la tela seleccionada</p>
-                                                        )}
-                                                        {errors.telaCliente && <p className="text-xs text-red-500 mt-1">{errors.telaCliente}</p>}
-                                                    </div>
-                                                )}
-
-                                            </div>
-                                        )}
-
-                                        {/* SERVICIOS (Solo para PAQUETE DE PRENDAS) */}
-                                        {formData.tipo === 'PAQUETE DE PRENDAS' && (
-                                            <div>
-                                                <label className="block text-xs font-bold text-slate-500 uppercase mb-2">Servicios Solicitados *</label>
-                                                <div className="flex flex-wrap gap-2">
-                                                    {servicesList.filter(srv => {
-                                                        const s = srv.toLowerCase();
-                                                        // Solo Bordado o Estampado para Paquetes
-                                                        return s.includes('bordado') || s.includes('estampado') || s.includes('costura');
-                                                    }).map(srv => (
-                                                        <button
-                                                            key={srv}
-                                                            onClick={() => handleServiceToggle(srv)}
-                                                            className={`px-3 py-1.5 rounded-full text-sm font-semibold transition-all shadow-sm ${formData.servicios.includes(srv)
-                                                                ? 'bg-blue-600 text-white ring-2 ring-blue-300'
-                                                                : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'
-                                                                }`}
-                                                        >
-                                                            {formData.servicios.includes(srv) && <i className="fa-solid fa-check mr-1.5"></i>}
-                                                            {srv}
-                                                        </button>
-                                                    ))}
-                                                    {servicesList.length === 0 && <span className="text-xs text-slate-400 font-style-italic">Cargando servicios...</span>}
-                                                </div>
-                                                {errors.servicios && <p className="text-xs text-red-500 mt-2">{errors.servicios}</p>}
-                                            </div>
-                                        )}
-                                    </div>
-                                ) : null}
-                            </div>
-
-                            {/* 3. Bultos, Referencias & Observaciones */}
-                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                                {/* Bultos y Cantidad */}
-                                <div className="grid grid-cols-2 gap-2">
-                                    <div>
-                                        <label className="block text-xs font-bold text-slate-500 uppercase mb-1">
-                                            Bultos
-                                        </label>
-                                        {formData.tipo === 'TELA DE CLIENTE' ? (
-                                            // Para tela de cliente: se actualiza automáticamente con la cantidad de bobinas
-                                            <div className="w-full p-2.5 border border-slate-200 bg-slate-100 rounded-lg font-black text-slate-700 text-center select-none">
-                                                {formData.bobinas?.length ?? 1}
-                                                <span className="text-[10px] font-normal text-slate-400 ml-1">bobina{(formData.bobinas?.length ?? 1) !== 1 ? 's' : ''}</span>
-                                            </div>
-                                        ) : (
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                className="w-full p-2.5 border border-slate-300 rounded-lg font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-                                                value={formData.bultos}
-                                                onChange={(e) => setFormData({ ...formData, bultos: Math.max(1, parseInt(e.target.value) || 1) })}
-                                            />
-                                        )}
-                                    </div>
-
-                                    {/* NUEVO: Total Prendas (Solo para Paquetes) */}
-                                    {formData.tipo === 'PAQUETE DE PRENDAS' && (
-                                        <div className="animate-in fade-in zoom-in duration-300">
-                                            <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Total Prendas</label>
-                                            <input
-                                                type="number"
-                                                min="1"
-                                                className="w-full p-2.5 border border-slate-300 rounded-lg font-bold text-slate-700 focus:ring-2 focus:ring-blue-500 outline-none"
-                                                placeholder="Total..."
-                                                value={formData.cantidadPrendas || ''}
-                                                onChange={(e) => setFormData({ ...formData, cantidadPrendas: e.target.value })}
-                                            />
                                         </div>
                                     )}
-                                </div>
-
-                                {/* Referencias: solo visible para PAQUETE DE PRENDAS */}
-                                {formData.tipo !== 'TELA DE CLIENTE' && (
-                                <div className="md:col-span-2">
-                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1 flex justify-between">
-                                        <span>Referencias (OC / Pedido Pendiente)</span>
-                                        <button onClick={addRef} className="text-blue-500 hover:text-blue-700 text-[10px] uppercase font-bold">+ Agregar</button>
-                                    </label>
-                                    <div className="space-y-2">
-                                        {formData.referencias.map((ref, idx) => (
-                                            <div key={idx} className="flex gap-2 relative">
-                                                {possibleOrders.length > 0 ? (
-                                                    <select
-                                                        className="flex-1 p-2 border border-slate-300 rounded-lg text-sm bg-white"
-                                                        value={ref}
-                                                        onChange={(e) => handleRefChange(idx, e.target.value)}
-                                                    >
-                                                        <option value="">-- Seleccionar Orden Pendiente --</option>
-                                                        {possibleOrders.map(o => (
-                                                            <option key={o.OrdenID} value={o.CodigoOrden}>
-                                                                {o.CodigoOrden} ({o.DescripcionTrabajo ? o.DescripcionTrabajo.substring(0, 30) : ''})
-                                                            </option>
-                                                        ))}
-                                                        <option value="OTRA">Otra / Manual...</option>
-                                                    </select>
-                                                ) : (
-                                                    <>
-                                                        <input
-                                                            type="text"
-                                                            className="flex-1 p-2 border border-slate-300 rounded-lg text-sm"
-                                                            placeholder={`Ref #${idx + 1} o Seleccionar Orden`}
-                                                            value={ref}
-                                                            onChange={(e) => handleRefChange(idx, e.target.value)}
-                                                            list={`ordersList-${idx}`}
-                                                        />
-                                                        <datalist id={`ordersList-${idx}`}>
-                                                        </datalist>
-                                                    </>
-                                                )}
-                                                {formData.referencias.length > 1 && (
-                                                    <button onClick={() => removeRef(idx)} className="text-slate-400 hover:text-red-500 px-2">
-                                                        <i className="fa-solid fa-trash"></i>
-                                                    </button>
-                                                )}
-                                            </div>
-                                        ))}
-                                    </div>
-                                </div>
-                                )}
-
-
-                                {/* Observaciones */}
-                                <div className="md:col-span-3">
-                                    <label className="block text-xs font-bold text-slate-500 uppercase mb-1">Observaciones</label>
-                                    <textarea
-                                        rows="2"
-                                        className="w-full p-2.5 border border-slate-300 rounded-lg text-slate-700 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                                        placeholder="Notas adicionales..."
-                                        value={formData.observaciones || ''}
-                                        onChange={(e) => setFormData({ ...formData, observaciones: e.target.value })}
-                                    />
-                                </div>
-                            </div>
-
-
-                            {/* ACTIONS */}
-                            <div className="pt-4 border-t border-slate-100 flex items-center justify-between">
-                                <button onClick={handleReset} className="px-4 py-2 text-slate-500 hover:bg-slate-100 rounded-lg font-semibold transition-colors">
-                                    Cancelar / Reset
-                                </button>
-                                <button
-                                    onClick={handleSaveAndPrint}
-                                    disabled={loading}
-                                    className="px-6 py-3 bg-slate-900 text-white rounded-lg font-bold hover:bg-slate-800 shadow-lg shadow-slate-900/20 active:scale-95 transition-all flex items-center gap-2"
-                                >
-                                    {loading ? (
-                                        <>Procesando...</>
-                                    ) : (
-                                        <><i className="fa-solid fa-print"></i> Guardar e Imprimir</>
-                                    )}
-                                </button>
-                            </div>
-                            {message && (
-                                <div className={`p-3 rounded-lg text-sm font-bold text-center ${message.type === 'error' ? 'bg-red-50 text-red-600' : 'bg-green-50 text-green-600'}`}>
-                                    {message.text}
                                 </div>
                             )}
                         </div>
                     </div>
 
-                    {/* RIGHT COLUMN: HISTORY */}
-                    <div className="space-y-4">
-                        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-4 h-full flex flex-col">
-                            <div className="flex justify-between items-center mb-4">
-                                <h2 className="font-bold text-slate-700">Historial Reciente</h2>
-                                <button onClick={loadHistory} className="text-slate-400 hover:text-blue-500"><i className="fa-solid fa-rotate-right"></i></button>
-                            </div>
+                    {/* 2. Dynamic Content (Services or Tela) */}
+                    <div className="p-4 sm:p-5 border-t border-zinc-100">
+                        {formData.tipo === 'PAQUETE DE PRENDAS' || formData.tipo === 'TELA DE CLIENTE' ? (
+                            <div className="flex flex-col gap-4">
+                                {/* DESCRIPCIÓN DE TELA SI ES TELA */}
+                                {/* FORMULARIO TELA DE CLIENTE */}
+                                {formData.tipo === 'TELA DE CLIENTE' && (
+                                    <div className="flex flex-col gap-4 animate-in fade-in slide-in-from-top-2 duration-300">
 
-                            {/* Mini Filters */}
-                            <div className="grid grid-cols-2 gap-2 mb-3 text-xs">
-                                <input
-                                    placeholder="Cliente..."
-                                    className="p-1.5 border rounded"
-                                    value={historyFilters.cliente}
-                                    onChange={e => setHistoryFilters({ ...historyFilters, cliente: e.target.value })}
-                                />
-                                <input
-                                    placeholder="Orden..."
-                                    className="p-1.5 border rounded"
-                                    value={historyFilters.orden}
-                                    onChange={e => setHistoryFilters({ ...historyFilters, orden: e.target.value })}
-                                />
-                                <button onClick={loadHistory} className="col-span-2 bg-slate-100 py-1 rounded text-slate-600 font-bold hover:bg-slate-200">Buscar</button>
-                            </div>
-
-                            <div className="flex-1 overflow-auto max-h-[600px] space-y-3 pr-1">
-                                {historyLoading ? (
-                                    <p className="text-center text-slate-400 text-sm py-4">Cargando...</p>
-                                ) : history.length === 0 ? (
-                                    <p className="text-center text-slate-400 text-sm py-4">Sin registros.</p>
-                                ) : (
-                                    history.map(item => (
-                                        <div key={item.RecepcionID} className="p-3 border rounded-lg hover:shadow-md transition-shadow bg-slate-50 group">
-                                            <div className="flex justify-between items-start">
-                                                <div>
-                                                    <span className="text-xs font-bold text-slate-500 block">{item.Codigo}</span>
-                                                    <h4 className="font-bold text-slate-800 text-sm">{item.ClienteNombre || item.Cliente}</h4>
-                                                    <p className="text-xs text-slate-600 mt-1 line-clamp-2">{item.Detalle}</p>
-                                                    <p className="text-[10px] text-slate-400 mt-1">{new Date(item.FechaRecepcion).toLocaleDateString()} {new Date(item.FechaRecepcion).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p>
-                                                </div>
-                                                <div className="flex flex-col gap-1 ml-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                                    <button
-                                                        onClick={async () => {
-                                                            try {
-                                                                const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
-                                                                const bobinas = isTela
-                                                                    ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
-                                                                    : [];
-                                                                await printLabel({
-                                                                    orden:             item.Codigo,
-                                                                    clienteId:         item.Cliente,
-                                                                    clienteNombre:     item.ClienteNombre || item.Cliente,
-                                                                    idCliente:         item.IDCliente || item.Cliente,
-                                                                    areaLabelResuelto: item.ProximoServicio || '',
-                                                                    tipo:              isTela ? 'TELA DE CLIENTE' : item.Tipo,
-                                                                    bultos:            item.CantidadBultos,
-                                                                    servicios:         isTela ? [] : (item.Detalle || '').split('/'),
-                                                                    telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
-                                                                    referencias:       item.Referencias ? [item.Referencias] : [],
-                                                                    fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
-                                                                    bobinas,
-                                                                });
-                                                            } catch(e) {
-                                                                console.error('Error reimprimir etiqueta:', e);
-                                                                alert('Error al reimprimir etiqueta: ' + e.message);
-                                                            }
-                                                        }}
-                                                        className="p-1.5 bg-white border rounded shadow text-slate-600 hover:text-blue-600 hover:border-blue-400 transition-all text-xs"
-                                                        title="Reimprimir Etiqueta"
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            {/* ── 1. Área Destino ── */}
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Área destino *</span>
+                                                <div className={`rounded-xl ${errors.areaDestino ? 'ring-2 ring-brand-magenta/30' : ''}`}>
+                                                    <Selector
+                                                        className="w-full font-semibold"
+                                                        value={String(formData.areaDestino)}
+                                                        onChange={(e) => setFormData({ ...formData, areaDestino: e.target.value })}
+                                                        aria-label="Área destino"
                                                     >
-                                                        <i className="fa-solid fa-tag"></i>
-                                                    </button>
-                                                    <button
-                                                        onClick={async () => {
-                                                            try {
-                                                                const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
-                                                                const localUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
-                                                                const bobinas = isTela
-                                                                    ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
-                                                                    : [];
-                                                                await printClientTicket({
-                                                                    orden:             item.Codigo,
-                                                                    clienteId:         item.Cliente,
-                                                                    clienteNombre:     item.ClienteNombre || item.Cliente,
-                                                                    idCliente:         item.IDCliente || item.Cliente,
-                                                                    areaLabelResuelto: item.ProximoServicio || '',
-                                                                    areaDestino:       item.ProximoServicio || '',
-                                                                    telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
-                                                                    bobinas,
-                                                                    metros:            item.TotalMetros || 0,
-                                                                    bultos:            item.CantidadBultos,
-                                                                    observaciones:     item.Observaciones || '',
-                                                                    fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
-                                                                    operario:          localUser?.nombre || localUser?.usuario || '',
-                                                                });
-                                                            } catch(e) {
-                                                                console.error('Error reimprimir comprobante:', e);
-                                                                alert('Error al reimprimir comprobante: ' + e.message);
-                                                            }
-                                                        }}
-                                                        className="p-1.5 bg-white border rounded shadow text-slate-600 hover:text-amber-600 hover:border-amber-400 transition-all text-xs"
-                                                        title="Reimprimir Comprobante"
-                                                    >
-                                                        <i className="fa-solid fa-receipt"></i>
-                                                    </button>
+                                                        <option value="">Seleccionar...</option>
+                                                        {areasList.filter(a => {
+                                                            const id   = a.AreaID;
+                                                            const name = a.Nombre.toUpperCase().normalize('NFD').replace(/[̀-ͯ]/g, '');
+                                                            return ['SB','TWC'].includes(id) || name.includes('SUBLIMA') || name.includes('CORTE');
+                                                        }).map(a => (
+                                                            <option key={a.AreaID} value={String(a.AreaID)}>{a.Nombre}</option>
+                                                        ))}
+                                                    </Selector>
                                                 </div>
+                                                {errors.areaDestino && <p className={ERROR}>{errors.areaDestino}</p>}
+                                            </div>
 
+                                            {/* ── Insumo fijo TELA CLIENTE ── */}
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Insumo / material</span>
+                                                {insumosList.find(i => i.Nombre.toUpperCase().includes('TELA CLIENTE')) ? (
+                                                    <div className="w-full px-3 py-2.5 border border-zinc-200 bg-zinc-50 rounded-xl text-sm font-semibold text-zinc-600 select-none flex items-center justify-between gap-2"
+                                                        title="Insumo fijo para la tela de cliente">
+                                                        <span className="truncate">{insumosList.find(i => i.Nombre.toUpperCase().includes('TELA CLIENTE')).Nombre}</span>
+                                                        <Lock size={14} className="text-zinc-400 shrink-0" />
+                                                    </div>
+                                                ) : (
+                                                    <div className={`rounded-xl ${errors.insumoId ? 'ring-2 ring-brand-magenta/30' : ''}`}>
+                                                        <Selector
+                                                            className="w-full font-semibold"
+                                                            value={String(formData.insumoId)}
+                                                            onChange={(e) => setFormData({ ...formData, insumoId: e.target.value })}
+                                                            aria-label="Insumo o material"
+                                                            anchoLista={320}
+                                                        >
+                                                            <option value="">Seleccionar...</option>
+                                                            {insumosList.map(ins => (
+                                                                <option key={ins.InsumoID} value={String(ins.InsumoID)}>{ins.Nombre}</option>
+                                                            ))}
+                                                        </Selector>
+                                                    </div>
+                                                )}
+                                                {errors.insumoId && <p className={ERROR}>{errors.insumoId}</p>}
                                             </div>
                                         </div>
-                                    ))
+
+                                        {/* Pregunta sumar-a-existente eliminada — cada ingreso es una bobina nueva independiente */}
+
+
+                                        {/* ── 3. Selector de tela existente (solo si sumarAExistente=true) ── */}
+                                        {sumarAExistente === true && saldosTela.length > 0 && (
+                                            <div>
+                                                <span className={ETIQUETA}>Seleccionar tela a sumar *</span>
+                                                <div className="flex flex-col gap-1.5">
+                                                    {saldosTela.map(s => {
+                                                        const libre = parseFloat(s.MetrosLibres || s.MetrosDisponibles || 0);
+                                                        const pct   = parseFloat(s.PorcentajeConsumido || 0);
+                                                        const isSel = telaSeleccionada?.InsumoID === s.InsumoID && telaSeleccionada?.TipoTela === s.TipoTela;
+                                                        const barColor = pct >= 80 ? 'bg-brand-magenta' : pct >= 50 ? 'bg-amber-400' : 'bg-brand-cyan';
+                                                        return (
+                                                            <button key={`${s.InsumoID}-${s.TipoTela}`} type="button"
+                                                                onClick={() => {
+                                                                    setTelaSeleccionada(isSel ? null : s);
+                                                                    setFormData(p => ({ ...p, telaCliente: isSel ? '' : s.TipoTela }));
+                                                                }}
+                                                                className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl border transition-colors ${
+                                                                    isSel
+                                                                        ? 'bg-brand-cyan/5 border-brand-cyan ring-2 ring-brand-cyan/15'
+                                                                        : 'bg-white border-zinc-200 hover:border-brand-cyan/40'
+                                                                }`}
+                                                            >
+                                                                <Zap size={13} className="shrink-0 text-brand-cyan" />
+                                                                <span className={`text-[11px] font-black uppercase tracking-tight truncate flex-1 text-left ${isSel ? 'text-brand-cyan' : 'text-zinc-700'}`}>
+                                                                    {s.TipoTela}
+                                                                </span>
+                                                                <span className="font-black font-mono text-sm shrink-0 text-zinc-900">
+                                                                    {Number(libre).toLocaleString('es-UY', { minimumFractionDigits: 2 })}
+                                                                    <span className="text-[9px] ml-1 uppercase text-zinc-400">mts</span>
+                                                                </span>
+                                                                <div className="w-12 shrink-0">
+                                                                    <div className="w-full h-1 bg-zinc-200 rounded-full overflow-hidden">
+                                                                        <div className={`h-full ${barColor}`} style={{ width: `${Math.min(pct,100)}%` }} />
+                                                                    </div>
+                                                                </div>
+                                                                {isSel && <Check size={15} className="shrink-0 text-brand-cyan" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* ── 4. Tabla de Bobinas (Largo × Ancho × Peso) ── */}
+                                        {(
+                                            <div className="flex flex-col gap-2">
+                                                <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+                                                    <span className={ROTULO}>Medidas por bobina *</span>
+                                                    <span className="text-xs text-zinc-500">
+                                                        Total: <strong className="font-black text-zinc-800 tabular-nums">{formData.bobinas.reduce((s,b) => s + (parseFloat(b.largo)||0), 0).toFixed(2)} m</strong>
+                                                        {' · '}{formData.bobinas.length} bobina{formData.bobinas.length !== 1 ? 's' : ''}
+                                                    </span>
+                                                </div>
+
+                                                {/* Cabecera tabla (en el celular cada bobina lleva sus rótulos) */}
+                                                <div className={`hidden sm:grid gap-2 ${GRILLA_BOBINA}`}>
+                                                    <div />
+                                                    <div className="text-[10px] font-black uppercase tracking-wide text-zinc-400 text-center">Largo (m)</div>
+                                                    <div className="text-[10px] font-black uppercase tracking-wide text-zinc-400 text-center">Ancho (m)</div>
+                                                    <div className="text-[10px] font-black uppercase tracking-wide text-zinc-400 text-center">Peso (kg)</div>
+                                                    <div className="text-[10px] font-black uppercase tracking-wide text-zinc-400 text-center" title="Qué hacer con lo que sobre de esta bobina cuando se termine de consumir">Excedente</div>
+                                                    <div />
+                                                </div>
+
+                                                {/* Filas de bobinas */}
+                                                {formData.bobinas.map((bob, idx) => (
+                                                    <div key={idx} className={`relative grid grid-cols-2 gap-2 rounded-xl border border-zinc-200 bg-zinc-50 p-3 sm:p-0 sm:border-0 sm:bg-transparent sm:items-center ${GRILLA_BOBINA}`}>
+                                                        <div className="col-span-2 sm:col-span-1 h-8 sm:h-auto pr-10 sm:pr-0 flex items-center sm:justify-center text-xs font-black text-zinc-600 sm:text-zinc-400 tabular-nums">
+                                                            <span className="sm:hidden mr-1">Bobina</span>{idx+1}
+                                                        </div>
+                                                        <label className="min-w-0">
+                                                            <span className="sm:hidden block text-[10px] font-black uppercase tracking-wide text-zinc-400 mb-1">Largo (m)</span>
+                                                            <input
+                                                                type="number" step="0.01" placeholder="0.00"
+                                                                className={campo(errors.metros, 'px-2 py-2.5 text-center font-bold tabular-nums')}
+                                                                value={bob.largo}
+                                                                onChange={e => {
+                                                                    const nb = [...formData.bobinas];
+                                                                    nb[idx] = { ...nb[idx], largo: e.target.value };
+                                                                    setFormData({ ...formData, bobinas: nb });
+                                                                }}
+                                                            />
+                                                        </label>
+                                                        <label className="min-w-0">
+                                                            <span className="sm:hidden block text-[10px] font-black uppercase tracking-wide text-zinc-400 mb-1">Ancho (m)</span>
+                                                            <input
+                                                                type="number" step="0.01" placeholder="0.00"
+                                                                className={campo(errors.metros, 'px-2 py-2.5 text-center font-bold tabular-nums')}
+                                                                value={bob.ancho}
+                                                                onChange={e => {
+                                                                    const nb = [...formData.bobinas];
+                                                                    nb[idx] = { ...nb[idx], ancho: e.target.value };
+                                                                    setFormData({ ...formData, bobinas: nb });
+                                                                }}
+                                                            />
+                                                        </label>
+                                                        <label className="min-w-0">
+                                                            <span className="sm:hidden block text-[10px] font-black uppercase tracking-wide text-zinc-400 mb-1">Peso (kg)</span>
+                                                            <input
+                                                                type="number" step="0.01" placeholder="0.00"
+                                                                className={campo(false, 'px-2 py-2.5 text-center font-bold tabular-nums')}
+                                                                value={bob.peso}
+                                                                onChange={e => {
+                                                                    const nb = [...formData.bobinas];
+                                                                    nb[idx] = { ...nb[idx], peso: e.target.value };
+                                                                    setFormData({ ...formData, bobinas: nb });
+                                                                }}
+                                                            />
+                                                        </label>
+                                                        <div className="min-w-0">
+                                                            <span className="sm:hidden block text-[10px] font-black uppercase tracking-wide text-zinc-400 mb-1">Excedente</span>
+                                                            <Selector
+                                                                className="w-full font-semibold"
+                                                                value={bob.decisionExcedente || ''}
+                                                                title="Qué hacer con lo que sobre de esta bobina cuando se termine de consumir"
+                                                                aria-label={`Excedente de la bobina ${idx + 1}`}
+                                                                anchoLista={230}
+                                                                onChange={e => {
+                                                                    const nb = [...formData.bobinas];
+                                                                    nb[idx] = { ...nb[idx], decisionExcedente: e.target.value };
+                                                                    setFormData({ ...formData, bobinas: nb });
+                                                                }}
+                                                            >
+                                                                <option value="">Sin decidir</option>
+                                                                <option value="DEVOLVER">Devolver al cliente</option>
+                                                                <option value="QUEDA">Queda para otras órdenes</option>
+                                                            </Selector>
+                                                        </div>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => {
+                                                                if (formData.bobinas.length === 1) return;
+                                                                setFormData({ ...formData, bobinas: formData.bobinas.filter((_,i) => i !== idx) });
+                                                            }}
+                                                            className="absolute top-2 right-2 sm:static w-8 h-8 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/10 transition-colors disabled:opacity-30 disabled:pointer-events-none"
+                                                            disabled={formData.bobinas.length === 1}
+                                                            title="Eliminar bobina"
+                                                            aria-label={`Eliminar la bobina ${idx + 1}`}
+                                                        ><Trash2 size={15} /></button>
+                                                    </div>
+                                                ))}
+
+                                                {/* Botón agregar */}
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setFormData({ ...formData, bobinas: [...formData.bobinas, { largo: '', ancho: '', peso: '' }] })}
+                                                    className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 border border-dashed border-zinc-300 rounded-xl text-sm font-bold text-zinc-500 hover:border-brand-cyan hover:text-brand-cyan hover:bg-brand-cyan/5 transition-colors"
+                                                >
+                                                    <Plus size={15} /> Agregar bobina
+                                                </button>
+
+                                                {errors.metros && <p className="text-xs font-bold text-brand-magenta">{errors.metros}</p>}
+                                            </div>
+                                        )}
+
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                            {/* Lote Proveedor (general) */}
+                                            <div className="min-w-0">
+                                                <label htmlFor="recepcion-lote" className={ETIQUETA}>Lote proveedor</label>
+                                                <input
+                                                    id="recepcion-lote"
+                                                    type="text"
+                                                    className={campo(false, 'px-3 py-2.5 font-semibold')}
+                                                    placeholder="Opcional..."
+                                                    value={formData.loteProv}
+                                                    onChange={(e) => setFormData({ ...formData, loteProv: e.target.value })}
+                                                />
+                                            </div>
+
+                                            {/* ── 5. Tipo de Tela / Descripción ── */}
+                                            {(
+                                                <div className="min-w-0">
+                                                    <div className="flex flex-wrap items-center justify-between gap-2 mb-1.5">
+                                                        <label htmlFor="recepcion-tela" className={ROTULO}>Tipo de tela / descripción *</label>
+                                                        {telaSeleccionada && (
+                                                            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full border bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20">
+                                                                <Lock size={11} /> Sumando a tela existente
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <input
+                                                        id="recepcion-tela"
+                                                        type="text"
+                                                        readOnly={!!telaSeleccionada}
+                                                        className={
+                                                            errors.telaCliente
+                                                                ? campo(true, 'px-3 py-2.5 font-semibold')
+                                                                : telaSeleccionada
+                                                                    ? 'w-full px-3 py-2.5 border rounded-xl text-sm font-semibold outline-none bg-brand-cyan/5 border-brand-cyan/30 text-brand-cyan cursor-not-allowed'
+                                                                    : campo(false, 'px-3 py-2.5 font-semibold')
+                                                        }
+                                                        placeholder="Ej: Algodón Jersey Negro..."
+                                                        value={formData.telaCliente}
+                                                        onChange={(e) => !telaSeleccionada && setFormData({ ...formData, telaCliente: e.target.value })}
+                                                    />
+                                                    {telaSeleccionada && (
+                                                        <p className="text-[11px] text-brand-cyan font-bold mt-1.5">Descripción bloqueada — corresponde a la tela seleccionada</p>
+                                                    )}
+                                                    {errors.telaCliente && <p className={ERROR}>{errors.telaCliente}</p>}
+                                                </div>
+                                            )}
+                                        </div>
+
+                                    </div>
+                                )}
+
+                                {/* SERVICIOS (Solo para PAQUETE DE PRENDAS) */}
+                                {formData.tipo === 'PAQUETE DE PRENDAS' && (
+                                    <div>
+                                        <span className={ETIQUETA}>Servicios solicitados *</span>
+                                        <div className="flex flex-wrap gap-2">
+                                            {servicesList.filter(srv => {
+                                                const s = srv.toLowerCase();
+                                                // Solo Bordado o Estampado para Paquetes
+                                                return s.includes('bordado') || s.includes('estampado') || s.includes('costura');
+                                            }).map(srv => (
+                                                <button
+                                                    key={srv}
+                                                    type="button"
+                                                    onClick={() => handleServiceToggle(srv)}
+                                                    aria-pressed={formData.servicios.includes(srv)}
+                                                    className={`inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border text-sm font-bold transition-colors ${formData.servicios.includes(srv)
+                                                        ? 'bg-zinc-900 border-zinc-900 text-white'
+                                                        : 'bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-50 hover:text-zinc-800'
+                                                        }`}
+                                                >
+                                                    {formData.servicios.includes(srv) && <Check size={14} />}
+                                                    {srv}
+                                                </button>
+                                            ))}
+                                            {servicesList.length === 0 && <span className="text-xs text-zinc-400 italic">Cargando servicios...</span>}
+                                        </div>
+                                        {errors.servicios && <p className={ERROR}>{errors.servicios}</p>}
+                                    </div>
                                 )}
                             </div>
+                        ) : null}
+                    </div>
+
+                    {/* 3. Bultos, Referencias & Observaciones */}
+                    <div className="p-4 sm:p-5 border-t border-zinc-100 grid grid-cols-1 md:grid-cols-3 gap-4">
+                        {/* Bultos y Cantidad */}
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="min-w-0">
+                                <label htmlFor="recepcion-bultos" className={ETIQUETA}>
+                                    Bultos
+                                </label>
+                                {formData.tipo === 'TELA DE CLIENTE' ? (
+                                    // Para tela de cliente: se actualiza automáticamente con la cantidad de bobinas
+                                    <div className="w-full px-3 py-2.5 border border-zinc-200 bg-zinc-50 rounded-xl text-sm font-black text-zinc-800 text-center select-none tabular-nums"
+                                        title="Se cuenta solo: uno por bobina">
+                                        {formData.bobinas?.length ?? 1}
+                                        <span className="text-[11px] font-semibold text-zinc-400 ml-1">bobina{(formData.bobinas?.length ?? 1) !== 1 ? 's' : ''}</span>
+                                    </div>
+                                ) : (
+                                    <input
+                                        id="recepcion-bultos"
+                                        type="number"
+                                        min="1"
+                                        className={campo(false, 'px-3 py-2.5 font-bold tabular-nums')}
+                                        value={formData.bultos}
+                                        onChange={(e) => setFormData({ ...formData, bultos: Math.max(1, parseInt(e.target.value) || 1) })}
+                                    />
+                                )}
+                            </div>
+
+                            {/* NUEVO: Total Prendas (Solo para Paquetes) */}
+                            {formData.tipo === 'PAQUETE DE PRENDAS' && (
+                                <div className="min-w-0 animate-in fade-in zoom-in duration-300">
+                                    <label htmlFor="recepcion-prendas" className={ETIQUETA}>Total prendas</label>
+                                    <input
+                                        id="recepcion-prendas"
+                                        type="number"
+                                        min="1"
+                                        className={campo(false, 'px-3 py-2.5 font-bold tabular-nums')}
+                                        placeholder="Total..."
+                                        value={formData.cantidadPrendas || ''}
+                                        onChange={(e) => setFormData({ ...formData, cantidadPrendas: e.target.value })}
+                                    />
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Referencias: solo visible para PAQUETE DE PRENDAS */}
+                        {formData.tipo !== 'TELA DE CLIENTE' && (
+                        <div className="md:col-span-2 min-w-0">
+                            <div className="flex items-center justify-between gap-2 mb-1.5">
+                                <span className={ROTULO}>Referencias (OC / pedido pendiente)</span>
+                                <button type="button" onClick={addRef} className="inline-flex items-center gap-1 text-xs font-bold text-brand-cyan hover:text-brand-cyan/80 transition-colors">
+                                    <Plus size={13} /> Agregar
+                                </button>
+                            </div>
+                            <div className="flex flex-col gap-2">
+                                {formData.referencias.map((ref, idx) => (
+                                    <div key={idx} className="flex gap-2 relative">
+                                        {possibleOrders.length > 0 ? (
+                                            <div className="flex-1 min-w-0">
+                                                <Selector
+                                                    className="w-full font-semibold"
+                                                    value={String(ref)}
+                                                    onChange={(e) => handleRefChange(idx, e.target.value)}
+                                                    aria-label={`Referencia ${idx + 1}`}
+                                                    anchoLista={320}
+                                                >
+                                                    <option value="">-- Seleccionar Orden Pendiente --</option>
+                                                    {possibleOrders.map(o => (
+                                                        <option key={o.OrdenID} value={String(o.CodigoOrden)}>
+                                                            {o.CodigoOrden} ({o.DescripcionTrabajo ? o.DescripcionTrabajo.substring(0, 30) : ''})
+                                                        </option>
+                                                    ))}
+                                                    <option value="OTRA">Otra / Manual...</option>
+                                                </Selector>
+                                            </div>
+                                        ) : (
+                                            <>
+                                                <input
+                                                    type="text"
+                                                    className={campo(false, 'flex-1 min-w-0 px-3 py-2.5')}
+                                                    placeholder={`Ref #${idx + 1} o Seleccionar Orden`}
+                                                    value={ref}
+                                                    onChange={(e) => handleRefChange(idx, e.target.value)}
+                                                    list={`ordersList-${idx}`}
+                                                />
+                                                <datalist id={`ordersList-${idx}`}>
+                                                </datalist>
+                                            </>
+                                        )}
+                                        {formData.referencias.length > 1 && (
+                                            <button type="button" onClick={() => removeRef(idx)} title="Quitar referencia" aria-label={`Quitar la referencia ${idx + 1}`}
+                                                className="shrink-0 w-[42px] inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white text-zinc-400 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 transition-colors">
+                                                <Trash2 size={15} />
+                                            </button>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        )}
+
+
+                        {/* Observaciones */}
+                        <div className="md:col-span-3">
+                            <label htmlFor="recepcion-observaciones" className={ETIQUETA}>Observaciones</label>
+                            <textarea
+                                id="recepcion-observaciones"
+                                rows="2"
+                                className={campo(false, 'px-3 py-2.5 resize-y')}
+                                placeholder="Notas adicionales..."
+                                value={formData.observaciones || ''}
+                                onChange={(e) => setFormData({ ...formData, observaciones: e.target.value })}
+                            />
                         </div>
                     </div>
+
+
+                    {/* ACTIONS */}
+                    <div className="px-4 sm:px-5 py-4 border-t border-zinc-100 flex flex-col-reverse sm:flex-row sm:items-center sm:justify-between gap-2">
+                        <button type="button" onClick={handleReset} className={BTN_SECUNDARIO}>
+                            <RotateCcw size={15} className="text-brand-cyan" /> Cancelar / Reset
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleSaveAndPrint}
+                            disabled={loading}
+                            className={BTN_PRINCIPAL}
+                        >
+                            {loading ? (
+                                <><Loader2 size={15} className="animate-spin" /> Procesando...</>
+                            ) : (
+                                <><Printer size={15} /> Guardar e Imprimir</>
+                            )}
+                        </button>
+                    </div>
+                    {message && (
+                        <div className="px-4 sm:px-5 pb-4">
+                            <div className={`flex items-start gap-2 p-3 rounded-xl border text-sm font-bold ${message.type === 'error'
+                                ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
+                                : message.type === 'warning'
+                                    ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
+                                {message.type === 'error' ? <XCircle size={16} className="shrink-0 mt-0.5" /> : message.type === 'warning' ? <AlertTriangle size={16} className="shrink-0 mt-0.5" /> : <CheckCircle2 size={16} className="shrink-0 mt-0.5" />}
+                                <span className="min-w-0 break-words">{message.text}</span>
+                            </div>
+                        </div>
+                    )}
                 </div>
 
+                {/* RIGHT COLUMN: HISTORY */}
+                <div className={`${CARD} p-4 flex flex-col gap-3 min-w-0`}>
+                    <div className="flex items-center justify-between gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
+                            <History size={18} className="text-brand-cyan shrink-0" />
+                            <h2 className="text-sm font-black uppercase tracking-wide text-zinc-800">Historial reciente</h2>
+                        </div>
+                        <button type="button" onClick={loadHistory} title="Actualizar" aria-label="Actualizar el historial"
+                            className="shrink-0 w-9 h-9 inline-flex items-center justify-center rounded-xl border border-zinc-200 bg-white text-brand-cyan hover:bg-zinc-50 transition-colors">
+                            <RefreshCw size={15} className={historyLoading ? 'animate-spin' : ''} />
+                        </button>
+                    </div>
+
+                    {/* Mini Filters */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <div className="relative min-w-0">
+                            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                            <input
+                                placeholder="Cliente..."
+                                aria-label="Filtrar por cliente"
+                                className={campo(false, 'pl-8 pr-2 py-2')}
+                                value={historyFilters.cliente}
+                                onChange={e => setHistoryFilters({ ...historyFilters, cliente: e.target.value })}
+                            />
+                        </div>
+                        <div className="relative min-w-0">
+                            <Hash size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                            <input
+                                placeholder="Orden..."
+                                aria-label="Filtrar por orden"
+                                className={campo(false, 'pl-8 pr-2 py-2')}
+                                value={historyFilters.orden}
+                                onChange={e => setHistoryFilters({ ...historyFilters, orden: e.target.value })}
+                            />
+                        </div>
+                        <button type="button" onClick={loadHistory} className={`${BTN_SECUNDARIO} col-span-2`}>
+                            <Search size={15} className="text-brand-cyan" /> Buscar
+                        </button>
+                    </div>
+
+                    <div className="flex flex-col gap-2 lg:max-h-[640px] lg:overflow-y-auto lg:pr-1">
+                        {historyLoading ? (
+                            <div className="flex items-center justify-center gap-2 py-8 text-sm text-zinc-400">
+                                <Loader2 size={18} className="animate-spin text-brand-cyan" /> Cargando...
+                            </div>
+                        ) : history.length === 0 ? (
+                            <div className="flex flex-col items-center text-center py-8">
+                                <Inbox size={40} className="text-brand-cyan mb-2" />
+                                <span className="text-sm font-bold text-zinc-700">Sin registros.</span>
+                                <span className="text-xs text-zinc-400 mt-1">Probá con otro cliente u orden.</span>
+                            </div>
+                        ) : (
+                            history.map(item => (
+                                <div key={item.RecepcionID} className="rounded-xl border border-zinc-200 bg-white p-3 hover:border-zinc-300 transition-colors">
+                                    <div className="flex items-start justify-between gap-2">
+                                        <span className="font-mono text-sm font-black text-zinc-900">{item.Codigo}</span>
+                                        <span className="shrink-0 text-[11px] text-zinc-400 tabular-nums">
+                                            {new Date(item.FechaRecepcion).toLocaleDateString('es-UY')} {new Date(item.FechaRecepcion).toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}
+                                        </span>
+                                    </div>
+                                    <h4 className="font-bold text-zinc-800 text-sm mt-0.5 break-words">{item.ClienteNombre || item.Cliente}</h4>
+                                    <p className="text-xs text-zinc-500 mt-0.5 line-clamp-2 break-words">{item.Detalle}</p>
+                                    {/* Reimpresiones: siempre a la vista (antes aparecían al pasar el mouse y en el celular no se veían) */}
+                                    <div className="flex flex-wrap justify-end gap-1.5 mt-2.5 pt-2.5 border-t border-zinc-100">
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
+                                                    const bobinas = isTela
+                                                        ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
+                                                        : [];
+                                                    await printLabel({
+                                                        orden:             item.Codigo,
+                                                        clienteId:         item.Cliente,
+                                                        clienteNombre:     item.ClienteNombre || item.Cliente,
+                                                        idCliente:         item.IDCliente || item.Cliente,
+                                                        areaLabelResuelto: item.ProximoServicio || '',
+                                                        tipo:              isTela ? 'TELA DE CLIENTE' : item.Tipo,
+                                                        bultos:            item.CantidadBultos,
+                                                        servicios:         isTela ? [] : (item.Detalle || '').split('/'),
+                                                        telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
+                                                        referencias:       item.Referencias ? [item.Referencias] : [],
+                                                        fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
+                                                        bobinas,
+                                                    });
+                                                } catch(e) {
+                                                    console.error('Error reimprimir etiqueta:', e);
+                                                    toast.error('Error al reimprimir etiqueta: ' + e.message);
+                                                }
+                                            }}
+                                            className={BTN_CHICO}
+                                            title="Reimprimir Etiqueta"
+                                        >
+                                            <Tag size={13} className="text-brand-cyan" /> Etiqueta
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={async () => {
+                                                try {
+                                                    const isTela = item.Tipo === 'TELA CLIENTE' || item.Tipo === 'TELA DE CLIENTE';
+                                                    const localUser = (() => { try { return JSON.parse(localStorage.getItem('user') || '{}'); } catch { return {}; } })();
+                                                    const bobinas = isTela
+                                                        ? await api.get(`/reception/bobinas-by-orden/${encodeURIComponent(item.Codigo)}`).then(r => r.data?.bobinas || []).catch(() => [])
+                                                        : [];
+                                                    await printClientTicket({
+                                                        orden:             item.Codigo,
+                                                        clienteId:         item.Cliente,
+                                                        clienteNombre:     item.ClienteNombre || item.Cliente,
+                                                        idCliente:         item.IDCliente || item.Cliente,
+                                                        areaLabelResuelto: item.ProximoServicio || '',
+                                                        areaDestino:       item.ProximoServicio || '',
+                                                        telaCliente:       isTela ? (item.Detalle || '').replace('TELA: ', '') : '',
+                                                        bobinas,
+                                                        metros:            item.TotalMetros || 0,
+                                                        bultos:            item.CantidadBultos,
+                                                        observaciones:     item.Observaciones || '',
+                                                        fechaHora:         new Date(item.FechaRecepcion).toLocaleString(),
+                                                        operario:          localUser?.nombre || localUser?.usuario || '',
+                                                    });
+                                                } catch(e) {
+                                                    console.error('Error reimprimir comprobante:', e);
+                                                    toast.error('Error al reimprimir comprobante: ' + e.message);
+                                                }
+                                            }}
+                                            className={BTN_CHICO}
+                                            title="Reimprimir Comprobante"
+                                        >
+                                            <Receipt size={13} className="text-brand-cyan" /> Comprobante
+                                        </button>
+                                    </div>
+                                </div>
+                            ))
+                        )}
+                    </div>
+                </div>
             </div>
-        </div >
+        </div>
     );
 };
 

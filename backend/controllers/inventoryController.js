@@ -1,5 +1,16 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+const devolucionSvc = require('../services/telaClienteDevolucionFisicaService');
+
+// TelaClienteEventos la crea el servicio de devoluciones (ensureSchema) la primera vez que se usa.
+// Una vez que existe, no se vuelve a preguntar.
+let eventosTelaExiste = false;
+async function tablaEventosTelaExiste(pool) {
+    if (eventosTelaExiste) return true;
+    const r = await pool.request().query("SELECT OBJECT_ID('dbo.TelaClienteEventos', 'U') AS Id");
+    eventosTelaExiste = r.recordset[0].Id != null;
+    return eventosTelaExiste;
+}
 
 // ==========================================
 // 1. OBTENER INVENTARIO (POR AREA)
@@ -28,6 +39,22 @@ exports.getInventoryByArea = async (req, res) => {
         // Construcción dinámica de parámetros para IN clause
         const areaParams = areas.map((_, i) => `@A${i}`).join(',');
         // Genera: @A0, @A1, ...
+
+        // Solicitud de devolución/descarte en curso de cada bobina de cliente: la tarjeta muestra
+        // «Devolución pedida» en vez del botón (antes dejaba pedir otra y el servicio la rechazaba).
+        // La tabla la crea el servicio de devoluciones la primera vez: sin ella, no se pide.
+        const hayEventos = await tablaEventosTelaExiste(pool);
+        const solicitudSelect = hayEventos
+            ? ', sol.SolicitudTevID, sol.SolicitudAccion, sol.SolicitudEstado'
+            : '';
+        const solicitudApply = hayEventos ? `
+                    OUTER APPLY (
+                        SELECT TOP 1 e.TevID AS SolicitudTevID, e.Accion AS SolicitudAccion, e.Estado AS SolicitudEstado
+                        FROM dbo.TelaClienteEventos e WITH(NOLOCK)
+                        WHERE e.BobinaID = ib2.BobinaID AND ib2.ClienteID IS NOT NULL
+                          AND e.Tipo = 'SOLICITUD_CLIENTE' AND e.Estado IN ('PENDIENTE', 'APROBADA')
+                        ORDER BY e.TevID DESC
+                    ) sol` : '';
 
         const query = `
             SELECT 
@@ -72,8 +99,8 @@ exports.getInventoryByArea = async (req, res) => {
                                        OR r.Codigo = LEFT(ib2.Referencia, LEN(ib2.Referencia) - 2)
                                    ), ''),
                                NULL
-                           ) AS DescripcionTela
-                    FROM InventarioBobinas ib2
+                           ) AS DescripcionTela${solicitudSelect}
+                    FROM InventarioBobinas ib2${solicitudApply}
                     WHERE ib2.InsumoID = i.InsumoID AND ib2.AreaID IN (${areaParams})
                       AND ib2.Estado IN (${estadosBobina})
                     ORDER BY ib2.FechaIngreso ASC
@@ -204,6 +231,13 @@ exports.closeBobina = async (req, res) => {
             // Si finish es true, se marca Agotado aunque queden metros (se asume merma final)
             const nuevoEstado = (finish || metrosRemanentesReal < 0.5) ? 'Agotado' : 'Disponible';
 
+            // Con una devolución pedida por el cliente no se cierra acá: se resuelve en la bandeja.
+            // Así se perdieron las 6 solicitudes del portal (INF-SIS-2026-11).
+            if (nuevoEstado === 'Agotado' && await tablaEventosTelaExiste(pool)) {
+                const sol = await devolucionSvc.solicitudAbierta(new sql.Request(transaction), bobinaId);
+                if (sol) throw devolucionSvc.errorBobinaConSolicitud(sol);
+            }
+
             await new sql.Request(transaction)
                 .input('BID', sql.Int, bobinaId)
                 .input('Real', sql.Decimal(10, 2), metrosRemanentesReal)
@@ -251,10 +285,46 @@ exports.closeBobina = async (req, res) => {
         }
 
     } catch (err) {
+        if (err.statusCode) {
+            logger.warn(`[CIERRE BOBINA] ${bobinaId} rechazado (usuario ${userId}): ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message });
+        }
         logger.error("Error closeBobina:", err);
         res.status(500).json({ error: err.message });
     }
 };
+
+// ==========================================
+// 4.0 UNA BOBINA (el modal de ajuste la relee al abrirse)
+// ==========================================
+// La lista de inventario puede tener un saldo viejo: las órdenes descuentan tela solas y una
+// cancelación la devuelve. El modal pide el saldo actual para no frenar ni dejar pasar con ese número.
+exports.getBobina = async (req, res) => {
+    const bobinaId = parseInt(req.params.id, 10);
+    if (!(bobinaId > 0)) return res.status(400).json({ error: 'Bobina inválida.' });
+    try {
+        const pool = await getPool();
+        const r = await pool.request()
+            .input('BID', sql.Int, bobinaId)
+            .query(`SELECT BobinaID, CodigoEtiqueta, MetrosRestantes, Estado, Ancho, AnchoReal
+                    FROM InventarioBobinas WITH(NOLOCK) WHERE BobinaID = @BID`);
+        if (!r.recordset.length) return res.status(404).json({ error: 'Bobina no encontrada.' });
+        // Con una devolución pedida, el modal no deja cerrarla ni agotarla (se resuelve en la bandeja).
+        const sol = await tablaEventosTelaExiste(pool) ? await devolucionSvc.solicitudAbierta(pool.request(), bobinaId) : null;
+        res.json({
+            ...r.recordset[0],
+            SolicitudTevID: sol?.TevID ?? null, SolicitudAccion: sol?.Accion ?? null,
+            SolicitudEstado: sol?.Estado ?? null, SolicitudFecha: sol?.FechaCreacion ?? null,
+        });
+    } catch (err) {
+        logger.error("Error getBobina:", err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// Error de un control (no de una falla): sale con su código y va al log como aviso.
+const errorControl = (statusCode, mensaje, extra = {}) => Object.assign(new Error(mensaje), { statusCode, extra });
+const fmtMetros = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // ==========================================
 // 4.1 AJUSTE MANUAL (REBAJA SIN CIERRE)
@@ -281,14 +351,29 @@ exports.adjustBobina = async (req, res) => {
         try {
             const current = await new sql.Request(transaction)
                 .input('BID', sql.Int, bobinaId)
-                .query("SELECT MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal FROM InventarioBobinas WHERE BobinaID = @BID");
+                .query("SELECT MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal, Estado FROM InventarioBobinas WHERE BobinaID = @BID");
 
-            if (current.recordset.length === 0) throw new Error("Bobina no encontrada");
+            if (current.recordset.length === 0) {
+                throw errorControl(404, 'Bobina no encontrada. Solución: recargá el inventario; puede que la hayan cerrado o borrado.');
+            }
 
-            const { MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal: anchoPrev } = current.recordset[0];
+            const { MetrosRestantes, InsumoID, CodigoEtiqueta, Ancho, AnchoReal: anchoPrev, Estado } = current.recordset[0];
             const nuevoMetraje = MetrosRestantes + delta;
 
-            if (nuevoMetraje < 0) throw new Error("El stock no puede quedar negativo");
+            if (nuevoMetraje < 0) {
+                throw errorControl(400,
+                    `${CodigoEtiqueta} tiene ${fmtMetros(MetrosRestantes)} m en el sistema y la rebaja es de ${fmtMetros(-delta)} m: quedaría en negativo. ` +
+                    'Solución: si el rollo tiene más tela, usá «Corrección (fijar)» con los metros reales; si se terminó, «Cerrar / Terminar».',
+                    { metrosRestantes: Number(MetrosRestantes) });
+            }
+
+            // Un ajuste que agota la bobina (≤ 0,5 m, ver el CASE de abajo) es un cierre: con una devolución
+            // pedida por el cliente se resuelve en la bandeja (INF-SIS-2026-11).
+            const agota = tieneMetros && ['Disponible', 'En Uso'].includes(Estado) && nuevoMetraje <= 0.5;
+            if (agota && await tablaEventosTelaExiste(pool)) {
+                const sol = await devolucionSvc.solicitudAbierta(new sql.Request(transaction), bobinaId);
+                if (sol) throw devolucionSvc.errorBobinaConSolicitud(sol);
+            }
 
             // Update Bobina (metros siempre; ancho solo si se envió corrección)
             const upd = new sql.Request(transaction)
@@ -353,6 +438,10 @@ exports.adjustBobina = async (req, res) => {
             throw inner;
         }
     } catch (err) {
+        if (err.statusCode) {
+            logger.warn(`[AJUSTE BOBINA] ${bobinaId} rechazado (usuario ${userId}): ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message, ...err.extra });
+        }
         logger.error("Error adjustBobina:", err);
         res.status(500).json({ error: err.message });
     }

@@ -351,6 +351,8 @@ function ModalConsumoTela({ tela, onClose }) {
     const [pidiendo, setPidiendo] = useState(null); // { bobinaId, accion }
     const [pidiendoBusy, setPidiendoBusy] = useState(false);
     const [pidiendoMsg, setPidiendoMsg] = useState(null); // { bobinaId, tipo, texto }
+    // Las que se pidieron recién, hasta que se vuelva a leer el estado de cuenta: { [bobinaId]: { accion, fecha } }
+    const [pedidasAhora, setPedidasAhora] = useState({});
 
     const enviarSolicitud = async (bobinaId) => {
         setPidiendoBusy(true);
@@ -359,6 +361,7 @@ function ModalConsumoTela({ tela, onClose }) {
                 accion: pidiendo.accion,
             });
             setPidiendoMsg({ bobinaId, tipo: 'ok', texto: pidiendo.accion === 'DEVOLVER' ? 'Solicitud de devolución enviada. Te avisamos cuando esté lista.' : 'Solicitud de descarte enviada.' });
+            setPedidasAhora(p => ({ ...p, [bobinaId]: { accion: pidiendo.accion, fecha: new Date().toISOString() } }));
             setPidiendo(null);
         } catch (e) {
             setPidiendoMsg({ bobinaId, tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo enviar la solicitud.' });
@@ -393,6 +396,11 @@ function ModalConsumoTela({ tela, onClose }) {
                     ancho: m.Ancho, peso: m.Peso,
                     referencia: m.ReferenciaOrden || m.CodigoRecepcion || '',
                     fechaIngreso: null, movimientos: [],
+                    // Última solicitud de devolución/descarte (viene igual en cada movimiento del bulto):
+                    // abierta → «Devolución pedida»; rechazada → el motivo.
+                    solicitud: m.SolicitudTevID
+                        ? { accion: m.SolicitudAccion, fecha: m.SolicitudFecha, estado: m.SolicitudEstado, motivo: m.SolicitudMotivo }
+                        : null,
                 });
             }
             const b = map.get(m.BobinaID);
@@ -505,6 +513,14 @@ function ModalConsumoTela({ tela, onClose }) {
                                     </div>
                                 </button>
 
+                                {/* Pedido rechazado: el motivo queda acá aunque el aviso al celular no le haya llegado */}
+                                {b.solicitud?.estado === 'RECHAZADA' && !pedidasAhora[b.bobinaId] && b.solicitud.motivo && (
+                                    <p className="px-4 pb-2 -mt-1 flex items-start gap-1.5 text-[11px] text-zinc-400">
+                                        <Undo2 size={12} className="shrink-0 mt-px" />
+                                        <span>Tu pedido de {b.solicitud.accion === 'DESCARTAR' ? 'descarte' : 'devolución'} no se pudo hacer: {b.solicitud.motivo}</span>
+                                    </p>
+                                )}
+
                                 {!['agotado', 'cerrado'].includes(String(b.estado || '').toLowerCase()) && (
                                     <div className="px-4 pb-3 -mt-1">
                                         {pidiendo?.bobinaId === b.bobinaId ? (
@@ -531,7 +547,18 @@ function ModalConsumoTela({ tela, onClose }) {
                                                     </button>
                                                 </div>
                                             </div>
-                                        ) : (
+                                        ) : (pedidasAhora[b.bobinaId] || ['PENDIENTE', 'APROBADA'].includes(b.solicitud?.estado)) ? (() => {
+                                            // Ya hay una en curso: no se ofrece pedir otra (el servidor la rechazaba).
+                                            const sol = pedidasAhora[b.bobinaId] || b.solicitud;
+                                            const descarte = sol.accion === 'DESCARTAR';
+                                            const dia = sol.fecha ? new Date(sol.fecha).toLocaleDateString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit' }) : '';
+                                            return (
+                                                <p className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-400">
+                                                    <Undo2 size={12} />
+                                                    {descarte ? 'Descarte pedido' : 'Devolución pedida'}{dia ? ` el ${dia}` : ''} · te avisamos cuando esté {descarte ? 'resuelto' : 'lista'}
+                                                </p>
+                                            );
+                                        })() : (
                                             <button onClick={() => { setPidiendo({ bobinaId: b.bobinaId, accion: 'DEVOLVER' }); setPidiendoMsg(null); }}
                                                 className="flex items-center gap-1.5 text-[11px] font-bold text-amber-400 hover:text-amber-300">
                                                 <Undo2 size={12} /> Solicitar devolución de excedente

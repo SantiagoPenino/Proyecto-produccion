@@ -1,8 +1,31 @@
 import React, { useState, useEffect, useRef, forwardRef, useImperativeHandle } from 'react';
+import { createPortal } from 'react-dom';
 import { toast } from 'sonner';
-import { Search, ShoppingCart, Package, Plus, Minus, Trash2, CheckCircle, RefreshCw, X, User } from 'lucide-react';
+import { Search, ShoppingCart, Package, Plus, Minus, Trash2, CheckCircle, RefreshCw, X, User, Loader2, PackageSearch, UserX, Printer, ArrowLeftRight } from 'lucide-react';
 import { wmsService } from '../../../services/api';
 import { clientsService } from '../../../services/api';
+
+// Estética nueva (27/10/2026): encabezado de una línea, barra de herramientas aparte (interruptores brand-cyan,
+// buscador, Sincronizar), catálogo en tarjetas blancas y carrito CLARO (Confirmar en brand-cyan, Cotizar secundario),
+// montos en formato uruguayo con «$» / «US$», ventanas claras en z-[6000]. En el celular el carrito queda abajo y una
+// barra pegada abajo lleva hasta él. Embebido (/ventas/pedido-prenda) sigue oscuro como antes. La lógica no cambió; el ticket
+// que se imprime tampoco.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed';
+const CAMPO = 'w-full pl-9 pr-4 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+// Interruptores de la barra (prendido: pista brand-cyan)
+const INTERRUPTOR = 'inline-flex items-center justify-center sm:justify-start gap-2 px-3 py-2 rounded-xl border text-xs sm:text-sm font-bold whitespace-nowrap transition-colors flex-1 sm:flex-none';
+const INTERRUPTOR_SI = 'border-brand-cyan/30 bg-brand-cyan/5 text-zinc-800';
+const INTERRUPTOR_NO = 'border-zinc-200 bg-white text-zinc-500 hover:bg-zinc-50';
+const PISTA = 'relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors';
+const PERILLA = 'inline-block h-4 w-4 rounded-full bg-white shadow transition-transform';
+// Botones − / + de las cantidades
+const PASO = 'w-8 h-8 inline-flex items-center justify-center text-zinc-500 hover:bg-zinc-50 hover:text-brand-cyan transition-colors disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-zinc-500';
+// Montos en pantalla: formato uruguayo con 2 decimales y «$» / «US$» (el ticket impreso sigue con su formato)
+const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const simbolo = (moneda) => (moneda === 'USD' ? 'US$' : '$');
 
 // [PRENDAS] embedded/initialClient son ADITIVOS: sin props (uso normal en
 // /atencion-cliente/pedidos-wms) el comportamiento es idéntico al de siempre.
@@ -403,26 +426,26 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
     // const totalCart = ... calculated at the top
 
     return (
-        <div className={embedded ? "relative" : "p-6 bg-slate-50 min-h-screen relative"}>
+        <div className={embedded ? "relative" : "px-3 sm:px-6 py-5 min-h-full text-zinc-700 relative"}>
 
-            {/* Modal Variantes */}
-            {variantModalItem && (
-                <div className="fixed inset-0 bg-slate-900/70 z-[100] flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col">
-                        
+            {/* Modal Variantes (en un portal: dentro del contenido quedaba debajo de la barra de arriba) */}
+            {variantModalItem && createPortal(
+                <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+
                         {/* Modal Header */}
-                        <div className="flex justify-between items-center p-5 border-b border-slate-100 bg-slate-50">
-                            <div>
-                                <h3 className="font-bold text-slate-800 text-lg">Opciones: {variantModalItem.Descripcion}</h3>
-                                <p className="text-xs text-slate-500 font-medium">Selecciona la variante que deseas añadir</p>
+                        <div className="flex justify-between items-start gap-3 px-5 py-4 border-b border-zinc-100">
+                            <div className="min-w-0">
+                                <h3 className="font-black text-zinc-900 text-lg leading-tight">Opciones: {variantModalItem.Descripcion}</h3>
+                                <p className="text-xs text-zinc-400 mt-1">Selecciona la variante que deseas añadir</p>
                             </div>
-                            <button type="button" onClick={() => setVariantModalItem(null)} className="p-2 bg-white rounded-full text-slate-400 hover:text-slate-700 shadow-sm border border-slate-200 transition-colors">
+                            <button type="button" onClick={() => setVariantModalItem(null)} aria-label="Cerrar" className="shrink-0 text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors">
                                 <X size={18} />
                             </button>
                         </div>
 
                         {/* Modal Body */}
-                        <div className="p-6 overflow-y-auto max-h-[60vh] custom-scrollbar">
+                        <div className="px-5 py-4 overflow-y-auto max-h-[60vh] custom-scrollbar">
                             {(() => {
                                 // Color mapping function
                                 const getColorHex = (colorName) => {
@@ -467,7 +490,7 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                 });
 
                                 let sizes = [...new Set(parsedVariants.map(v => v.size))];
-                                
+
                                 // Ordenar Talles: Números primero, Letras después
                                 const letterOrder = { 'XS': 1, 'S': 2, 'M': 3, 'L': 4, 'XL': 5, 'XXL': 6, '2XL': 7, '3XL': 8, '4XL': 9, '5XL': 10, 'ÚNICA': 99 };
                                 sizes.sort((a, b) => {
@@ -483,19 +506,19 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                 });
 
                                 const colorsForSize = parsedVariants.filter(v => v.size === (selectedSize || sizes[0]));
-                                
+
                                 // Auto-select size if not selected
                                 if (!selectedSize && sizes.length > 0) {
                                     setTimeout(() => setSelectedSize(sizes[0]), 0);
                                 }
 
                                 return (
-                                    <div className="space-y-6">
+                                    <div className="space-y-5">
                                         {/* Talles */}
                                         <div>
-                                            <div className="flex justify-between items-end mb-3">
-                                                <label className="text-sm font-bold text-slate-700">Talle</label>
-                                                {selectedSize && <span className="text-xs font-bold text-blue-600">{selectedSize}</span>}
+                                            <div className="flex justify-between items-end mb-2">
+                                                <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Talle</label>
+                                                {selectedSize && <span className="text-xs font-bold text-brand-cyan">{selectedSize}</span>}
                                             </div>
                                             <div className="flex flex-wrap gap-2">
                                                 {sizes.map(sz => (
@@ -508,10 +531,11 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                                             setSelectedVariantId(null);
                                                             setVariantQty(1);
                                                         }}
-                                                        className={`min-w-[3rem] px-3 py-2 rounded-xl font-bold text-sm transition-all border-2 ${
-                                                            selectedSize === sz 
-                                                            ? 'bg-blue-600 border-blue-600 text-white shadow-md shadow-blue-500/30'
-                                                            : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
+                                                        aria-pressed={selectedSize === sz}
+                                                        className={`min-w-[3rem] px-3 py-2 rounded-xl font-bold text-sm transition-colors border ${
+                                                            selectedSize === sz
+                                                            ? 'bg-zinc-900 border-zinc-900 text-white'
+                                                            : 'bg-white border-zinc-200 text-zinc-600 hover:border-zinc-300 hover:bg-zinc-50'
                                                         }`}
                                                     >
                                                         {sz}
@@ -523,9 +547,9 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                         {/* Colores */}
                                         {selectedSize && (
                                             <div>
-                                                <div className="flex justify-between items-end mb-3">
-                                                    <label className="text-sm font-bold text-slate-700">Color</label>
-                                                    {selectedColor && <span className="text-xs font-bold text-blue-600">{selectedColor}</span>}
+                                                <div className="flex justify-between items-end mb-2">
+                                                    <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Color</label>
+                                                    {selectedColor && <span className="text-xs font-bold text-brand-cyan">{selectedColor}</span>}
                                                 </div>
                                                 <div className="grid grid-cols-2 gap-2">
                                                     {colorsForSize.map(v => {
@@ -542,45 +566,44 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                                                 }
                                                             }}
                                                             disabled={v.stock <= 0}
-                                                            className={`relative px-4 py-3 rounded-xl border-2 text-left flex flex-col transition-all active:scale-95 flex-1 ${
+                                                            aria-pressed={selectedColor === v.color}
+                                                            className={`relative px-3 py-2.5 rounded-xl border text-left flex flex-col transition-colors active:scale-95 flex-1 ${
                                                                 selectedColor === v.color
-                                                                ? 'bg-blue-50 border-blue-500 shadow-md shadow-blue-500/20'
-                                                                : v.stock > 0 
-                                                                    ? 'bg-white border-slate-200 hover:border-slate-300' 
-                                                                    : 'bg-slate-50 border-slate-100 opacity-50 cursor-not-allowed'
+                                                                ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan'
+                                                                : v.stock > 0
+                                                                    ? 'bg-white border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50'
+                                                                    : 'bg-zinc-50 border-zinc-100 opacity-50 cursor-not-allowed'
                                                             }`}
                                                         >
                                                             <div className="flex items-center justify-between mb-1">
-                                                                <div className="flex items-center gap-2">
+                                                                <div className="flex items-center gap-2 min-w-0 pr-5">
                                                                     {hexColor !== 'transparent' && (
-                                                                        <div 
-                                                                            className="w-4 h-4 rounded-full border border-slate-200 shadow-sm shrink-0" 
+                                                                        <div
+                                                                            className="w-4 h-4 rounded-full border border-zinc-300 shrink-0"
                                                                             style={{ backgroundColor: hexColor }}
                                                                         ></div>
                                                                     )}
-                                                                    <span className={`font-bold text-sm line-clamp-1 ${selectedColor === v.color ? 'text-blue-700' : 'text-slate-700'}`}>
+                                                                    <span className={`font-bold text-xs sm:text-sm leading-snug line-clamp-2 ${selectedColor === v.color ? 'text-brand-cyan' : 'text-zinc-700'}`}>
                                                                         {v.color}
                                                                     </span>
                                                                 </div>
                                                             </div>
                                                             {v.stock < 9999 && (
-                                                                <span className={`text-[11px] font-bold ${v.stock > 10 ? 'text-emerald-500' : v.stock > 0 ? 'text-amber-500' : 'text-red-500'}`}>
+                                                                <span className={`text-[11px] font-bold ${v.stock > 10 ? 'text-emerald-600' : v.stock > 0 ? 'text-amber-600' : 'text-brand-magenta'}`}>
                                                                     Stock: {v.stock}
                                                                 </span>
                                                             )}
-                                                            <span className="text-[11px] font-black text-blue-700 mt-0.5">
+                                                            <span className="text-[11px] font-black text-zinc-800 tabular-nums mt-0.5">
                                                                 {v.precio_excepcion != null
-                                                                    ? `${v.moneda_excepcion === 'USD' ? 'U$S' : '$'} ${Number(v.precio_excepcion).toFixed(2)}`
-                                                                    : `${variantModalItem.moneda === 'USD' ? 'U$S' : '$'} ${Number(variantModalItem.precio || 0).toFixed(2)}`
+                                                                    ? `${simbolo(v.moneda_excepcion)} ${fmt(v.precio_excepcion)}`
+                                                                    : `${simbolo(variantModalItem.moneda)} ${fmt(variantModalItem.precio)}`
                                                                 }
                                                                 {v.precio_excepcion != null && (
-                                                                    <span className="text-[9px] text-slate-400 ml-1 font-normal">(precio propio)</span>
+                                                                    <span className="text-[10px] text-zinc-400 ml-1 font-medium">(precio propio)</span>
                                                                 )}
                                                             </span>
                                                             {selectedColor === v.color && (
-                                                                <div className="absolute top-2 right-2 w-4 h-4 bg-blue-500 rounded-full flex items-center justify-center">
-                                                                    <CheckCircle size={10} className="text-white" />
-                                                                </div>
+                                                                <CheckCircle size={16} className="absolute top-2 right-2 text-brand-cyan" />
                                                             )}
                                                         </button>
                                                     )})}
@@ -593,13 +616,14 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                         </div>
 
                         {/* Modal Footer (Controls) */}
-                        <div className="p-6 border-t border-slate-100 bg-white">
-                            <div className="flex items-center gap-4">
-                                <div className="flex items-center bg-slate-100 rounded-xl border border-slate-200 h-12">
+                        <div className="px-5 py-4 border-t border-zinc-100 bg-white">
+                            <div className="flex items-center gap-3">
+                                <div className="flex items-center bg-white rounded-xl border border-zinc-200 h-11 overflow-hidden shrink-0">
                                     <button
                                         type="button"
                                         onClick={() => setVariantQty(Math.max(1, variantQty - 1))}
-                                        className="px-4 h-full hover:bg-slate-200 rounded-l-xl transition-colors text-slate-600 font-bold"
+                                        aria-label="Restar uno"
+                                        className={`${PASO} h-full w-10`}
                                         disabled={!selectedVariantId}
                                     >
                                         <Minus size={16} />
@@ -614,7 +638,8 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                             setVariantQty(variant ? Math.min(Math.max(1, v), variant.stock) : Math.max(1, v));
                                         }}
                                         disabled={!selectedVariantId}
-                                        className="w-16 text-center text-sm font-bold text-slate-800 bg-transparent border-none outline-none"
+                                        aria-label="Cantidad"
+                                        className="w-14 h-full text-center text-sm font-bold text-zinc-800 tabular-nums bg-transparent border-x border-zinc-200 outline-none disabled:text-zinc-400"
                                     />
                                     <button
                                         type="button"
@@ -622,7 +647,8 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                             const variant = variantModalItem.variantes.find(v => v.wms_variante_id === selectedVariantId);
                                             if (variant && variantQty < variant.stock) setVariantQty(variantQty + 1);
                                         }}
-                                        className="px-4 h-full hover:bg-slate-200 rounded-r-xl transition-colors text-slate-600 font-bold"
+                                        aria-label="Sumar uno"
+                                        className={`${PASO} h-full w-10`}
                                         disabled={!selectedVariantId}
                                     >
                                         <Plus size={16} />
@@ -632,93 +658,94 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                     type="button"
                                     onClick={handleAddToCart}
                                     disabled={!selectedVariantId}
-                                    className={`flex-1 h-12 rounded-xl font-bold text-white shadow-lg transition-all flex items-center justify-center gap-2 ${
-                                        selectedVariantId 
-                                        ? 'bg-blue-600 hover:bg-blue-700 hover:shadow-blue-600/30' 
-                                        : 'bg-slate-300 cursor-not-allowed shadow-none'
-                                    }`}
+                                    className={`${BTN_PRINCIPAL} flex-1 h-11`}
                                 >
+                                    <ShoppingCart size={16} />
                                     Añadir al Carrito
                                 </button>
                             </div>
                         </div>
 
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
-            {/* Success Modal */}
-            {orderState.successCode && (
-                <div className="fixed inset-0 bg-slate-900/60 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-3xl p-8 max-w-sm w-full shadow-2xl transform transition-all text-center">
-                        <div className="mx-auto flex items-center justify-center h-20 w-20 rounded-full bg-emerald-100 mb-6">
-                            <CheckCircle className="h-10 w-10 text-emerald-600" />
-                        </div>
-                        <h2 className="text-2xl font-bold text-slate-800 mb-2">¡Pedido Exitoso!</h2>
-                        <p className="text-slate-500 mb-6">El pedido ha sido enviado a Logística para su preparación.</p>
-                        <div className="bg-slate-100 rounded-xl py-4 mb-8 border border-slate-200">
-                            <p className="text-xs text-slate-500 uppercase font-bold tracking-wider mb-1">CÓDIGO DE PEDIDO</p>
-                            <p className="text-3xl font-mono font-black text-blue-600">{orderState.successCode}</p>
+            {/* Success Modal (en un portal, igual que el de variantes) */}
+            {orderState.successCode && createPortal(
+                <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl p-6 sm:p-8 max-w-sm w-full shadow-2xl text-center">
+                        <CheckCircle size={48} strokeWidth={1.75} className="mx-auto mb-4 text-emerald-600" />
+                        <h2 className="text-xl font-black text-zinc-900 mb-1">¡Pedido Exitoso!</h2>
+                        <p className="text-sm text-zinc-500 mb-5">El pedido ha sido enviado a Logística para su preparación.</p>
+                        <div className="bg-zinc-50 rounded-xl py-4 mb-6 border border-zinc-200">
+                            <p className="text-[10px] text-zinc-400 uppercase font-black tracking-widest mb-1">CÓDIGO DE PEDIDO</p>
+                            <p className="text-3xl font-mono font-black text-brand-cyan">{orderState.successCode}</p>
                         </div>
                         <button
                             type="button"
                             onClick={() => setOrderState(prev => ({ ...prev, successCode: null }))}
-                            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3.5 px-4 rounded-xl shadow-lg shadow-blue-500/30 transition-all"
+                            className={`${BTN_PRINCIPAL} w-full h-11`}
                         >
                             Crear Nuevo Pedido
                         </button>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
 
-            <div className="max-w-[1400px] mx-auto flex flex-col lg:flex-row gap-8">
-                
-                {/* Main Content (Left) */}
-                <div className="flex-1 min-w-0">
-                    
-                    {/* Header */}
-                    <div className={`rounded-3xl shadow-sm p-6 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 ${t('bg-white border border-slate-200', 'bg-zinc-900/60 border border-zinc-700/50')}`}>
-                        {!embedded && (
-                        <div className="flex items-center gap-4">
-                            <div className="bg-gradient-to-tr from-blue-600 to-cyan-400 p-4 rounded-2xl text-white shadow-lg shadow-blue-200">
-                                <Package size={28} strokeWidth={2.5} />
-                            </div>
-                            <div>
-                                <h1 className="text-3xl font-extrabold text-slate-800 tracking-tight">Realizar Pedido WMS</h1>
-                                <p className="text-slate-500 font-medium mt-1">Catálogo de Venta Sincronizado</p>
-                            </div>
-                        </div>
-                        )}
+            <div className={t('flex flex-col lg:flex-row gap-4 lg:gap-5', 'max-w-[1400px] mx-auto flex flex-col lg:flex-row gap-8')}>
 
-                        <div className="flex items-center gap-4">
+                {/* Main Content (Left) */}
+                <div className={t('flex-1 min-w-0 flex flex-col gap-4', 'flex-1 min-w-0')}>
+
+                    {/* Header */}
+                    {!embedded && (
+                    <div className="flex flex-wrap items-center gap-3">
+                        <Package size={30} className="text-brand-cyan shrink-0" />
+                        <div className="min-w-[220px] flex-1">
+                            <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Realizar pedido WMS</h1>
+                            <p className="text-sm text-zinc-500 mt-1">Catálogo de venta sincronizado con el WMS</p>
+                        </div>
+                    </div>
+                    )}
+
+                    {/* Barra de herramientas: interruptores, buscador y Sincronizar (en el celular se acomodan en dos renglones) */}
+                    <div className={t(`${CARD} p-3 flex flex-wrap items-center gap-2`, 'rounded-3xl shadow-sm p-6 mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-zinc-900/60 border border-zinc-700/50')}>
+                        <div className={t('contents', 'flex items-center gap-4')}>
                             <button
                                 type="button"
+                                role="switch"
+                                aria-checked={hideOutOfStock}
                                 onClick={() => setHideOutOfStock(v => !v)}
                                 title={hideOutOfStock ? 'Mostrando solo productos con stock' : 'Mostrando todos los productos'}
-                                className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all ${t('bg-slate-100 hover:bg-slate-200 text-slate-700', 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}`}
+                                className={t(`${INTERRUPTOR} ${hideOutOfStock ? INTERRUPTOR_SI : INTERRUPTOR_NO}`, 'flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}
                             >
-                                <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${hideOutOfStock ? 'bg-blue-600' : 'bg-slate-300'}`}>
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${hideOutOfStock ? 'translate-x-6' : 'translate-x-1'}`} />
+                                <span className={t(`${PISTA} ${hideOutOfStock ? 'bg-brand-cyan' : 'bg-zinc-300'}`, `relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${hideOutOfStock ? 'bg-blue-600' : 'bg-slate-300'}`)}>
+                                    <span className={t(`${PERILLA} ${hideOutOfStock ? 'translate-x-[18px]' : 'translate-x-0.5'}`, `inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${hideOutOfStock ? 'translate-x-6' : 'translate-x-1'}`)} />
                                 </span>
                                 Ocultar sin stock
                             </button>
                             <button
                                 type="button"
+                                role="switch"
+                                aria-checked={showImages}
                                 onClick={() => setShowImages(v => !v)}
                                 title={showImages ? 'Mostrando fotos en las cards' : 'Fotos ocultas en las cards'}
-                                className={`flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all ${t('bg-slate-100 hover:bg-slate-200 text-slate-700', 'bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}`}
+                                className={t(`${INTERRUPTOR} ${showImages ? INTERRUPTOR_SI : INTERRUPTOR_NO}`, 'flex items-center gap-2.5 px-4 py-3 rounded-2xl font-bold text-sm transition-all bg-zinc-800 hover:bg-zinc-700 text-zinc-300')}
                             >
-                                <span className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${showImages ? 'bg-blue-600' : 'bg-slate-300'}`}>
-                                    <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-6' : 'translate-x-1'}`} />
+                                <span className={t(`${PISTA} ${showImages ? 'bg-brand-cyan' : 'bg-zinc-300'}`, `relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${showImages ? 'bg-blue-600' : 'bg-slate-300'}`)}>
+                                    <span className={t(`${PERILLA} ${showImages ? 'translate-x-[18px]' : 'translate-x-0.5'}`, `inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${showImages ? 'translate-x-6' : 'translate-x-1'}`)} />
                                 </span>
                                 Mostrar fotos
                             </button>
-                            <div className="relative">
-                                <Search className={`absolute left-4 top-1/2 -translate-y-1/2 ${t('text-slate-400', 'text-zinc-500')}`} size={18} />
+                            <div className={t('relative flex-1 min-w-[180px] sm:min-w-[220px]', 'relative')}>
+                                <Search className={`absolute top-1/2 -translate-y-1/2 pointer-events-none ${t('left-3 text-zinc-400', 'left-4 text-zinc-500')}`} size={t(15, 18)} />
                                 <input
                                     type="text"
                                     placeholder="Buscar producto..."
-                                    className={`pl-11 pr-4 py-3 border rounded-2xl w-full md:w-72 focus:ring-4 transition-all font-medium ${t('bg-slate-100 border-transparent focus:border-blue-500 focus:bg-white focus:ring-blue-500/10 text-slate-700', 'bg-zinc-800 border-zinc-700 focus:border-cyan-500 focus:ring-cyan-500/10 text-zinc-200 placeholder-zinc-500')}`}
+                                    aria-label="Buscar producto"
+                                    className={t(CAMPO, 'pl-11 pr-4 py-3 border rounded-2xl w-full md:w-72 focus:ring-4 transition-all font-medium bg-zinc-800 border-zinc-700 focus:border-cyan-500 focus:ring-cyan-500/10 text-zinc-200 placeholder-zinc-500')}
                                     value={searchTerm}
                                     onChange={(e) => setSearchTerm(e.target.value)}
                                 />
@@ -727,9 +754,9 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                 type="button"
                                 onClick={handleSync}
                                 disabled={syncing}
-                                className={`flex items-center gap-2 border px-5 py-3 rounded-2xl font-bold transition-all shadow-sm ${t('bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50 text-slate-700', 'bg-zinc-800 border-zinc-700 hover:border-zinc-600 hover:bg-zinc-700 text-zinc-300')}`}
+                                className={t(`${BTN_SECUNDARIO} shrink-0`, 'flex items-center gap-2 border px-5 py-3 rounded-2xl font-bold transition-all shadow-sm bg-zinc-800 border-zinc-700 hover:border-zinc-600 hover:bg-zinc-700 text-zinc-300')}
                             >
-                                <RefreshCw size={18} className={syncing ? 'animate-spin text-blue-600' : 'text-slate-400'} />
+                                <RefreshCw size={t(15, 18)} className={t(`text-brand-cyan ${syncing ? 'animate-spin' : ''}`, syncing ? 'animate-spin text-blue-600' : 'text-slate-400')} />
                                 {syncing ? 'Sincronizando' : 'Sincronizar'}
                             </button>
                         </div>
@@ -737,43 +764,60 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
 
                     {/* Catalog Grid */}
                     {loading ? (
-                        <div className="flex justify-center items-center h-64">
-                            <RefreshCw size={40} className="animate-spin text-blue-500" />
+                        embedded ? (
+                            <div className="flex justify-center items-center h-64">
+                                <RefreshCw size={40} className="animate-spin text-blue-500" />
+                            </div>
+                        ) : (
+                            <div className={`${CARD} flex flex-col items-center justify-center gap-3 py-20`}>
+                                <Loader2 size={32} className="animate-spin text-brand-cyan" />
+                                <span className="text-sm text-zinc-400">Cargando catálogo…</span>
+                            </div>
+                        )
+                    ) : !embedded && filteredCatalog.length === 0 ? (
+                        <div className={`${CARD} flex flex-col items-center justify-center text-center px-4 py-16`}>
+                            <PackageSearch size={40} className="mb-3 text-brand-cyan" />
+                            <span className="text-sm font-bold text-zinc-700">
+                                {catalog.length === 0 ? 'El catálogo está vacío' : searchTerm ? 'Ningún producto coincide con la búsqueda' : 'No hay productos con stock'}
+                            </span>
+                            <span className="text-xs text-zinc-400 mt-1">
+                                {catalog.length === 0 ? 'Tocá «Sincronizar» para traerlo del WMS.' : hideOutOfStock ? 'Apagá «Ocultar sin stock» para ver también los que no tienen.' : 'Probá con otro nombre.'}
+                            </span>
                         </div>
                     ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6">
+                        <div className={t('grid grid-cols-2 md:grid-cols-3 lg:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3', 'grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-6')}>
                             {filteredCatalog.map(product => (
                                 <div key={product.ProIdProducto}
                                      onClick={() => openVariantModal(product)}
-                                     className={`rounded-[1.5rem] border overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col h-full group relative ${t('bg-white border-slate-200 hover:border-blue-200', 'bg-zinc-900/60 border-zinc-700/50 hover:border-cyan-500/50')}`}
+                                     className={t(`${CARD} overflow-hidden cursor-pointer flex flex-col h-full group relative transition-all hover:border-brand-cyan/40 hover:shadow-md`, 'rounded-[1.5rem] border overflow-hidden hover:shadow-xl hover:-translate-y-1 transition-all duration-300 cursor-pointer flex flex-col h-full group relative bg-zinc-900/60 border-zinc-700/50 hover:border-cyan-500/50')}
                                 >
                                     {/* Image Placeholder */}
                                     {showImages && (
-                                        <div className={`h-32 flex flex-col justify-center items-center relative overflow-hidden p-4 ${t('bg-slate-50', 'bg-zinc-800/60')}`}>
+                                        <div className={t('h-28 sm:h-32 flex flex-col justify-center items-center relative overflow-hidden p-3 bg-zinc-50 border-b border-zinc-100', 'h-32 flex flex-col justify-center items-center relative overflow-hidden p-4 bg-zinc-800/60')}>
                                             {product.imagen ? (
                                                 <img src={product.imagen} alt={product.Descripcion} className="w-full h-full object-contain mix-blend-multiply group-hover:scale-105 transition-transform duration-500" />
                                             ) : (
-                                                <Package size={48} strokeWidth={1} className={`group-hover:scale-110 transition-transform duration-500 ${t('text-slate-300', 'text-zinc-600')}`} />
+                                                <Package size={embedded ? 48 : 40} strokeWidth={1} className={`group-hover:scale-110 transition-transform duration-500 ${t('text-zinc-300', 'text-zinc-600')}`} />
                                             )}
                                         </div>
                                     )}
 
-                                    <div className={`p-4 flex-1 flex flex-col ${t('bg-white', 'bg-zinc-900/60')}`}>
-                                        <h3 className={`font-bold text-base mb-2 leading-tight transition-colors line-clamp-2 ${t('text-slate-800 group-hover:text-blue-600', 'text-zinc-100 group-hover:text-cyan-400')}`}>{product.Descripcion}</h3>
+                                    <div className={t('p-3 sm:p-4 flex-1 flex flex-col gap-3', 'p-4 flex-1 flex flex-col bg-zinc-900/60')}>
+                                        <h3 className={t('text-sm font-bold text-zinc-800 leading-snug line-clamp-2 transition-colors group-hover:text-brand-cyan', 'font-bold text-base mb-2 leading-tight transition-colors line-clamp-2 text-zinc-100 group-hover:text-cyan-400')}>{product.Descripcion}</h3>
 
-                                        <div className={`mt-auto flex justify-between items-center pt-3 border-t ${t('border-slate-100', 'border-zinc-700/50')}`}>
+                                        <div className={t('mt-auto flex flex-wrap justify-between items-end gap-x-3 gap-y-1 pt-3 border-t border-zinc-100', 'mt-auto flex justify-between items-center pt-3 border-t border-zinc-700/50')}>
                                             <div className="flex flex-col">
-                                                <span className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${t('text-slate-400', 'text-zinc-500')}`}>Precio</span>
-                                                <span className={`font-black text-lg ${t('text-slate-800', 'text-zinc-100')}`}>
-                                                    {product.moneda === 'USD' ? 'U$S' : '$'} {Number(product.precio || 0).toFixed(2)}
+                                                <span className={t('text-[10px] font-black uppercase tracking-widest mb-0.5 text-zinc-400', 'text-xs font-bold uppercase tracking-wider mb-0.5 text-zinc-500')}>Precio</span>
+                                                <span className={t('font-black text-sm sm:text-base text-zinc-900 tabular-nums whitespace-nowrap', 'font-black text-lg text-zinc-100')}>
+                                                    {simbolo(product.moneda)} {fmt(product.precio)}
                                                 </span>
                                             </div>
 
                                             <div className="flex flex-col text-right">
                                                 {product.total_stock < 9999 && (
                                                     <>
-                                                        <span className={`text-xs font-bold uppercase tracking-wider mb-0.5 ${t('text-slate-400', 'text-zinc-500')}`}>Stock</span>
-                                                        <span className={`font-black text-lg ${t('text-slate-700', 'text-zinc-300')}`}>
+                                                        <span className={t('text-[10px] font-black uppercase tracking-widest mb-0.5 text-zinc-400', 'text-xs font-bold uppercase tracking-wider mb-0.5 text-zinc-500')}>Stock</span>
+                                                        <span className={t(`font-black text-sm sm:text-base tabular-nums ${Number(product.total_stock) === 0 ? 'text-brand-magenta' : 'text-zinc-700'}`, 'font-black text-lg text-zinc-300')}>
                                                             {product.total_stock}
                                                         </span>
                                                     </>
@@ -787,20 +831,40 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                     )}
                 </div>
 
+                {/* Celular: el carrito queda abajo del catálogo. Esta barra queda pegada abajo de la pantalla
+                    mientras se recorre el catálogo, lleva hasta el carrito y, al llegar, se queda en su lugar
+                    (arriba del carrito) sin taparle los botones. */}
+                {!embedded && cart.length > 0 && (
+                    <div className="lg:hidden sticky bottom-4 z-40">
+                        <button
+                            type="button"
+                            onClick={() => document.getElementById('carrito-wms')?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+                            className="w-full flex items-center justify-between gap-3 px-4 py-3 rounded-2xl bg-brand-cyan text-white shadow-xl"
+                        >
+                            <span className="flex items-center gap-2 text-sm font-bold min-w-0">
+                                <ShoppingCart size={18} className="shrink-0" />
+                                <span className="truncate">Ver carrito · {cart.length} {cart.length === 1 ? 'ítem' : 'ítems'}</span>
+                            </span>
+                            <span className="text-sm font-black tabular-nums whitespace-nowrap">{simbolo(orderCurrency)} {fmt(totalCart)}</span>
+                        </button>
+                    </div>
+                )}
+
                 {/* Cart Sidebar (Right) — "chico" en modo embebido: más angosto, sin el
-                    h-[100vh] que asume página completa, todo más compacto. */}
-                <div className={`w-full shrink-0 ${t('lg:w-[400px]', 'lg:w-[300px]')}`}>
-                    <div className={`bg-slate-800 shadow-2xl overflow-hidden sticky flex flex-col relative ${t('rounded-[2.5rem] top-6 h-[calc(100vh-3rem)]', 'rounded-2xl top-4 max-h-[75vh]')}`}>
+                    h-[100vh] que asume página completa, todo más compacto. Standalone: tarjeta
+                    clara, pegada arriba en escritorio; en el celular queda abajo del catálogo. */}
+                <div id="carrito-wms" className={`w-full shrink-0 scroll-mt-4 ${t('lg:w-[380px]', 'lg:w-[300px]')}`}>
+                    <div className={t(`${CARD} flex flex-col lg:sticky lg:top-4 lg:max-h-[calc(100vh-7.5rem)]`, 'bg-slate-800 shadow-2xl overflow-hidden sticky flex flex-col relative rounded-2xl top-4 max-h-[75vh]')}>
 
                         {/* Header Cart */}
-                        <div className={t('p-8 pb-6', 'p-4 pb-3')}>
-                            <div className={`flex justify-between items-center ${t('mb-8', 'mb-3')}`}>
+                        <div className={t('p-4 sm:p-5 border-b border-zinc-100 flex flex-col gap-4', 'p-4 pb-3')}>
+                            <div className={t('flex justify-between items-center', 'flex justify-between items-center mb-3')}>
                                 <div className="flex items-center gap-2">
-                                    <ShoppingCart size={embedded ? 18 : 24} className="text-blue-400" />
-                                    <h2 className={`font-extrabold text-white ${t('text-xl', 'text-sm')}`}>Carrito</h2>
+                                    <ShoppingCart size={embedded ? 18 : 20} className={t('text-brand-cyan', 'text-blue-400')} />
+                                    <h2 className={t('text-lg font-black text-zinc-900', 'font-extrabold text-white text-sm')}>Carrito</h2>
                                 </div>
-                                <span className={`bg-white/10 text-white font-bold rounded-full ${t('text-xs px-3 py-1.5', 'text-[10px] px-2 py-1')}`}>
-                                    {cart.length} items
+                                <span className={t(`text-[11px] font-bold px-2.5 py-1 rounded-full border tabular-nums ${cart.length > 0 ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20' : 'bg-zinc-50 text-zinc-500 border-zinc-200'}`, 'bg-white/10 text-white font-bold rounded-full text-[10px] px-2 py-1')}>
+                                    {cart.length} ítems
                                 </span>
                             </div>
 
@@ -816,67 +880,66 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                     </div>
                                 ) : !selectedClient ? (
                                     <div className="relative">
-                                        <label className="text-xs text-slate-400 font-bold uppercase tracking-wider mb-2 block">Cliente</label>
+                                        <label className={ETIQUETA}>Cliente</label>
                                         <div className="relative">
-                                            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={16} />
-                                            <input 
-                                                type="text" 
-                                                className="w-full bg-slate-700/50 border border-slate-600 rounded-2xl pl-11 pr-4 py-3 text-sm text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                                            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" size={15} />
+                                            <input
+                                                type="text"
+                                                className="w-full pl-9 pr-9 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
                                                 placeholder="Buscar cliente (RUC, CI, Nombre)..."
                                                 value={clientSearchTerm}
                                                 onChange={handleClientSearch}
                                             />
                                             {isSearchingClient && (
-                                                <RefreshCw className="absolute right-4 top-1/2 -translate-y-1/2 text-slate-400 animate-spin" size={16} />
+                                                <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 text-brand-cyan animate-spin" size={15} />
                                             )}
                                         </div>
-                                        
+
                                         {/* Dropdown Results */}
                                         {searchResults.length > 0 && clientSearchTerm.length >= 3 && (
-                                            <div className="absolute z-50 mt-2 w-full bg-white rounded-2xl shadow-xl border border-slate-200 overflow-hidden max-h-60 overflow-y-auto custom-scrollbar">
+                                            <div className="absolute z-50 mt-1 w-full bg-white rounded-xl shadow-lg border border-zinc-200 overflow-hidden max-h-60 overflow-y-auto custom-scrollbar">
                                                 {searchResults.map(client => (
-                                                    <div 
-                                                        key={client.CodCliente || client.ClienteID || client.id} 
-                                                        className="p-3 hover:bg-blue-50 cursor-pointer border-b border-slate-100 last:border-0 transition-colors"
+                                                    <div
+                                                        key={client.CodCliente || client.ClienteID || client.id}
+                                                        className="px-3 py-2.5 hover:bg-zinc-50 cursor-pointer border-b border-zinc-100 last:border-0 transition-colors"
                                                         onClick={() => {
                                                             setSelectedClient(client);
                                                             setSearchResults([]);
                                                             setClientSearchTerm('');
                                                         }}
                                                     >
-                                                        <p className="font-bold text-slate-800 text-sm">{client.Nombre || client.RazonSocial || client.nombre}</p>
-                                                        <p className="text-xs text-slate-500 mt-0.5">ID: {client.CodCliente || client.ClienteID || client.id} | DOC: {client.CioRuc || client.RUT || client.RUC || client.CI || 'N/A'}</p>
+                                                        <p className="font-bold text-zinc-800 text-sm">{client.Nombre || client.RazonSocial || client.nombre}</p>
+                                                        <p className="text-xs text-zinc-400 mt-0.5 tabular-nums">ID: {client.CodCliente || client.ClienteID || client.id} · Doc.: {client.CioRuc || client.RUT || client.RUC || client.CI || 'N/A'}</p>
                                                     </div>
                                                 ))}
                                             </div>
                                         )}
                                     </div>
                                 ) : (
-                                    <div className="bg-white rounded-2xl p-5 shadow-lg border border-slate-200 relative">
+                                    <div className="bg-zinc-50 rounded-xl border border-zinc-200 p-3.5 relative">
                                         {!initialClient && (
                                         <button
                                             type="button"
                                             onClick={() => setSelectedClient(null)}
-                                            className="absolute top-4 right-4 p-2 bg-slate-50 hover:bg-red-50 text-slate-400 hover:text-red-500 rounded-xl transition-colors"
+                                            className="absolute top-2.5 right-2.5 w-8 h-8 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 transition-colors"
                                             title="Cambiar cliente"
+                                            aria-label="Cambiar cliente"
                                         >
-                                            <Trash2 size={18} />
+                                            <X size={16} />
                                         </button>
                                         )}
-                                        <div className="flex items-center gap-4 mb-4 border-b border-slate-100 pb-4">
-                                            <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-                                                <User size={24} />
-                                            </div>
-                                            <div className="pr-10">
-                                                <h3 className="font-bold text-slate-800 leading-tight">{selectedClient.Nombre || selectedClient.RazonSocial || selectedClient.nombre}</h3>
-                                                <p className="text-xs text-slate-500 font-mono mt-1 tracking-wide uppercase">IDCLIENTE: {selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id}</p>
+                                        <div className="flex items-start gap-2.5 pr-9">
+                                            <User size={20} className="text-brand-cyan shrink-0 mt-0.5" />
+                                            <div className="min-w-0">
+                                                <h3 className="font-bold text-sm text-zinc-900 leading-tight">{selectedClient.Nombre || selectedClient.RazonSocial || selectedClient.nombre}</h3>
+                                                <p className="text-[11px] text-zinc-400 font-mono mt-1 tracking-wide uppercase">IDCLIENTE: {selectedClient.CodCliente || selectedClient.ClienteID || selectedClient.id}</p>
                                             </div>
                                         </div>
-                                        <div className="space-y-2.5 text-xs text-slate-600">
-                                            <p className="flex justify-between"><span className="text-slate-400 font-medium">RUC / CI:</span> <span className="font-bold text-slate-800">{selectedClient.CioRuc || selectedClient.RUT || selectedClient.RUC || selectedClient.CI || 'N/A'}</span></p>
-                                            <p className="flex justify-between"><span className="text-slate-400 font-medium">Email:</span> <span className="font-medium text-slate-800">{selectedClient.Email || selectedClient.Correo || 'N/A'}</span></p>
-                                            <p className="flex justify-between"><span className="text-slate-400 font-medium">Teléfono:</span> <span className="font-medium text-slate-800">{selectedClient.TelefonoTrabajo || selectedClient.Telefono || selectedClient.Celular || 'N/A'}</span></p>
-                                            <p className="flex justify-between"><span className="text-slate-400 font-medium">Dirección:</span> <span className="font-medium text-slate-800 text-right w-2/3 truncate" title={selectedClient.DireccionTrabajo || selectedClient.CliDireccion || selectedClient.Direccion || 'N/A'}>{selectedClient.DireccionTrabajo || selectedClient.CliDireccion || selectedClient.Direccion || 'N/A'}</span></p>
+                                        <div className="mt-3 pt-3 border-t border-zinc-200 space-y-1.5 text-xs">
+                                            <p className="flex justify-between gap-3"><span className="text-zinc-400 shrink-0">RUC / CI</span> <span className="font-semibold text-zinc-800 text-right truncate">{selectedClient.CioRuc || selectedClient.RUT || selectedClient.RUC || selectedClient.CI || 'N/A'}</span></p>
+                                            <p className="flex justify-between gap-3"><span className="text-zinc-400 shrink-0">Email</span> <span className="font-semibold text-zinc-800 text-right truncate">{selectedClient.Email || selectedClient.Correo || 'N/A'}</span></p>
+                                            <p className="flex justify-between gap-3"><span className="text-zinc-400 shrink-0">Teléfono</span> <span className="font-semibold text-zinc-800 text-right truncate">{selectedClient.TelefonoTrabajo || selectedClient.Telefono || selectedClient.Celular || 'N/A'}</span></p>
+                                            <p className="flex justify-between gap-3"><span className="text-zinc-400 shrink-0">Dirección</span> <span className="font-semibold text-zinc-800 text-right truncate" title={selectedClient.DireccionTrabajo || selectedClient.CliDireccion || selectedClient.Direccion || 'N/A'}>{selectedClient.DireccionTrabajo || selectedClient.CliDireccion || selectedClient.Direccion || 'N/A'}</span></p>
                                         </div>
                                     </div>
                                 )}
@@ -884,20 +947,28 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                         </div>
 
                         {/* Cart Items */}
-                        <div className={`flex-1 overflow-y-auto custom-scrollbar ${t('px-6 pb-6 space-y-3', 'px-3 pb-3 space-y-2')}`}>
+                        <div className={t('flex-1 min-h-0 lg:overflow-y-auto custom-scrollbar p-4 space-y-2', 'flex-1 overflow-y-auto custom-scrollbar px-3 pb-3 space-y-2')}>
                             {cart.length === 0 ? (
-                                <div className={`h-full flex flex-col items-center justify-center text-slate-400 opacity-50 ${t('pt-10', 'pt-4')}`}>
-                                    <ShoppingCart size={embedded ? 32 : 64} strokeWidth={1} className="mb-2" />
-                                    <p className={t('font-medium', 'text-xs font-medium')}>No hay productos seleccionados</p>
-                                </div>
+                                embedded ? (
+                                    <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-50 pt-4">
+                                        <ShoppingCart size={32} strokeWidth={1} className="mb-2" />
+                                        <p className="text-xs font-medium">No hay productos seleccionados</p>
+                                    </div>
+                                ) : (
+                                    <div className="flex flex-col items-center justify-center text-center py-8">
+                                        <ShoppingCart size={40} strokeWidth={1.5} className="mb-3 text-brand-cyan" />
+                                        <p className="text-sm font-bold text-zinc-700">No hay productos seleccionados</p>
+                                        <p className="text-xs text-zinc-400 mt-1">Tocá un producto del catálogo para agregarlo.</p>
+                                    </div>
+                                )
                             ) : (
                                 cart.map(item => (
-                                    <div key={item.wms_variante_id} className={`bg-slate-700/30 rounded-xl flex gap-2 relative group ${t('p-4 rounded-2xl gap-4', 'p-2.5')}`}>
+                                    <div key={item.wms_variante_id} className={t('rounded-xl border border-zinc-200 bg-white p-3 relative group', 'bg-slate-700/30 rounded-xl flex gap-2 relative group p-2.5')}>
                                         <div className="flex-1 min-w-0">
-                                            <h4 className={`font-bold text-white leading-tight pr-5 ${t('text-sm mb-1', 'text-xs mb-1.5 line-clamp-2')}`}>{item.nombre}</h4>
-                                            <div className={`flex justify-between items-end ${t('mt-3', 'mt-1.5')}`}>
-                                                <div className="flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-600">
-                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, -1)} className={`hover:bg-slate-700 rounded-md transition-colors text-white ${t('p-1.5', 'p-1')}`}>
+                                            <h4 className={t('text-sm font-bold text-zinc-800 leading-snug pr-7', 'font-bold text-white leading-tight pr-5 text-xs mb-1.5 line-clamp-2')}>{item.nombre}</h4>
+                                            <div className={t('flex flex-wrap justify-between items-end gap-2 mt-2.5', 'flex justify-between items-end mt-1.5')}>
+                                                <div className={t('inline-flex items-center rounded-lg border border-zinc-200 bg-white overflow-hidden', 'flex items-center bg-slate-800 rounded-lg p-0.5 border border-slate-600')}>
+                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, -1)} aria-label="Restar uno" className={t(PASO, 'hover:bg-slate-700 rounded-md transition-colors text-white p-1')}>
                                                         <Minus size={embedded ? 10 : 14} />
                                                     </button>
                                                     <input
@@ -912,28 +983,27 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                                                     : ci
                                                             ));
                                                         }}
-                                                        className={`text-center font-bold text-white bg-transparent border-none outline-none ${t('w-12 text-xs', 'w-8 text-[11px]')}`}
+                                                        aria-label="Cantidad"
+                                                        className={t('w-11 h-8 text-center text-sm font-bold text-zinc-800 tabular-nums bg-transparent border-x border-zinc-200 outline-none', 'text-center font-bold text-white bg-transparent border-none outline-none w-8 text-[11px]')}
                                                     />
-                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, 1)} className={`hover:bg-slate-700 rounded-md transition-colors text-white ${t('p-1.5', 'p-1')}`}>
+                                                    <button type="button" onClick={() => updateQuantity(item.wms_variante_id, 1)} aria-label="Sumar uno" className={t(PASO, 'hover:bg-slate-700 rounded-md transition-colors text-white p-1')}>
                                                         <Plus size={embedded ? 10 : 14} />
                                                     </button>
                                                 </div>
-                                                <div className={`flex flex-col items-end ${t('gap-1.5', 'gap-1')}`}>
-                                                    <p className={`font-bold text-white ${t('text-sm', 'text-xs')}`}>{item.moneda === 'USD' ? 'U$S' : '$'} {(item.precio * item.cantidad).toFixed(2)}</p>
+                                                <div className="flex flex-col items-end gap-1">
+                                                    <p className={t('font-black text-sm text-zinc-900 tabular-nums whitespace-nowrap', 'font-bold text-white text-xs')}>{simbolo(item.moneda)} {fmt(item.precio * item.cantidad)}</p>
                                                     {!embedded && (
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">PRECIO:</span>
-                                                        <div className="relative w-16">
-                                                            <input
-                                                                type="number"
-                                                                min="0"
-                                                                step="0.01"
-                                                                value={item.precio}
-                                                                onChange={(e) => updatePrice(item.wms_variante_id, parseFloat(e.target.value) || 0)}
-                                                                className="w-full bg-slate-800 border border-slate-600 rounded-md text-[10px] font-bold text-white px-2 py-0.5 focus:outline-none focus:border-blue-500 transition-colors text-center"
-                                                            />
-                                                        </div>
-                                                    </div>
+                                                    <label className="flex items-center gap-1.5">
+                                                        <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest whitespace-nowrap">Precio {simbolo(item.moneda)}</span>
+                                                        <input
+                                                            type="number"
+                                                            min="0"
+                                                            step="0.01"
+                                                            value={item.precio}
+                                                            onChange={(e) => updatePrice(item.wms_variante_id, parseFloat(e.target.value) || 0)}
+                                                            className="w-20 px-2 py-1 bg-white border border-zinc-200 rounded-lg text-xs font-bold text-zinc-800 text-right tabular-nums focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 transition-colors"
+                                                        />
+                                                    </label>
                                                     )}
                                                 </div>
                                             </div>
@@ -941,9 +1011,11 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                         <button
                                             type="button"
                                             onClick={() => removeItem(item.wms_variante_id)}
-                                            className={`absolute text-slate-400 hover:text-red-400 transition-colors ${t('top-4 right-4 p-1', 'top-2 right-2 p-0.5')}`}
+                                            aria-label="Quitar del carrito"
+                                            title="Quitar del carrito"
+                                            className={`absolute transition-colors ${t('top-2 right-2 w-7 h-7 inline-flex items-center justify-center rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5', 'text-slate-400 hover:text-red-400 top-2 right-2 p-0.5')}`}
                                         >
-                                            <Trash2 size={embedded ? 13 : 16} />
+                                            <Trash2 size={embedded ? 13 : 15} />
                                         </button>
                                     </div>
                                 ))
@@ -969,24 +1041,24 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                         )}
 
                         {/* Footer / Total */}
-                        <div className={`bg-slate-900 z-10 border-t border-slate-700/50 ${t('p-8 pt-6', 'p-3 pt-3')}`}>
+                        <div className={t('border-t border-zinc-200 bg-zinc-50 rounded-b-2xl p-4 sm:p-5', 'bg-slate-900 z-10 border-t border-slate-700/50 p-3 pt-3')}>
                             {!embedded && (
-                            <div className="flex justify-between items-center mb-4 text-xs font-bold text-slate-400 bg-slate-800/50 px-4 py-2 rounded-xl border border-slate-700">
-                                <span className="flex items-center gap-2"><RefreshCw size={12} className="text-blue-400"/> TIPO DE CAMBIO</span>
-                                <span className="text-blue-400">${exchangeRate.toFixed(2)}</span>
+                            <div className="flex justify-between items-center gap-3 mb-3">
+                                <span className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-400"><ArrowLeftRight size={13} className="text-brand-cyan" /> Tipo de cambio</span>
+                                <span className="text-xs font-bold text-zinc-800 tabular-nums">$ {fmt(exchangeRate)}</span>
                             </div>
                             )}
-                            <div className={t('space-y-3 mb-6', 'space-y-1.5 mb-3')}>
+                            <div className={t('space-y-2 mb-4', 'space-y-1.5 mb-3')}>
                                 {!embedded && (
-                                <div className="flex justify-between text-sm text-slate-400">
-                                    <span>Subtotal:</span>
-                                    <span>{orderCurrency === 'USD' ? 'U$S' : '$'} {totalCart.toFixed(2)}</span>
+                                <div className="flex justify-between text-sm text-zinc-500">
+                                    <span>Subtotal</span>
+                                    <span className="font-semibold text-zinc-700 tabular-nums">{simbolo(orderCurrency)} {fmt(totalCart)}</span>
                                 </div>
                                 )}
-                                <div className={`flex justify-between items-end ${t('pt-3 border-t border-slate-700', '')}`}>
-                                    <span className={`text-slate-300 font-bold ${t('text-lg', 'text-xs')}`}>Total:</span>
+                                <div className={`flex justify-between items-end gap-3 ${t('pt-2 border-t border-zinc-200', '')}`}>
+                                    <span className={t('text-sm font-black uppercase tracking-wide text-zinc-500', 'text-slate-300 font-bold text-xs')}>Total</span>
                                     <div className="text-right">
-                                        <span className={`font-black text-white tracking-tight ${t('text-3xl', 'text-lg')}`}>{orderCurrency === 'USD' ? 'U$S' : '$'} {totalCart.toFixed(2)}</span>
+                                        <span className={t('text-2xl font-black text-zinc-900 tracking-tight tabular-nums', 'font-black text-white tracking-tight text-lg')}>{simbolo(orderCurrency)} {fmt(totalCart)}</span>
                                     </div>
                                 </div>
                                 {/* [PRENDAS] La personalización (Bordado/DTF/TPU/Estampado) se cotiza
@@ -996,18 +1068,16 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                 )}
                             </div>
                             {showOwnCheckout && (
-                            <div className={t('flex gap-3', 'flex gap-2')}>
+                            <div className={t('grid grid-cols-3 gap-2', 'flex gap-2')}>
                                 {!embedded && (
                                 <button
                                     type="button"
                                     onClick={handleCotizar}
                                     disabled={cart.length === 0}
-                                    className={`w-1/3 py-4 rounded-2xl font-bold text-white text-sm transition-all duration-300 flex items-center justify-center ${
-                                        cart.length > 0
-                                        ? 'bg-slate-700 hover:bg-slate-600 shadow-lg border border-slate-600'
-                                        : 'bg-slate-800 text-slate-600 cursor-not-allowed border border-transparent'
-                                    }`}
+                                    title="Imprime un ticket de cotización (no registra nada)"
+                                    className={`${BTN_SECUNDARIO} h-11`}
                                 >
+                                    <Printer size={15} className="text-brand-cyan" />
                                     Cotizar
                                 </button>
                                 )}
@@ -1016,21 +1086,21 @@ const WmsOrderPage = forwardRef(({ embedded = false, initialClient = null, onCar
                                     onClick={handleCheckout}
                                     disabled={cart.length === 0 || !selectedClient || confirmando}
                                     title={!selectedClient ? 'Debes seleccionar un cliente antes de confirmar' : ''}
-                                    className={`rounded-2xl font-bold text-white transition-all duration-300 flex items-center justify-center gap-2 ${t('w-2/3 py-4 text-lg', 'w-full py-2.5 text-sm')} ${
+                                    className={t(`${BTN_PRINCIPAL} col-span-2 h-11`, `rounded-2xl font-bold text-white transition-all duration-300 flex items-center justify-center gap-2 w-full py-2.5 text-sm ${
                                         cart.length > 0 && selectedClient && !confirmando
                                         ? 'bg-blue-600 hover:bg-blue-500 shadow-lg shadow-blue-600/30 hover:-translate-y-1'
                                         : 'bg-slate-800 text-slate-600 cursor-not-allowed'
-                                    }`}
+                                    }`)}
                                 >
                                     {!selectedClient && cart.length > 0
-                                        ? <><i className="fa-solid fa-user-slash text-sm"></i> Sin cliente</>
-                                        : confirmando ? 'Registrando pedido…' : 'Confirmar'
+                                        ? <><UserX size={15} /> Sin cliente</>
+                                        : confirmando ? <><Loader2 size={15} className="animate-spin" /> Registrando pedido…</> : <><CheckCircle size={15} /> Confirmar</>
                                     }
                                 </button>
                             </div>
                             )}
                             {!showOwnCheckout && (
-                                <p className="text-[11px] text-slate-500 text-center">
+                                <p className={t('text-[11px] text-zinc-400 text-center', 'text-[11px] text-slate-500 text-center')}>
                                     Se confirma con el botón "Confirmar Pedido" de abajo.
                                 </p>
                             )}

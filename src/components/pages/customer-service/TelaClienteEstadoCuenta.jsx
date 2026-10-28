@@ -1,11 +1,42 @@
-﻿import React, { useState, useCallback, useEffect, useMemo } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
     Search, Loader2, FileText, ArrowDownCircle, ArrowUpCircle,
     MinusCircle, SlidersHorizontal, X, Download, RefreshCw,
-    Package, ChevronDown, ChevronRight, CheckCircle2, Scissors, Printer
+    ChevronDown, ChevronRight, CheckCircle2, Scissors, Printer,
+    Scroll, UserSearch, AlertTriangle, CalendarDays
 } from 'lucide-react';
 import { jsPDF } from 'jspdf';
 import api from '../../../services/apiClient';
+import Selector from '../../ui/Selector';
+import SelectorFecha from '../../ui/SelectorFecha';
+
+// Estética nueva (27/10/2026): encabezado, buscador y filtros en una tarjeta blanca (Selector/SelectorFecha), bobinas
+// como en el Inventario de tela (barra y chip del color del estado), movimientos en tabla clara y, en el celular,
+// en tarjetas. Ingreso en verde, consumo en magenta, ajustes en ámbar. La lógica y el PDF que se exporta no cambiaron.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_ACTIVO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-900 bg-zinc-900 text-sm font-bold text-white transition-colors';
+const BTN_ICONO = 'shrink-0 p-2 rounded-xl border border-zinc-200 bg-white text-zinc-400 hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5 transition-colors';
+const CAJA_BUSQUEDA = 'flex items-center gap-2 rounded-xl border bg-white px-3 py-2.5 transition-colors focus-within:border-brand-cyan focus-within:ring-2 focus-within:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const TH = 'px-4 py-2.5 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+const CHIP_ESTADO = 'text-[11px] font-bold px-2.5 py-0.5 rounded-full border whitespace-nowrap';
+const METRICA = 'text-[10px] font-black text-zinc-400 uppercase tracking-widest';
+
+// En el celular, los movimientos de la bobina van en tarjetas en vez de la tabla de 6 columnas (se dibuja una sola vista)
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -13,37 +44,47 @@ import api from '../../../services/apiClient';
 const fmtN  = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDt = (d) => {
     if (!d) return '—';
-    return new Date(d).toLocaleString('es-UY', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+    return new Date(d).toLocaleString('es-UY', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit', hourCycle:'h23' });
 };
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('es-UY') : '—';
+// En pantalla, dd/mm/aaaa con ceros; fmtDate queda como estaba porque es la del PDF
+const fmtFecha = (d) => d ? new Date(d).toLocaleDateString('es-UY', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '—';
 
 const TIPO_CONFIG = {
-    INGRESO:             { label: 'Ingreso',        icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200', sign: '+', textColor: 'text-emerald-600' },
-    CONSUMO_PRODUCCION:  { label: 'Consumo',         icon: ArrowUpCircle,   color: 'text-rose-700 bg-rose-50 border-rose-200',         sign: '-', textColor: 'text-rose-600'     },
-    CONSUMO_ORDEN:       { label: 'Consumo Orden',   icon: ArrowUpCircle,   color: 'text-rose-700 bg-rose-50 border-rose-200',         sign: '-', textColor: 'text-rose-600'     },
-    DEVOLUCION_CANCELACION: { label: 'Devolución',   icon: ArrowDownCircle, color: 'text-teal-700 bg-teal-50 border-teal-200',         sign: '+', textColor: 'text-teal-600'     },
-    AJUSTE_DESECHO:      { label: 'Merma',           icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
-    AJUSTE_MANUAL:       { label: 'Ajuste Manual',   icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',       sign: '±', textColor: 'text-amber-600'    },
-    CONFIRMACION_MEDIDA: { label: 'Confirm. Medida', icon: CheckCircle2,    color: 'text-sky-700 bg-sky-50 border-sky-200',             sign: '✓', textColor: 'text-sky-600'      },
-    RESERVA_ORDEN:       { label: 'Reserva',         icon: ArrowUpCircle,   color: 'text-indigo-700 bg-indigo-50 border-indigo-200',    sign: '→', textColor: 'text-indigo-600'   },
-    LIBERACION_RESERVA:  { label: 'Lib. Reserva',    icon: ArrowDownCircle, color: 'text-teal-700 bg-teal-50 border-teal-200',          sign: '←', textColor: 'text-teal-600'     },
-    MERMA_REIMPRESION:   { label: 'Merma Reimp.',    icon: MinusCircle,     color: 'text-orange-700 bg-orange-50 border-orange-200',    sign: '-', textColor: 'text-orange-600'   },
+    INGRESO:             { label: 'Ingreso',        icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200',                   sign: '+', textColor: 'text-emerald-600' },
+    CONSUMO_PRODUCCION:  { label: 'Consumo',         icon: ArrowUpCircle,   color: 'text-brand-magenta bg-brand-magenta/10 border-brand-magenta/20',      sign: '-', textColor: 'text-brand-magenta' },
+    CONSUMO_ORDEN:       { label: 'Consumo Orden',   icon: ArrowUpCircle,   color: 'text-brand-magenta bg-brand-magenta/10 border-brand-magenta/20',      sign: '-', textColor: 'text-brand-magenta' },
+    DEVOLUCION_CANCELACION: { label: 'Devolución',   icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200',                   sign: '+', textColor: 'text-emerald-600' },
+    AJUSTE_DESECHO:      { label: 'Merma',           icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',                         sign: '±', textColor: 'text-amber-600'   },
+    AJUSTE_MANUAL:       { label: 'Ajuste Manual',   icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',                         sign: '±', textColor: 'text-amber-600'   },
+    // La cantidad es la diferencia contra lo declarado (antes llevaba un tilde; sin símbolos en la interfaz)
+    CONFIRMACION_MEDIDA: { label: 'Confirm. Medida', icon: CheckCircle2,    color: 'text-brand-cyan bg-brand-cyan/10 border-brand-cyan/20',               sign: '±', textColor: 'text-brand-cyan'  },
+    RESERVA_ORDEN:       { label: 'Reserva',         icon: ArrowUpCircle,   color: 'text-brand-cyan bg-brand-cyan/10 border-brand-cyan/20',               sign: '→', textColor: 'text-brand-cyan'  },
+    LIBERACION_RESERVA:  { label: 'Lib. Reserva',    icon: ArrowDownCircle, color: 'text-emerald-700 bg-emerald-50 border-emerald-200',                   sign: '←', textColor: 'text-emerald-600' },
+    MERMA_REIMPRESION:   { label: 'Merma Reimp.',    icon: MinusCircle,     color: 'text-amber-700 bg-amber-50 border-amber-200',                         sign: '-', textColor: 'text-amber-600'   },
 };
-const getTipo = (t) => TIPO_CONFIG[t] || { label: t, icon: MinusCircle, color: 'text-slate-500 bg-slate-50 border-slate-200', sign: '?', textColor: 'text-slate-500' };
+const getTipo = (t) => TIPO_CONFIG[t] || { label: t, icon: MinusCircle, color: 'text-zinc-500 bg-zinc-50 border-zinc-200', sign: '?', textColor: 'text-zinc-500' };
 
+// Colores como en el Inventario de tela: pendiente ámbar, disponible verde, agotada/cerrada gris.
+// `dot` pinta la barra del costado de la tarjeta.
 const ESTADO_CONFIG = {
-    'Pendiente':  { label: 'Pendiente',  color: 'bg-amber-100 text-amber-800 border-amber-300',       dot: 'bg-amber-400',   closed: false },
-    'En Uso':     { label: 'En Uso',     color: 'bg-sky-100 text-sky-800 border-sky-300',              dot: 'bg-sky-400',     closed: false },
-    'Consumida':  { label: 'Consumida',  color: 'bg-slate-100 text-slate-500 border-slate-300',       dot: 'bg-slate-400',   closed: true  },
-    'Confirmado': { label: 'Confirmado', color: 'bg-emerald-100 text-emerald-800 border-emerald-300',  dot: 'bg-emerald-400', closed: false },
-    'Cerrada':    { label: 'Cerrada',    color: 'bg-rose-100 text-rose-700 border-rose-300',           dot: 'bg-rose-400',    closed: true  },
+    'Pendiente':  { label: 'Pendiente',  color: 'bg-amber-50 text-amber-700 border-amber-200',       dot: 'bg-amber-400',   closed: false },
+    'En Uso':     { label: 'En Uso',     color: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', closed: false },
+    'Consumida':  { label: 'Consumida',  color: 'bg-zinc-100 text-zinc-500 border-zinc-200',         dot: 'bg-zinc-300',    closed: true  },
+    'Confirmado': { label: 'Confirmado', color: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', closed: false },
+    'Cerrada':    { label: 'Cerrada',    color: 'bg-zinc-100 text-zinc-500 border-zinc-200',         dot: 'bg-zinc-300',    closed: true  },
     // Estados reales de InventarioBobinas que faltaban: sin ellos el badge caía
     // al fallback gris y las bobinas Agotadas contaban como "Activas" en el filtro
-    'Disponible': { label: 'Disponible', color: 'bg-emerald-100 text-emerald-800 border-emerald-300',  dot: 'bg-emerald-400', closed: false },
-    'Agotado':    { label: 'Agotado',    color: 'bg-slate-100 text-slate-500 border-slate-300',        dot: 'bg-slate-400',   closed: true  },
-    'Cerrado':    { label: 'Cerrado',    color: 'bg-rose-100 text-rose-700 border-rose-300',           dot: 'bg-rose-400',    closed: true  },
+    'Disponible': { label: 'Disponible', color: 'bg-emerald-50 text-emerald-700 border-emerald-200', dot: 'bg-emerald-500', closed: false },
+    'Agotado':    { label: 'Agotado',    color: 'bg-zinc-100 text-zinc-500 border-zinc-200',         dot: 'bg-zinc-300',    closed: true  },
+    'Cerrado':    { label: 'Cerrado',    color: 'bg-zinc-100 text-zinc-500 border-zinc-200',         dot: 'bg-zinc-300',    closed: true  },
 };
-const getEstado = (e) => ESTADO_CONFIG[e] || { label: e || '—', color: 'bg-slate-100 text-slate-500 border-slate-300', dot: 'bg-slate-300', closed: false };
+const getEstado = (e) => ESTADO_CONFIG[e] || { label: e || '—', color: 'bg-zinc-100 text-zinc-500 border-zinc-200', dot: 'bg-zinc-200', closed: false };
+
+// Cantidad de bobinas por pestaña (Todas / Activas / Cerradas): la usan las pastillas y el Selector del celular
+const contarPorEstado = (lista, op) => op === 'Todas' ? lista.length
+    : op === 'Activas' ? lista.filter(b => !getEstado(b.estado).closed).length
+    : lista.filter(b => getEstado(b.estado).closed).length;
 
 // ─────────────────────────────────────────────────────────────────────
 // Generar PDF para un arreglo de bobinas
@@ -188,7 +229,7 @@ function generarPDFBobinas(bobinas, clienteNombre, clienteId) {
 // ─────────────────────────────────────────────────────────────────────
 // BobinaCard con checkbox y botón exportar individual
 // ─────────────────────────────────────────────────────────────────────
-function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId }) {
+function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId, conTabla }) {
     const { bobinaId, bulto, tela, estado, saldoBulto, referencia, movimientos,
             fechaIngreso, metrosIniciales, ancho, peso } = data;
     const [open, setOpen] = useState(false);
@@ -202,131 +243,164 @@ function BobinaCard({ data, checked, onCheck, clienteNombre, clienteId }) {
     const saldo     = parseFloat(saldoBulto || 0);
 
     return (
-        <div className={`bg-white rounded-2xl border shadow-sm overflow-hidden transition-all ${checked ? 'border-indigo-400 ring-1 ring-indigo-300' : estadoCfg.closed ? 'border-slate-200 opacity-75' : 'border-slate-200 hover:border-indigo-200'}`}>
+        <div className={`${CARD} overflow-hidden flex items-stretch transition-colors ${checked ? 'border-brand-cyan ring-2 ring-brand-cyan/15' : estadoCfg.closed ? 'opacity-75 hover:border-zinc-300' : 'hover:border-zinc-300'}`}>
+            {/* Barra lateral con el color del estado (como en el Inventario de tela) */}
+            <div className={`w-1.5 shrink-0 ${estadoCfg.dot}`} />
 
-            {/* Header */}
-            <div className="flex items-center gap-3 px-4 py-3.5">
-                {/* Checkbox */}
-                <label className="flex items-center cursor-pointer shrink-0" onClick={e => e.stopPropagation()}>
-                    <input type="checkbox" checked={checked} onChange={() => onCheck(bobinaId)}
-                        className="w-4 h-4 rounded border-slate-300 text-indigo-600 accent-indigo-600 cursor-pointer" />
-                </label>
+            <div className="flex-1 min-w-0">
+                {/* Header: en el celular los números bajan a un recuadro de tres columnas */}
+                <div className="flex flex-wrap sm:flex-nowrap items-center gap-x-3 gap-y-3 px-4 py-3.5">
+                    {/* Checkbox */}
+                    <label className="flex items-center cursor-pointer shrink-0" onClick={e => e.stopPropagation()}>
+                        <input type="checkbox" checked={checked} onChange={() => onCheck(bobinaId)}
+                            aria-label="Seleccionar bobina"
+                            className="w-4 h-4 accent-[#006E97] cursor-pointer" />
+                    </label>
 
-                {/* Expand toggle */}
-                <button onClick={() => setOpen(p => !p)} className="shrink-0 text-slate-400 hover:text-indigo-500 transition-colors">
-                    {open ? <ChevronDown size={15} /> : <ChevronRight size={15} />}
-                </button>
+                    {/* Expand toggle */}
+                    <button type="button" onClick={() => setOpen(p => !p)} aria-expanded={open}
+                        aria-label={open ? 'Ocultar movimientos' : 'Ver movimientos'}
+                        className="shrink-0 p-1 -m-1 rounded-lg text-zinc-400 hover:text-brand-cyan transition-colors">
+                        {open ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                    </button>
 
-                {/* Icono */}
-                <div className={`p-1.5 rounded-lg shrink-0`} style={{background: 'rgba(99,102,241,0.08)'}}>
-                    <Package size={14} className="text-indigo-500" />
-                </div>
-
-                {/* Info principal */}
-                <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setOpen(p => !p)}>
-                    <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-black text-slate-800 text-sm">{tela || '—'}</span>
-                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-black uppercase ${estadoCfg.color}`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${estadoCfg.dot} inline-block`}/>
-                            {estadoCfg.label}
-                        </span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-0.5 flex-wrap">
-                        <span className="text-[10px] font-mono font-bold text-indigo-600">{referencia || bulto}</span>
-                        <span className="text-[10px] text-slate-400">{fmtDate(fechaIngreso)}</span>
-                        {metrosIniciales && (
-                            <span className="text-[10px] text-slate-400 font-mono">
-                                L:{fmtN(metrosIniciales)}m
-                                {ancho ? ` · A:${fmtN(ancho)}m` : ''}
-                                {peso  ? ` · P:${fmtN(peso)}kg`  : ''}
+                    {/* Info principal */}
+                    <div className="flex-1 min-w-0 cursor-pointer" onClick={() => setOpen(p => !p)}>
+                        <div className="flex items-center gap-2 flex-wrap">
+                            <span className="font-black text-zinc-800 text-sm leading-tight">{tela || '—'}</span>
+                            <span className={`${CHIP_ESTADO} ${estadoCfg.color}`}>{estadoCfg.label}</span>
+                        </div>
+                        <div className="flex items-center gap-x-3 gap-y-1 mt-1.5 flex-wrap text-[11px]">
+                            <span className="font-mono font-black text-zinc-800 bg-zinc-100 border border-zinc-200 px-1.5 rounded-md">{referencia || bulto}</span>
+                            <span className="inline-flex items-center gap-1 text-zinc-500 tabular-nums">
+                                <CalendarDays size={12} className="text-brand-cyan" /> {fmtFecha(fechaIngreso)}
                             </span>
-                        )}
-                        <span className="text-[10px] text-slate-300 font-mono">{bulto}</span>
+                            {metrosIniciales && (
+                                <span className="text-zinc-500 tabular-nums">
+                                    Largo {fmtN(metrosIniciales)} m
+                                    {ancho ? ` · Ancho ${fmtN(ancho)} m` : ''}
+                                    {peso  ? ` · Peso ${fmtN(peso)} kg`  : ''}
+                                </span>
+                            )}
+                            <span className="text-zinc-400 font-mono">{bulto}</span>
+                        </div>
                     </div>
-                </div>
 
-                {/* Métricas + export individual */}
-                <div className="flex items-center gap-4 shrink-0">
-                    <div className="text-center hidden sm:block">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Ingreso</p>
-                        <p className="text-sm font-black font-mono text-emerald-600">+{fmtN(totalIng)}<span className="text-[9px] ml-0.5 opacity-70">m</span></p>
+                    {/* Métricas */}
+                    <div className="order-last sm:order-none w-full sm:w-auto shrink-0 grid grid-cols-3 gap-2 sm:flex sm:items-center sm:gap-5 rounded-xl bg-zinc-50 sm:bg-transparent px-3 py-2 sm:p-0">
+                        <div className="text-center">
+                            <p className={METRICA}>Ingreso</p>
+                            <p className="text-sm font-black tabular-nums whitespace-nowrap text-emerald-600">+{fmtN(totalIng)}<span className="text-[10px] font-bold ml-0.5 opacity-70">m</span></p>
+                        </div>
+                        <div className="text-center">
+                            <p className={METRICA}>Consumo</p>
+                            <p className={`text-sm font-black tabular-nums whitespace-nowrap ${totalCons > 0 ? 'text-brand-magenta' : 'text-zinc-400'}`}>{totalCons > 0 ? '-' : ''}{fmtN(totalCons)}<span className="text-[10px] font-bold ml-0.5 opacity-70">m</span></p>
+                        </div>
+                        <div className="text-center">
+                            <p className={METRICA}>Saldo</p>
+                            <p className={`text-sm font-black tabular-nums whitespace-nowrap ${saldo > 0 ? 'text-brand-cyan' : 'text-zinc-400'}`}>{fmtN(saldo)}<span className="text-[10px] font-bold ml-0.5 opacity-70">m</span></p>
+                        </div>
                     </div>
-                    <div className="text-center hidden sm:block">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Consumo</p>
-                        <p className="text-sm font-black font-mono text-rose-500">{totalCons > 0 ? '-' : ''}{fmtN(totalCons)}<span className="text-[9px] ml-0.5 opacity-70">m</span></p>
-                    </div>
-                    <div className="text-center">
-                        <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest">Saldo</p>
-                        <p className={`text-sm font-black font-mono ${saldo > 0 ? 'text-indigo-700' : 'text-slate-400'}`}>{fmtN(saldo)}<span className="text-[9px] ml-0.5 opacity-70">m</span></p>
-                    </div>
-                    <div className="text-[10px] text-slate-400 font-bold hidden md:block">
+                    <div className="text-[11px] text-zinc-400 font-bold whitespace-nowrap tabular-nums hidden md:block">
                         {movimientos.length} mov.
                     </div>
                     {/* Exportar esta bobina */}
                     <button
+                        type="button"
                         onClick={() => generarPDFBobinas([data], clienteNombre, clienteId)}
                         title="Exportar PDF esta bobina"
-                        className="p-1.5 rounded-lg border border-slate-200 text-slate-400 hover:text-indigo-600 hover:border-indigo-300 transition-all shrink-0">
-                        <Printer size={13} />
+                        aria-label="Exportar PDF esta bobina"
+                        className={BTN_ICONO}>
+                        <Printer size={15} />
                     </button>
                 </div>
-            </div>
 
-            {/* Detalle movimientos */}
-            {open && (
-                <div className="border-t border-slate-100">
-                    {movimientos.length === 0 ? (
-                        <p className="text-center text-xs text-slate-400 py-5">Sin movimientos</p>
-                    ) : (
-                        <table className="w-full text-xs">
-                            <thead>
-                                <tr className="bg-slate-50 border-b border-slate-200">
-                                    {/* Cantidad y Saldo van alineados a la derecha como sus celdas — con todo
-                                        a la izquierda los títulos quedaban "corridos" respecto de los números */}
-                                    {['Fecha', 'Tipo', 'Cantidad', 'Saldo Acum.', 'Referencia', 'Operario'].map(h => (
-                                        <th key={h} className={`px-4 py-2 text-[9px] font-black uppercase tracking-widest text-slate-500 ${h === 'Cantidad' || h === 'Saldo Acum.' ? 'text-right' : 'text-left'}`}>{h}</th>
-                                    ))}
-                                </tr>
-                            </thead>
-                            <tbody>
+                {/* Detalle movimientos */}
+                {open && (
+                    <div className="border-t border-zinc-100">
+                        {movimientos.length === 0 ? (
+                            <p className="text-center text-xs text-zinc-400 py-5">Sin movimientos</p>
+                        ) : conTabla ? (
+                            <div className="overflow-x-auto">
+                                <table className="w-full text-xs">
+                                    <thead className="bg-zinc-50 border-b border-zinc-200">
+                                        <tr>
+                                            {/* Cantidad y Saldo van alineados a la derecha como sus celdas — con todo
+                                                a la izquierda los títulos quedaban "corridos" respecto de los números */}
+                                            {['Fecha', 'Tipo', 'Cantidad', 'Saldo Acum.', 'Referencia', 'Operario'].map(h => (
+                                                <th key={h} className={`${TH} ${h === 'Cantidad' || h === 'Saldo Acum.' ? 'text-right' : 'text-left'}`}>{h}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody className="divide-y divide-zinc-100">
+                                        {movimientos.map((m, i) => {
+                                            const cfg = getTipo(m.TipoMovimiento);
+                                            const Icon = cfg.icon;
+                                            const isIngreso = m.TipoMovimiento === 'INGRESO';
+                                            return (
+                                                <tr key={m.MovimientoID || i} className="hover:bg-zinc-50 transition-colors">
+                                                    <td className="px-4 py-2.5 text-[11px] text-zinc-500 tabular-nums whitespace-nowrap">{fmtDt(m.FechaMovimiento)}</td>
+                                                    <td className="px-4 py-2.5">
+                                                        <span className={`${CHIP} ${cfg.color}`}><Icon size={11} />{cfg.label}</span>
+                                                    </td>
+                                                    <td className={`px-4 py-2.5 font-black tabular-nums text-right whitespace-nowrap ${isIngreso ? 'text-emerald-600' : cfg.textColor}`}>
+                                                        {cfg.sign} {fmtN(Math.abs(m.Cantidad))} m
+                                                    </td>
+                                                    <td className="px-4 py-2.5 font-bold tabular-nums text-right text-zinc-800 whitespace-nowrap">
+                                                        {fmtN(m.SaldoAcumulado || 0)} m
+                                                    </td>
+                                                    <td className="px-4 py-2.5 text-[11px] text-zinc-500 max-w-[280px] truncate" title={m.Referencia || ''}>
+                                                        {m.Referencia || m.CodigoRecepcion || '—'}
+                                                    </td>
+                                                    <td className="px-4 py-2.5 text-[11px] text-zinc-500 whitespace-nowrap">{m.Operario || '—'}</td>
+                                                </tr>
+                                            );
+                                        })}
+                                    </tbody>
+                                    <tfoot>
+                                        <tr className="bg-zinc-50 border-t border-zinc-200">
+                                            <td colSpan={2} className="px-4 py-2.5 text-[10px] font-black text-zinc-400 uppercase tracking-widest">Resumen bobina</td>
+                                            <td className="px-4 py-2.5 font-black tabular-nums text-right text-emerald-600 text-xs whitespace-nowrap">+{fmtN(totalIng)} m</td>
+                                            <td className="px-4 py-2.5 font-black tabular-nums text-right text-brand-cyan text-xs whitespace-nowrap">{fmtN(saldo)} m</td>
+                                            <td colSpan={2} />
+                                        </tr>
+                                    </tfoot>
+                                </table>
+                            </div>
+                        ) : (
+                            <div className="divide-y divide-zinc-100">
                                 {movimientos.map((m, i) => {
                                     const cfg = getTipo(m.TipoMovimiento);
                                     const Icon = cfg.icon;
                                     const isIngreso = m.TipoMovimiento === 'INGRESO';
                                     return (
-                                        <tr key={m.MovimientoID || i} className={`border-b border-slate-50 hover:bg-slate-50/60 ${i % 2 === 0 ? 'bg-white' : 'bg-slate-50/30'}`}>
-                                            <td className="px-4 py-2.5 font-mono text-[10px] text-slate-500 whitespace-nowrap">{fmtDt(m.FechaMovimiento)}</td>
-                                            <td className="px-4 py-2.5">
-                                                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[9px] font-black uppercase ${cfg.color}`}>
-                                                    <Icon size={9} />{cfg.label}
+                                        <div key={m.MovimientoID || i} className="px-4 py-3 flex flex-col gap-1.5">
+                                            <div className="flex items-center justify-between gap-2">
+                                                <span className={`${CHIP} ${cfg.color}`}><Icon size={11} />{cfg.label}</span>
+                                                <span className={`text-sm font-black tabular-nums whitespace-nowrap ${isIngreso ? 'text-emerald-600' : cfg.textColor}`}>
+                                                    {cfg.sign} {fmtN(Math.abs(m.Cantidad))} m
                                                 </span>
-                                            </td>
-                                            <td className={`px-4 py-2.5 font-black font-mono text-right whitespace-nowrap ${isIngreso ? 'text-emerald-600' : cfg.textColor}`}>
-                                                {cfg.sign} {fmtN(Math.abs(m.Cantidad))} m
-                                            </td>
-                                            <td className="px-4 py-2.5 font-black font-mono text-right text-indigo-700 whitespace-nowrap">
-                                                {fmtN(m.SaldoAcumulado || 0)} m
-                                            </td>
-                                            <td className="px-4 py-2.5 text-[10px] text-slate-400 max-w-[200px] truncate" title={m.Referencia || ''}>
-                                                {m.Referencia || m.CodigoRecepcion || '—'}
-                                            </td>
-                                            <td className="px-4 py-2.5 text-[10px] text-slate-400">{m.Operario || '—'}</td>
-                                        </tr>
+                                            </div>
+                                            <div className="text-xs text-zinc-500 break-words">{m.Referencia || m.CodigoRecepcion || '—'}</div>
+                                            <div className="flex items-center justify-between gap-2 text-[11px] text-zinc-400">
+                                                <span className="min-w-0 truncate tabular-nums">{fmtDt(m.FechaMovimiento)} · {m.Operario || '—'}</span>
+                                                <span className="shrink-0 whitespace-nowrap">Saldo <b className="font-bold text-zinc-800 tabular-nums">{fmtN(m.SaldoAcumulado || 0)} m</b></span>
+                                            </div>
+                                        </div>
                                     );
                                 })}
-                            </tbody>
-                            <tfoot>
-                                <tr className="bg-indigo-50 border-t border-indigo-100">
-                                    <td colSpan={2} className="px-4 py-2 text-[10px] font-black text-indigo-700 uppercase tracking-widest">Resumen bobina</td>
-                                    <td className="px-4 py-2 font-black font-mono text-right text-emerald-600 text-xs">+{fmtN(totalIng)} m</td>
-                                    <td className="px-4 py-2 font-black font-mono text-right text-indigo-700 text-xs">{fmtN(saldo)} m</td>
-                                    <td colSpan={2} />
-                                </tr>
-                            </tfoot>
-                        </table>
-                    )}
-                </div>
-            )}
+                                <div className="px-4 py-2.5 bg-zinc-50 flex items-center justify-between gap-2">
+                                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest">Resumen bobina</span>
+                                    <span className="flex items-center gap-3 text-xs font-black tabular-nums whitespace-nowrap">
+                                        <span className="text-emerald-600"><span className="text-[10px] font-bold text-zinc-400 mr-1">ING.</span>+{fmtN(totalIng)} m</span>
+                                        <span className="text-brand-cyan"><span className="text-[10px] font-bold text-zinc-400 mr-1">SALDO</span>{fmtN(saldo)} m</span>
+                                    </span>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
         </div>
     );
 }
@@ -349,6 +423,7 @@ export default function TelaClienteEstadoCuenta() {
     const [filtros,      setFiltros]      = useState({ desde: '', hasta: '', tela: '' });
     const [filtroEstado, setFiltroEstado] = useState('Todas');
     const [checkedIds,   setCheckedIds]   = useState(new Set());
+    const conTabla = useConTabla(); // en el celular, los movimientos de cada bobina van en tarjetas
 
     // Búsqueda clientes
     const searchClients = useCallback(async (q) => {
@@ -466,196 +541,234 @@ export default function TelaClienteEstadoCuenta() {
     const clienteNombre = clienteSel ? (clienteSel.NombreFantasia || clienteSel.Nombre || '') : '';
 
     return (
-        <div className="min-h-screen bg-slate-50 p-4 md:p-6">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
 
             {/* ── Cabecera ── */}
-            <div className="mb-6 flex items-start justify-between gap-3 flex-wrap">
-                <div className="flex items-center gap-3">
-                    <div className="p-2.5 rounded-xl bg-indigo-100">
-                        <Package size={22} className="text-indigo-600" />
-                    </div>
-                    <div>
-                        <h1 className="text-xl font-black text-slate-800">Estado de Cuenta — Tela de Cliente</h1>
-                        <p className="text-xs text-slate-400 font-medium">Vista por bobina · ingresos, consumos y saldo disponible</p>
-                    </div>
+            <div className="flex flex-wrap items-center gap-3">
+                <Scroll size={30} className="text-brand-cyan shrink-0" />
+                <div className="min-w-[220px] flex-1">
+                    <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Estado de cuenta — Tela de cliente</h1>
+                    <p className="text-sm text-zinc-500 mt-1">Vista por bobina · ingresos, consumos y saldo disponible</p>
                 </div>
-                {clienteSel && (
-                    <div className="text-right">
-                        <p className="text-xs font-black text-slate-500 uppercase tracking-widest">Cliente</p>
-                        <p className="text-base font-black text-slate-800">{clienteNombre}</p>
-                        <p className="text-[10px] text-slate-400 font-mono">{clienteSel.IDCliente || clienteSel.CliIdCliente}</p>
-                    </div>
-                )}
             </div>
 
-            {/* ── Buscador ── */}
-            <div className="relative mb-5 max-w-lg">
-                <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-2xl px-4 py-2.5 shadow-sm focus-within:ring-2 focus-within:ring-indigo-400 focus-within:border-indigo-400 transition-all">
-                    <Search size={16} className="text-slate-400 shrink-0" />
-                    <input value={query}
-                        onChange={e => { setQuery(e.target.value); if (!e.target.value) { setClienteSel(null); setMovimientos([]); setSaldos([]); } }}
-                        placeholder="Buscar cliente por nombre..."
-                        className="flex-1 bg-transparent text-sm font-medium text-slate-700 placeholder-slate-300 outline-none" />
-                    {searching && <Loader2 size={14} className="animate-spin text-indigo-400 shrink-0" />}
-                    {clienteSel && (
-                        <button onClick={() => { setClienteSel(null); setQuery(''); setMovimientos([]); setSaldos([]); }}>
-                            <X size={14} className="text-slate-400 hover:text-slate-700" />
-                        </button>
+            {/* ── Buscador, barra de herramientas y filtros ── */}
+            <div className={`${CARD} p-3 md:p-4 flex flex-col gap-3`}>
+                <div className="relative">
+                    <div className={`${CAJA_BUSQUEDA} ${clienteSel ? 'border-brand-cyan' : 'border-zinc-200'}`}>
+                        {searching
+                            ? <Loader2 size={16} className="animate-spin text-brand-cyan shrink-0" />
+                            : <Search size={16} className="text-zinc-400 shrink-0" />}
+                        <input value={query}
+                            onChange={e => { setQuery(e.target.value); if (!e.target.value) { setClienteSel(null); setMovimientos([]); setSaldos([]); } }}
+                            placeholder="Buscar cliente por nombre..."
+                            aria-label="Buscar cliente"
+                            autoComplete="off"
+                            className="flex-1 min-w-0 bg-transparent text-sm text-zinc-800 placeholder:text-zinc-400 outline-none" />
+                        {clienteSel && (
+                            <button type="button" aria-label="Quitar cliente" className="p-0.5 rounded-full text-zinc-400 hover:text-zinc-700 transition-colors"
+                                onClick={() => { setClienteSel(null); setQuery(''); setMovimientos([]); setSaldos([]); }}>
+                                <X size={15} />
+                            </button>
+                        )}
+                    </div>
+                    {suggestions.length > 0 && (
+                        <div className="absolute top-full left-0 right-0 z-50 mt-1.5 bg-white border border-zinc-200 rounded-xl shadow-xl shadow-zinc-900/10 overflow-hidden">
+                            <div className="px-3 py-2 bg-zinc-50 text-[10px] font-black text-zinc-400 uppercase tracking-wide border-b border-zinc-100 flex justify-between">
+                                <span>Clientes encontrados</span>
+                                <span className="tabular-nums">{suggestions.length} resultado{suggestions.length !== 1 ? 's' : ''}</span>
+                            </div>
+                            {suggestions.map((c, i) => (
+                                <button key={i} type="button" onClick={() => selectCliente(c)}
+                                    className="w-full text-left px-3 py-2.5 hover:bg-zinc-50 border-b border-zinc-100 last:border-0 flex items-center gap-3 transition-colors">
+                                    <span className="w-8 h-8 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-700 font-black text-sm shrink-0">
+                                        {String(c.NombreFantasia || c.Nombre || 'C').charAt(0).toUpperCase()}
+                                    </span>
+                                    <span className="flex-1 min-w-0">
+                                        <span className="block text-sm font-bold text-zinc-800 truncate">{c.NombreFantasia || c.Nombre}</span>
+                                        <span className="block text-[10px] text-zinc-400 font-mono truncate">{c.IDCliente || c.CliIdCliente || ''}</span>
+                                    </span>
+                                </button>
+                            ))}
+                        </div>
                     )}
                 </div>
-                {suggestions.length > 0 && (
-                    <div className="absolute top-full left-0 right-0 z-50 mt-1 bg-white border border-slate-200 rounded-2xl shadow-xl overflow-hidden">
-                        {suggestions.map((c, i) => (
-                            <button key={i} onClick={() => selectCliente(c)}
-                                className="w-full text-left px-4 py-2.5 hover:bg-indigo-50 transition-colors border-b border-slate-100 last:border-0">
-                                <p className="text-sm font-bold text-slate-700">{c.NombreFantasia || c.Nombre}</p>
-                                <p className="text-[10px] text-slate-400">{c.IDCliente || c.CliIdCliente || ''}</p>
+
+                {/* ── Barra de herramientas ── */}
+                {clienteSel && (
+                    <div className="flex flex-col md:flex-row md:items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                            {/* Filtro estado bobina: pastillas en escritorio, Selector en el celular */}
+                            <div className="hidden md:inline-flex rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+                                {['Todas', 'Activas', 'Cerradas'].map(op => {
+                                    const cnt = contarPorEstado(bobinas, op);
+                                    return (
+                                        <button key={op} type="button" onClick={() => setFiltroEstado(op)}
+                                            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${filtroEstado === op ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+                                            {op}
+                                            {cnt > 0 && <span className={`rounded-full px-1.5 text-[10px] font-black tabular-nums ${filtroEstado === op ? 'bg-white/20 text-white' : 'bg-zinc-100 text-zinc-500'}`}>{cnt}</span>}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            <div className="md:hidden w-full">
+                                <Selector filtro className="w-full" aria-label="Estado de las bobinas" value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}>
+                                    {['Todas', 'Activas', 'Cerradas'].map(op => (
+                                        <option key={op} value={op}>{op} ({contarPorEstado(bobinas, op)})</option>
+                                    ))}
+                                </Selector>
+                            </div>
+
+                            <button type="button" onClick={() => setShowFiltros(p => !p)} aria-pressed={showFiltros}
+                                className={`${showFiltros ? BTN_ACTIVO : BTN_SECUNDARIO} flex-1 md:flex-none`}>
+                                <SlidersHorizontal size={15} className={showFiltros ? '' : 'text-brand-cyan'} /> Filtros
                             </button>
+                            <button type="button" onClick={loadData} className={`${BTN_SECUNDARIO} flex-1 md:flex-none`}>
+                                <RefreshCw size={15} className={`text-brand-cyan ${loading ? 'animate-spin' : ''}`} /> Actualizar
+                            </button>
+                        </div>
+
+                        {/* Acciones de exportar */}
+                        <div className="flex items-center gap-2 md:ml-auto empty:hidden">
+                            {selectedBobinas.length > 0 && (
+                                <button type="button" onClick={() => generarPDFBobinas(selectedBobinas, clienteNombre, clienteSel?.IDCliente || clienteSel?.CliIdCliente)}
+                                    className={`${BTN_PRINCIPAL} w-full md:w-auto`}>
+                                    <Download size={15} /> Exportar {selectedBobinas.length} seleccionada{selectedBobinas.length !== 1 ? 's' : ''}
+                                </button>
+                            )}
+                            {bobinasFiltradas.length > 0 && selectedBobinas.length === 0 && (
+                                <button type="button" onClick={() => generarPDFBobinas(bobinasFiltradas, clienteNombre, clienteSel?.IDCliente || clienteSel?.CliIdCliente)}
+                                    className={`${BTN_PRINCIPAL} w-full md:w-auto`}>
+                                    <Download size={15} /> Exportar todas
+                                </button>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* ── Panel de filtros ── */}
+                {showFiltros && (
+                    <div className="grid grid-cols-2 gap-3 md:flex md:flex-wrap md:items-end pt-3 border-t border-zinc-100">
+                        {[{ key: 'desde', label: 'Desde' }, { key: 'hasta', label: 'Hasta' }].map(({ key, label }) => (
+                            <div key={key} className="min-w-0 md:w-44">
+                                <span className={ETIQUETA}>{label}</span>
+                                <SelectorFecha filtro vaciable className="w-full" value={filtros[key]} placeholder={label} aria-label={`Fecha ${label.toLowerCase()}`}
+                                    onChange={e => setFiltros(p => ({ ...p, [key]: e.target.value }))} />
+                            </div>
                         ))}
+                        <div className="min-w-0 col-span-2 md:col-span-1 md:w-60">
+                            <span className={ETIQUETA}>Tipo de tela</span>
+                            <Selector filtro className="w-full" aria-label="Tipo de tela" value={filtros.tela}
+                                onChange={e => setFiltros(p => ({ ...p, tela: e.target.value }))}>
+                                <option value="">Todas las telas</option>
+                                {telasUnicas.map(t => <option key={t} value={t}>{t}</option>)}
+                            </Selector>
+                        </div>
+                        <button type="button" onClick={() => setFiltros({ desde: '', hasta: '', tela: '' })}
+                            className={`${BTN_SECUNDARIO} col-span-2 md:col-span-1`}>
+                            <X size={15} /> Limpiar
+                        </button>
                     </div>
                 )}
             </div>
 
-
-
-            {/* ── Barra de herramientas ── */}
+            {/* ── Cliente elegido ── */}
             {clienteSel && (
-                <div className="flex items-center justify-between gap-2 mb-3 flex-wrap">
-                    <div className="flex items-center gap-2 flex-wrap">
-                        {/* Filtro estado bobina */}
-                        <div className="flex items-center rounded-xl overflow-hidden border border-slate-200 text-xs font-bold shadow-sm">
-                            {['Todas', 'Activas', 'Cerradas'].map(op => {
-                                const cnt = op === 'Todas' ? bobinas.length
-                                    : op === 'Activas'  ? bobinas.filter(b => !getEstado(b.estado).closed).length
-                                    : bobinas.filter(b => getEstado(b.estado).closed).length;
-                                return (
-                                    <button key={op} onClick={() => setFiltroEstado(op)}
-                                        className={`px-3 py-1.5 transition-all flex items-center gap-1 ${filtroEstado === op ? 'bg-indigo-600 text-white' : 'bg-white text-slate-600 hover:bg-indigo-50'}`}>
-                                        {op}
-                                        {cnt > 0 && <span className={`rounded-full px-1.5 text-[9px] font-black ${filtroEstado === op ? 'bg-white/25 text-white' : 'bg-slate-100 text-slate-600'}`}>{cnt}</span>}
-                                    </button>
-                                );
-                            })}
-                        </div>
-
-                        <button onClick={() => setShowFiltros(p => !p)}
-                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold transition-all border ${showFiltros ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white text-slate-600 border-slate-200 hover:border-indigo-300'}`}>
-                            <SlidersHorizontal size={13} /> Filtros
-                        </button>
-                        <button onClick={loadData}
-                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-white text-slate-600 border border-slate-200 hover:border-indigo-300 transition-all">
-                            <RefreshCw size={13} className={loading ? 'animate-spin' : ''} /> Actualizar
-                        </button>
+                <div className={`${CARD} p-4 flex items-center gap-4`}>
+                    <div className="w-12 h-12 rounded-full bg-zinc-100 flex items-center justify-center text-zinc-700 font-black text-xl shrink-0">
+                        {String(clienteNombre || 'C').charAt(0).toUpperCase()}
                     </div>
-
-                    {/* Acciones de exportar */}
-                    <div className="flex items-center gap-2">
-                        {selectedBobinas.length > 0 && (
-                            <button onClick={() => generarPDFBobinas(selectedBobinas, clienteNombre, clienteSel?.IDCliente || clienteSel?.CliIdCliente)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-indigo-600 text-white hover:bg-indigo-700 transition-all shadow">
-                                <Download size={13} /> Exportar {selectedBobinas.length} seleccionada{selectedBobinas.length !== 1 ? 's' : ''}
-                            </button>
-                        )}
-                        {bobinasFiltradas.length > 0 && selectedBobinas.length === 0 && (
-                            <button onClick={() => generarPDFBobinas(bobinasFiltradas, clienteNombre, clienteSel?.IDCliente || clienteSel?.CliIdCliente)}
-                                className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-700 text-white hover:bg-slate-800 transition-all">
-                                <Download size={13} /> Exportar todas
-                            </button>
+                    <div className="flex-1 min-w-0">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Cliente</p>
+                        <p className="font-black text-zinc-800 text-base leading-tight truncate">{clienteNombre}</p>
+                        {(clienteSel.IDCliente || clienteSel.CliIdCliente) && (
+                            <span className="inline-block mt-1 text-[11px] font-mono bg-zinc-100 text-zinc-600 px-2 py-0.5 rounded-full border border-zinc-200 font-bold">
+                                ID CLIENTE: {clienteSel.IDCliente || clienteSel.CliIdCliente}
+                            </span>
                         )}
                     </div>
-                </div>
-            )}
-
-            {/* ── Panel de filtros ── */}
-            {showFiltros && (
-                <div className="mb-4 p-4 bg-white border border-slate-200 rounded-2xl shadow-sm grid grid-cols-2 md:grid-cols-4 gap-3">
-                    {[{ key: 'desde', label: 'Desde', type: 'date' }, { key: 'hasta', label: 'Hasta', type: 'date' }].map(({ key, label, type }) => (
-                        <div key={key}>
-                            <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">{label}</label>
-                            <input type={type} value={filtros[key]}
-                                onChange={e => setFiltros(p => ({ ...p, [key]: e.target.value }))}
-                                className="w-full text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 outline-none focus:ring-2 focus:ring-indigo-300" />
+                    {!loading && (
+                        <div className="text-right shrink-0">
+                            <p className="text-2xl font-black text-zinc-800 tabular-nums leading-none">{bobinas.length}</p>
+                            <p className="text-xs text-zinc-400 mt-1">bobina{bobinas.length !== 1 ? 's' : ''}</p>
                         </div>
-                    ))}
-                    <div>
-                        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-1">Tipo de Tela</label>
-                        <select value={filtros.tela} onChange={e => setFiltros(p => ({ ...p, tela: e.target.value }))}
-                            className="w-full text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 outline-none focus:ring-2 focus:ring-indigo-300">
-                            <option value="">Todas las telas</option>
-                            {telasUnicas.map(t => <option key={t} value={t}>{t}</option>)}
-                        </select>
-                    </div>
-                    <div className="flex items-end">
-                        <button onClick={() => setFiltros({ desde: '', hasta: '', tela: '' })}
-                            className="w-full flex items-center justify-center gap-1 px-3 py-1.5 rounded-xl text-xs font-bold text-slate-500 border border-slate-200 hover:border-rose-300 hover:text-rose-600 transition-all">
-                            <X size={12} /> Limpiar
-                        </button>
-                    </div>
+                    )}
                 </div>
             )}
 
             {/* ── Estado vacío / cargando ── */}
             {!clienteSel && !loading && (
-                <div className="flex flex-col items-center justify-center py-20 text-center">
-                    <div className="p-4 bg-indigo-100 rounded-3xl mb-4"><Package size={32} className="text-indigo-500" /></div>
-                    <p className="text-sm font-bold text-slate-400">Selecciona un cliente para ver sus bobinas</p>
+                <div className={`${CARD} flex flex-col items-center justify-center py-16 px-4 text-center`}>
+                    <UserSearch size={40} className="mb-3 text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">Seleccioná un cliente para ver sus bobinas</p>
+                    <p className="text-xs text-zinc-400 mt-1">Buscalo por nombre arriba: se muestran sus bobinas con ingresos, consumos y saldo disponible.</p>
                 </div>
             )}
-            {error && <div className="p-4 rounded-2xl bg-rose-50 border border-rose-200 text-rose-700 text-sm font-bold mb-4">⚠ {error}</div>}
-            {loading && <div className="flex items-center justify-center py-16"><Loader2 size={28} className="animate-spin text-indigo-400" /></div>}
+            {error && (
+                <div className="flex items-center gap-2 p-4 rounded-2xl bg-brand-magenta/10 border border-brand-magenta/20 text-brand-magenta text-sm font-bold">
+                    <AlertTriangle size={16} className="shrink-0" /> {error}
+                </div>
+            )}
+            {loading && (
+                <div className={`${CARD} flex flex-col items-center justify-center py-16 gap-3`}>
+                    <Loader2 size={30} className="animate-spin text-brand-cyan" />
+                    <p className="text-sm text-zinc-400">Cargando movimientos...</p>
+                </div>
+            )}
 
             {/* ── Seleccionar todas ── */}
             {!loading && bobinasFiltradas.length > 0 && (
-                <div className="flex items-center gap-3 mb-3 px-1">
-                    <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-slate-500 hover:text-indigo-600 transition-colors">
+                <div className="flex flex-wrap items-center gap-3 px-1 -mb-1">
+                    <label className="flex items-center gap-2 cursor-pointer text-xs font-bold text-zinc-500 hover:text-zinc-800 transition-colors">
                         <input type="checkbox"
                             checked={checkedIds.size === bobinasFiltradas.length && bobinasFiltradas.length > 0}
                             onChange={toggleAll}
-                            className="w-4 h-4 rounded border-slate-300 accent-indigo-600 cursor-pointer" />
+                            className="w-4 h-4 accent-[#006E97] cursor-pointer" />
                         {checkedIds.size === bobinasFiltradas.length ? 'Desmarcar todas' : 'Seleccionar todas'}
                     </label>
                     {checkedIds.size > 0 && (
-                        <span className="text-xs text-indigo-600 font-bold">{checkedIds.size} seleccionada{checkedIds.size !== 1 ? 's' : ''}</span>
+                        <span className={`${CHIP_ESTADO} bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20 tabular-nums`}>{checkedIds.size} seleccionada{checkedIds.size !== 1 ? 's' : ''}</span>
                     )}
                 </div>
             )}
 
             {/* ── Lista de bobinas ── */}
             {!loading && bobinasFiltradas.length > 0 && (
-                <div className="space-y-3">
+                <div className="flex flex-col gap-3">
                     {bobinasFiltradas.map(b => (
                         <BobinaCard key={b.bobinaId} data={b}
                             checked={checkedIds.has(b.bobinaId)}
                             onCheck={toggleCheck}
                             clienteNombre={clienteNombre}
                             clienteId={clienteSel?.IDCliente || clienteSel?.CliIdCliente}
+                            conTabla={conTabla}
                         />
                     ))}
                 </div>
             )}
 
             {!loading && clienteSel && bobinas.length > 0 && bobinasFiltradas.length === 0 && (
-                <div className="flex flex-col items-center py-10 text-center">
-                    <Scissors size={28} className="text-slate-300 mb-2" />
-                    <p className="text-sm font-bold text-slate-400">No hay bobinas {filtroEstado === 'Activas' ? 'activas' : 'cerradas'} para este cliente</p>
+                <div className={`${CARD} flex flex-col items-center justify-center py-12 px-4 text-center`}>
+                    <Scissors size={40} className="mb-3 text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">No hay bobinas {filtroEstado === 'Activas' ? 'activas' : 'cerradas'} para este cliente</p>
                 </div>
             )}
 
             {!loading && clienteSel && movimientos.length === 0 && !error && (
-                <div className="flex flex-col items-center justify-center py-16 text-center">
-                    <FileText size={32} className="text-slate-300 mb-3" />
-                    <p className="text-sm font-bold text-slate-400">Sin movimientos registrados</p>
-                    <p className="text-xs text-slate-300 mt-1">Aún no hay ingresos de tela o no coincide con los filtros</p>
+                <div className={`${CARD} flex flex-col items-center justify-center py-16 px-4 text-center`}>
+                    <FileText size={40} className="mb-3 text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">Sin movimientos registrados</p>
+                    <p className="text-xs text-zinc-400 mt-1">Aún no hay ingresos de tela o no coincide con los filtros</p>
                 </div>
             )}
 
             {/* Footer */}
             {!loading && bobinasFiltradas.length > 0 && (
-                <div className="mt-4 px-1 flex items-center justify-between text-[10px] text-slate-400 font-bold">
-                    <span>{bobinasFiltradas.length} bobina{bobinasFiltradas.length !== 1 ? 's' : ''} · {movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
+                <div className="px-1 flex flex-wrap items-center justify-between gap-2 text-[11px] text-zinc-400 font-bold">
+                    <span className="tabular-nums">{bobinasFiltradas.length} bobina{bobinasFiltradas.length !== 1 ? 's' : ''} · {movimientos.length} movimiento{movimientos.length !== 1 ? 's' : ''}</span>
                     <span className="flex items-center gap-3">
-                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-400 inline-block" /> Ingresos</span>
-                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-rose-400 inline-block" /> Consumos</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" /> Ingresos</span>
+                        <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-brand-magenta inline-block" /> Consumos</span>
                         <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-amber-400 inline-block" /> Ajustes</span>
                     </span>
                 </div>

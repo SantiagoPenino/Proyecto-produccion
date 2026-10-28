@@ -139,30 +139,76 @@ function proximoNumeroEtiqueta() {
 // ============================================================
 // 1. SOLICITAR (portal o vista de bobina interna)
 // ============================================================
+// Error de un control (no de una falla): el controller lo devuelve con su código y lo anota como aviso.
+const errorControl = (statusCode, mensaje) => Object.assign(new Error(mensaje), { statusCode });
+
+// Fecha de la solicitud en hora de Uruguay (en producción la base guarda UTC).
+const fechaUY = (d) => (d ? new Date(d).toLocaleDateString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit' }) : '');
+
+// Ya hay una SOLICITUD_CLIENTE abierta para la bobina. El cliente no ve la bandeja: a él se le dice
+// que ya la pidió; adentro, dónde seguirla.
+function errorSolicitudRepetida(origen, abierta) {
+    const devolver = abierta?.Accion !== 'DESCARTAR';
+    const cuando = abierta?.FechaCreacion ? ` el ${fechaUY(abierta.FechaCreacion)}` : '';
+    if (origen === 'PORTAL') {
+        return errorControl(409, devolver
+            ? `Ya pediste la devolución de esta tela${cuando}. Te avisamos cuando esté lista.`
+            : `Ya pediste el descarte de esta tela${cuando}. Te avisamos cuando esté resuelto.`);
+    }
+    return errorControl(409,
+        `Esta bobina ya tiene una solicitud de ${devolver ? 'devolución' : 'descarte'} en curso${cuando ? `, pedida${cuando}` : ''}. ` +
+        'Solución: seguila en Tela de cliente › Bandeja de devoluciones.');
+}
+
+// Solicitud de devolución/descarte abierta (PENDIENTE o APROBADA) de una bobina, o null. Recibe un
+// sql.Request ya armado (de la transacción de quien llama) para leer dentro de ella.
+async function solicitudAbierta(request, bobinaId) {
+    const r = await request
+        .input('BidSol', sql.Int, bobinaId)
+        .query(`SELECT TOP 1 TevID, Accion, Estado, FechaCreacion FROM dbo.TelaClienteEventos
+                WHERE BobinaID = @BidSol AND Tipo = 'SOLICITUD_CLIENTE' AND Estado IN ('PENDIENTE', 'APROBADA')
+                ORDER BY TevID DESC`);
+    return r.recordset[0] || null;
+}
+
+// Cerrar o dejar en cero a mano una bobina con una devolución pedida: así se perdieron las 6 solicitudes
+// del portal que nadie contestó (INF-SIS-2026-11). Se resuelve en la bandeja, no cerrando la bobina.
+function errorBobinaConSolicitud(sol) {
+    const devolver = sol.Accion !== 'DESCARTAR';
+    const cuando = sol.FechaCreacion ? ` el ${fechaUY(sol.FechaCreacion)}` : '';
+    return errorControl(409,
+        `El cliente pidió ${devolver ? 'la devolución' : 'el descarte'} de esta tela${cuando} (solicitud #${sol.TevID}). ` +
+        `Solución: resolvela en Tela de cliente › Bandeja de devoluciones: ${devolver
+            ? 'aprobala y empaquetala, marcala «Ya se entregó» si se la diste en mano, o rechazala si no queda tela.'
+            : 'aprobala (la bobina se cierra sola) o rechazala.'}`);
+}
+
 async function solicitarDevolucion(pool, { clienteId, bobinaId, accion, origen, usuarioId, observaciones }) {
     await ensureSchema(pool);
 
     const accionNorm = String(accion || '').toUpperCase();
     if (!ACCIONES_VALIDAS.includes(accionNorm)) {
-        throw new Error(`Acción inválida: ${accion}. Debe ser DEVOLVER o DESCARTAR.`);
+        throw errorControl(400, `Acción inválida: ${accion}. Debe ser DEVOLVER o DESCARTAR.`);
     }
 
     const bobina = await pool.request()
         .input('BID', sql.Int, bobinaId)
         .input('CLI', sql.NVarChar(255), clienteId)
         .query(`SELECT BobinaID, MetrosRestantes, Estado FROM InventarioBobinas WHERE BobinaID = @BID AND ClienteID = @CLI`);
-    if (!bobina.recordset.length) throw new Error('Bobina no encontrada o no pertenece a este cliente.');
+    if (!bobina.recordset.length) throw errorControl(404, 'Bobina no encontrada o no pertenece a este cliente.');
     if (['Cerrado', 'Agotado'].includes(bobina.recordset[0].Estado)) {
-        throw new Error(`Esa bobina ya está ${bobina.recordset[0].Estado} — no admite más solicitudes.`);
+        throw errorControl(400, `Esa bobina ya está ${bobina.recordset[0].Estado} — no admite más solicitudes.`);
     }
 
     // El candado es SOLO contra otra SOLICITUD_CLIENTE abierta — un AVISO_EXCEDENTE
     // pendiente de la misma bobina no bloquea (ver abajo: se auto-resuelve).
     const abierto = await pool.request()
         .input('BID', sql.Int, bobinaId)
-        .query(`SELECT TevID FROM dbo.TelaClienteEventos WHERE BobinaID = @BID AND Tipo = 'SOLICITUD_CLIENTE' AND Estado IN ('PENDIENTE', 'APROBADA')`);
+        .query(`SELECT TOP 1 TevID, Accion, FechaCreacion FROM dbo.TelaClienteEventos
+                WHERE BobinaID = @BID AND Tipo = 'SOLICITUD_CLIENTE' AND Estado IN ('PENDIENTE', 'APROBADA')
+                ORDER BY TevID DESC`);
     if (abierto.recordset.length) {
-        throw new Error('Ya hay una solicitud en curso para esta bobina.');
+        throw errorSolicitudRepetida(origen, abierto.recordset[0]);
     }
 
     const transaction = new sql.Transaction(pool);
@@ -203,6 +249,8 @@ async function solicitarDevolucion(pool, { clienteId, bobinaId, accion, origen, 
         return { tevId: ins.recordset[0].TevID };
     } catch (err) {
         try { await transaction.rollback(); } catch (_) {}
+        // Dos pedidos a la vez: el índice único de solicitud abierta frena el segundo.
+        if (err.number === 2601 || err.number === 2627) throw errorSolicitudRepetida(origen, null);
         throw err;
     }
 }
@@ -239,7 +287,10 @@ async function listarBandeja(pool, { estado } = {}) {
         LEFT JOIN dbo.Etiquetas et ON et.OrdenID = t.OrdenGeneradaID
         LEFT JOIN dbo.OrdenesRetiro r ON r.OReIdOrdenRetiro = t.OReIdOrdenRetiro
         WHERE ${where}
-        ORDER BY CASE t.Estado WHEN 'PENDIENTE' THEN 0 WHEN 'APROBADA' THEN 1 WHEN 'EMPAQUETADA' THEN 2 WHEN 'EN_DEPOSITO' THEN 3 ELSE 4 END, t.FechaCreacion ASC
+        -- Primero las solicitudes abiertas cuya bobina ya se agotó o cerró: quedaron sin poder cumplirse
+        -- y hay que contestarle al cliente (INF-SIS-2026-11).
+        ORDER BY CASE WHEN t.Tipo = 'SOLICITUD_CLIENTE' AND t.Estado IN ('PENDIENTE', 'APROBADA') AND ib.Estado IN ('Agotado', 'Cerrado') THEN 0 ELSE 1 END,
+                 CASE t.Estado WHEN 'PENDIENTE' THEN 0 WHEN 'APROBADA' THEN 1 WHEN 'EMPAQUETADA' THEN 2 WHEN 'EN_DEPOSITO' THEN 3 ELSE 4 END, t.FechaCreacion ASC
     `);
     return r.recordset;
 }
@@ -274,20 +325,119 @@ async function _cargarEvento(transaction, tevId) {
     return r.recordset[0];
 }
 
+// Rechazar exige el motivo y se lo avisa al cliente: antes solo cambiaba el estado y el cliente nunca
+// se enteraba. Vale para una pendiente o una aprobada que todavía no se empaquetó (por ejemplo, si al
+// ir a buscarla no quedaba tela).
 async function rechazarSolicitud(pool, { tevId, usuarioId, motivo }) {
     await ensureSchema(pool);
+    const motivoLimpio = String(motivo || '').trim();
+    if (motivoLimpio.length < 3) {
+        throw errorControl(400, 'Falta el motivo del rechazo. Solución: elegí uno o escribilo; el cliente lo va a ver.');
+    }
     const r = await pool.request()
         .input('TID', sql.Int, tevId)
         .input('Usr', sql.Int, usuarioId || null)
-        .input('Obs', sql.NVarChar(500), motivo || null)
+        .input('Obs', sql.NVarChar(500), motivoLimpio.slice(0, 500))
         .query(`
             UPDATE dbo.TelaClienteEventos
-            SET Estado = 'RECHAZADA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE(),
-                Observaciones = COALESCE(@Obs, Observaciones)
-            WHERE TevID = @TID AND Estado = 'PENDIENTE'
+            SET Estado = 'RECHAZADA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE(), Observaciones = @Obs
+            OUTPUT INSERTED.BobinaID, INSERTED.ClienteID, INSERTED.Accion
+            WHERE TevID = @TID AND Tipo = 'SOLICITUD_CLIENTE' AND Estado IN ('PENDIENTE', 'APROBADA')
         `);
-    if (!r.rowsAffected[0]) throw new Error('La solicitud ya no está pendiente.');
-    return { ok: true };
+    if (!r.recordset.length) {
+        throw errorControl(409, 'La solicitud ya no está pendiente ni aprobada. Solución: actualizá la bandeja.');
+    }
+    const avisado = await avisarClienteRechazo(pool, { tevId, ...r.recordset[0], motivo: motivoLimpio });
+    return { ok: true, avisado };
+}
+
+// Aviso al portal del rechazo — best-effort, como el aviso de tela sobrante: si el cliente no tiene
+// avisos activados no le llega, pero el motivo queda en «Mis telas». Devuelve si se intentó mandar.
+async function avisarClienteRechazo(pool, { tevId, BobinaID, ClienteID, Accion, motivo }) {
+    try {
+        const r = await pool.request()
+            .input('BID', sql.Int, BobinaID)
+            .input('CLI', sql.NVarChar(200), ClienteID)
+            .query(`
+                SELECT TOP 1 c.CodCliente, ib.CodigoEtiqueta, COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS TipoTela
+                FROM dbo.InventarioBobinas ib
+                JOIN dbo.Insumos ins ON ins.InsumoID = ib.InsumoID
+                LEFT JOIN dbo.Clientes c ON c.CliIdCliente = TRY_CAST(@CLI AS INT)
+                WHERE ib.BobinaID = @BID
+            `);
+        const d = r.recordset[0];
+        if (!d?.CodCliente) {
+            logger.warn(`[TELA-CLIENTE] Rechazo #${tevId}: no se encontró el cliente ${ClienteID} para avisarle.`);
+            return false;
+        }
+        const push = require('./pushNotificationService');
+        await push.sendToClient(d.CodCliente, {
+            title: Accion === 'DESCARTAR' ? 'Sobre tu pedido de descarte de tela' : 'Sobre tu pedido de devolución de tela',
+            body: `${motivo} (${String(d.TipoTela || '').trim()}, ${d.CodigoEtiqueta}).`,
+            url: '/portal/recursos',
+            tag: `solicitud-tela-${tevId}`,
+        });
+        return true;
+    } catch (e) {
+        logger.warn(`[TELA-CLIENTE] Rechazo #${tevId}: no se pudo mandar el aviso al cliente: ${e.message}`);
+        return false;
+    }
+}
+
+// «Ya se entregó»: la tela se le dio en mano al cliente, por fuera de la bandeja (lo más probable en
+// BOB-171 y BOB-209). Cierra la solicitud y, si la bobina sigue abierta, la cierra con el mismo
+// movimiento que el empaquetado. No genera orden ni bulto: no hay nada que mandar.
+async function marcarEntregada(pool, { tevId, usuarioId, nota }) {
+    await ensureSchema(pool);
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+        const evt = await _cargarEvento(transaction, tevId);
+        if (evt.Tipo !== 'SOLICITUD_CLIENTE' || evt.Accion !== 'DEVOLVER') {
+            throw errorControl(400, 'Solo una solicitud de devolución se puede marcar como entregada.');
+        }
+        if (!['PENDIENTE', 'APROBADA'].includes(evt.Estado)) {
+            throw errorControl(409, 'La solicitud ya no está pendiente ni aprobada. Solución: actualizá la bandeja.');
+        }
+
+        const bob = await new sql.Request(transaction)
+            .input('BID', sql.Int, evt.BobinaID)
+            .query(`SELECT MetrosRestantes, Estado, InsumoID FROM InventarioBobinas WITH (UPDLOCK, ROWLOCK) WHERE BobinaID = @BID`);
+        const b = bob.recordset[0];
+        if (b && !['Agotado', 'Cerrado'].includes(b.Estado)) {
+            const metros = parseFloat(b.MetrosRestantes) || 0;
+            await new sql.Request(transaction)
+                .input('BID', sql.Int, evt.BobinaID)
+                .query(`UPDATE InventarioBobinas SET Estado = 'Cerrado' WHERE BobinaID = @BID`);
+            await new sql.Request(transaction)
+                .input('IID', sql.Int, b.InsumoID)
+                .input('BID', sql.Int, evt.BobinaID)
+                .input('Met', sql.Decimal(10, 2), -metros)
+                .input('Ref', sql.NVarChar(200), `Entregada en mano al cliente (solicitud #${tevId})`)
+                .input('Usr', sql.Int, usuarioId || 1)
+                .query(`
+                    INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID)
+                    VALUES (@IID, @BID, 'DEVOLUCION_FISICA_CLIENTE', @Met, @Ref, @Usr)
+                `);
+        }
+
+        const notaLimpia = String(nota || '').trim();
+        await new sql.Request(transaction)
+            .input('TID', sql.Int, tevId)
+            .input('Usr', sql.Int, usuarioId || null)
+            .input('Obs', sql.NVarChar(500), (`Entregada en mano${notaLimpia ? `: ${notaLimpia}` : ''}`).slice(0, 500))
+            .query(`
+                UPDATE dbo.TelaClienteEventos
+                SET Estado = 'RESUELTA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE(), Observaciones = @Obs
+                WHERE TevID = @TID
+            `);
+
+        await transaction.commit();
+        return { ok: true, bobinaCerrada: !!(b && !['Agotado', 'Cerrado'].includes(b.Estado)) };
+    } catch (err) {
+        try { await transaction.rollback(); } catch (_) {}
+        throw err;
+    }
 }
 
 /**
@@ -820,6 +970,9 @@ async function procesarRecordatoriosYEscalado(pool) {
 
 module.exports = {
     ensureSchema,
+    solicitudAbierta,
+    errorBobinaConSolicitud,
+    marcarEntregada,
     solicitarDevolucion,
     listarBandeja,
     aprobarSolicitud,

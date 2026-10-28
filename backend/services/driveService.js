@@ -166,6 +166,44 @@ exports.getThumbnailUrl = async (fileId) => {
     }
 };
 
+/**
+ * Metadatos de un archivo de Drive SIN bajarlo: nombre, tipo, tamaño (bytes; 0 si Drive no lo informa) y
+ * thumbnailLink. El cron de miniaturas mira el tamaño antes de decidir si lo baja (INF-SIS-2026-08):
+ * getFileStream abre la descarga en el mismo pedido.
+ */
+exports.getFileMeta = async (fileId) => {
+    const res = await drive.files.get({
+        fileId,
+        fields: 'name, mimeType, size, thumbnailLink',
+        supportsAllDrives: true,
+    });
+    return {
+        name: res.data.name,
+        mimeType: res.data.mimeType,
+        size: Number(res.data.size) || 0,
+        thumbnailLink: res.data.thumbnailLink || null,
+    };
+};
+
+/**
+ * La miniatura que generó Drive, como Buffer (JPG/PNG), del lado mayor pedido. Para los archivos
+ * demasiado grandes para rasterizar acá. null si Drive no tiene. El link de Drive termina en «=s220»:
+ * se cambia por el tamaño pedido.
+ */
+exports.getThumbnailImage = async (fileId, lado = 1000, thumbnailLink = null) => {
+    const link = thumbnailLink || await exports.getThumbnailUrl(fileId);
+    if (!link) return null;
+    const url = /=s\d+(-[\w-]+)?$/.test(link) ? link.replace(/=s\d+(-[\w-]+)?$/, `=s${lado}`) : `${link}=s${lado}`;
+    const axios = require('axios');
+    const { token } = await oauth2Client.getAccessToken();
+    const r = await axios.get(url, {
+        responseType: 'arraybuffer',
+        timeout: 30000,
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    return Buffer.from(r.data);
+};
+
 // Estado HTTP de un error de googleapis/gaxios, o null si no hubo respuesta (corte de red)
 const estadoHttp = (error) => {
     const n = Number(error?.response?.status ?? error?.status ?? error?.code);

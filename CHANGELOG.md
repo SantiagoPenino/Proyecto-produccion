@@ -10,10 +10,18 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 ## [Sin deployar] — cambios desde el 19/10
 
 ### Agregado
+- **Portal: un retiro puede llevar órdenes en pesos y en dólares (27/10, plan INF-SIS-2026-07).** Antes el portal no dejaba marcar una orden de otra moneda («Monedas diferentes») ni «Seleccionar todas» si había de las dos.
+  - **Ahora:** cada orden se sigue mostrando en su moneda. Si todo lo que hay que pagar es en dólares, el retiro va en dólares, como siempre. Si hay pesos, o pesos y dólares, el retiro va en pesos: los dólares pasan a pesos con la cotización del día (`Cotizaciones`, el dólar BCU + 1,5 % que carga el job de las 09:10, la misma de la caja y la billetera). Debajo del total: «Incluye US$ 19,90 convertidos a $ 812,32 (dólar a $ 40,82, del 27/10)». La misma línea va en el comprobante PDF del retiro y en «Pagos pendientes».
+  - **Lo calcula el servidor:** una sola función (`cotizarSeleccion`, en `retiroService`) decide la moneda y el total con el pendiente de cobro de cada orden, con las mismas reglas que la lista del portal. La usan el portal, el tótem, el mostrador, Mercado Pago, Handy, la billetera y «Pagos pendientes». Los importes por orden que manda la pantalla ya no se usan para cobrar.
+  - **Pago online:** la cotización queda fija al armar el link y se guarda con el pedido de pago. Cuando llega el aviso de Mercado Pago o Handy, la caja descuenta la deuda en dólares con esa misma. Si la cotización cambió con la pantalla abierta, el servidor contesta con el total nuevo y el portal pregunta «¿Seguís con el pago por $ …?».
+  - **Retiro obligatorio:** los pedidos de más de 5 días se suman en las dos monedas. Iban por moneda solo porque no se podía mezclar.
+  - **Crédito:** con un retiro mezclado, la plata adelantada se mira por moneda. Las órdenes en dólares van contra la cuenta en dólares y las de pesos contra la de pesos; si a alguna no le alcanza, el retiro frena en caja.
+  - **Al editar, sacar o cancelar una orden de un retiro, o al repropagar una cotización,** el total se recalcula convertido y la moneda se ajusta (`recalcularTotalRetiro`). Antes sumaba `OrdCostoFinal` sin mirar la moneda.
+  - **Probado en la copia local, con 30 pruebas, todo deshecho al final:** rsstore ($ 5.940 + US$ 19,90) da un retiro en pesos por $ 6.752,32 y links de Mercado Pago y Handy en pesos por ese total. Un total de pantalla viejo da 409. Solo dólares sigue en dólares. En el mostrador, el total crudo 489,08 de DGV queda en $ 850,65. Con anticipo solo en pesos frena en caja; con anticipo en las dos monedas queda autorizado. RT-34046 recalculado da $ 6.215,53. El ensayo de caja (`simular`) cobra en pesos con la cotización del link (40,50): la deuda en dólares queda COBRADO; sin esa cotización, como hacían hasta ahora los avisos, quedaba PARCIAL con US$ 0,16 pendientes. Las pantallas compilan (esbuild), pero no se vieron en el navegador: no había sesión del portal.
 - **Tiempo de respuesta de cada área de producción (26/10, plan INF-SIS-2026-04).** Cuánto tarda una orden desde que entra al área hasta que queda pronta, contando solo las horas laborales.
   - **Ciclo de cada orden:** las horas del horario laboral del área (Configuración › Horario laboral) desde que la orden ingresa hasta la última vez que pasó a Pronto, sin feriados ni el tiempo que se esperó al cliente (consultas al cliente abiertas y boceto de TPU esperando la aprobación). Terminaciones cuenta desde que ECO UV terminó de imprimir: su «Material Recibido» se registra 1 a 4 minutos antes de terminar. Una orden que esperaba a otra cuenta desde que se liberó. Quedan afuera las canceladas y las de PRO de venta directa.
   - **Job «Ciclo en planta»,** cada 10 minutos, en el Administrador de Jobs: calcula las órdenes que pasaron a Pronto y las guarda en `OrdenesCicloPlanta`. La primera corrida calcula todo desde el 01/07/2026. Si se cambia un horario o un feriado, los ciclos se recalculan solos.
-  - **En la cabecera de cada área:** «Tiempo de respuesta: 1,2 días hábiles · 9 h 46 min», el promedio de las órdenes de clientes (Normal y Urgente) de los últimos 30 días. Al tocarlo se abre el detalle: período (7, 30, 90 días o fechas), promedio, mediana, reloj corrido, barras de las últimas 8 semanas, el detalle por prioridad (Falla y Reposición aparte) y las 10 órdenes más lentas (tocando una se abre). Si el área no tiene horario cargado, lo avisa y cuenta de lunes a viernes de 9 a 17. No aparece en las áreas sin órdenes prontas (PRO).
+  - **En la cabecera de cada área:** «Tiempo de respuesta: 6 h 15 min laborales», el promedio de las órdenes de clientes (Normal y Urgente) de los últimos 30 días. Va en horas mientras no pase de una jornada del área; desde una jornada, en días hábiles con las horas al lado («3,8 días hábiles · 30 h 52 min»). Lo mismo en el detalle, la tabla por prioridad, las más lentas y el detalle de la orden; las barras de las semanas van todas en horas, salvo que alguna pase de una jornada (27/10: antes todo iba en días hábiles y DTF decía «0,4 días hábiles»). Al tocarlo se abre el detalle: período (7, 30, 90 días o fechas), promedio, mediana, reloj corrido, barras de las últimas 8 semanas, el detalle por prioridad (Falla y Reposición aparte) y las 10 órdenes más lentas (tocando una se abre). Si el área no tiene horario cargado, lo avisa y cuenta de lunes a viernes de 9 a 17. No aparece en las áreas sin órdenes prontas (PRO).
   - **Cada orden:** columna «Ciclo» en «Ver órdenes finalizadas» (con el detalle al pasar el mouse) y «Ciclo en planta» en la cabecera del detalle de la orden.
   - **TPU:** «Enviar a aprobación» ahora deja «Esperando: boceto enviado a aprobación del cliente» en el historial, así se descuenta cada vuelta de aprobación. Lo anterior se cuenta desde la subida del PDF del boceto hasta que el cliente aprobó; si lo confirmó el diseñador, no se descuenta nada.
   - **Con la copia local del 21/10, septiembre:** DTF 4,4 h (0,3 días hábiles), SUB 9,5 h (1,2), EUV 8,0 h (0,8), DIR 10,7 h (1,3) y TPU 45,8 h. **Ojo:** el horario cargado de SUB (7 a 15), DIR y DTF no es el que trabaja la planta: hay que corregirlo con cada encargado (en SUB, el 34 % de los movimientos cae fuera del horario cargado). Terminaciones no tiene horario. La consulta para revisarlo en prod está en el anexo del plan.
@@ -210,6 +218,411 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - Nuevo: `POST /api/web-orders/bordado/analizar-vector` (lee el archivo y lo borra; no guarda nada) y `utils/bordadoVector.js`. Las partes con degradado o patrón no entran en el cálculo, y se avisa.
 
 ### Cambiado
+- **Tareas (`/tareas`) con la estética nueva (28/10).**
+  - **Encabezado:** como en las demás pantallas: ícono brand-cyan sin el cuadrito de fondo, «TAREAS» en mayúsculas y la página a todo el ancho; antes era una columna angosta en el medio. «Nueva tarea» pasa a ser un botón brand-cyan al lado del título, en vez de la franja punteada.
+  - **Alta:** los dos campos tienen borde y se marcan en brand-cyan. «Cancelar» y «Agregar» usan los botones de siempre, y «Agregar» muestra la ruedita mientras guarda.
+  - **Pestañas** Pendientes / Hechas / Todas, en pastillas. En el celular son un Selector.
+  - **Lista:** una sola tarjeta con las tareas separadas por una línea. Los títulos largos cortan bien en el celular.
+  - **Vacío y cargando:** el vacío lleva el ícono y una línea más; mientras carga se ve la ruedita en vez de «Cargando…».
+  - **Borrar:**
+    - El tacho se ve siempre. Antes aparecía solo al pasar el mouse, así que en el celular no había cómo borrar.
+    - La confirmación es la del sistema (`useConfirmar`), en vez de la ventana de SweetAlert.
+  - **Sin cambios de lógica:** el `diff` da solo el `useConfirmar`. Son los mismos pedidos y el mismo aviso en tiempo real.
+  - **Probado en local** a 1600 y 390 px, con 4 tareas de mentira: la tabla local está vacía, así que intercepté el GET en el navegador.
+    - Abrí el alta y la cancelé, y abrí la confirmación de borrar y la cancelé.
+    - Cambié de pestaña en compu y con el Selector en el celular.
+    - Sin desborde de costado y 0 escrituras.
+- **Contabilidad › Reconciliación Contable WMS (`/contabilidad/reconciliacion`) con la estética nueva (28/10).** Antes era la única pantalla de Contabilidad con fondo negro.
+  - **Encabezado** como las demás: escudo brand-cyan sin fondo, título en mayúsculas, «Auditar ahora» como botón secundario y «Ejecutar reparación» en brand-cyan (antes verde, y ámbar cuando había pendientes).
+  - **Las 3 tarjetas de arriba van en claro:**
+    - El estado va en verde («Todo en orden») o en ámbar («Requiere atención»).
+    - «Sin contabilizar» pasa a magenta solo si hay órdenes. En 0 queda en gris; antes era rojo siempre.
+    - «Última revisión manual» pasa a ser «Última revisión», porque se actualiza también al abrir la pantalla, no solo con el botón. La hora sale en 24 h: antes decía «12:54 p. m.».
+  - **Tabla de pendientes** en una tarjeta blanca con el monto alineado a la derecha. En el celular, en vez de la tabla de 5 columnas, una tarjeta por orden con el código, el monto, el PC #, la fecha y el estado.
+  - «Reparar N ordenes» pasa a decir «órdenes», con tilde.
+  - **Sin cambios de lógica:** mismos pedidos y el mismo armado de datos, comparados con `diff`.
+  - **Probado en local** a 1600 y 390 px:
+    - Sin pendientes: en local la auditoría da 0.
+    - Con 3 pendientes de mentira: le cambié la respuesta del GET en el navegador.
+    - Nunca se tocó «Ejecutar reparación», así que solo salieron pedidos GET.
+- **Contabilidad › Plan de Cuentas (`/contabilidad/plan-cuentas`) con la estética nueva (28/10).**
+  - **Encabezado** como en las demás pantallas: el árbol en brand-cyan (antes índigo) y «Nueva cuenta» en brand-cyan. Ya no hay ancho máximo.
+  - **Árbol en una tarjeta clara.** Las cuentas madre llevan la carpeta en brand-cyan, y la naturaleza va con color: activo verde, pasivo magenta, ganancia brand-cyan (antes índigo) y pérdida ámbar. La moneda dice «$», «US$» o «Ambas», en vez de UYU, USD o AMBAS. Las cuentas inactivas llevan la etiqueta «Inactiva» en gris (antes un «(Inactiva)» en rojo).
+  - **En el celular, una lista con la sangría de cada nivel** en vez de la tabla de 6 columnas. Cada cuenta muestra debajo el código, la naturaleza, la moneda e «Imputable».
+  - **Ventana de la cuenta:**
+    - Queda por encima de la barra de arriba (antes `z-50`).
+    - La naturaleza y la moneda usan el Selector propio, y las casillas van en brand-cyan.
+    - «Guardar cuenta» va en brand-cyan.
+    - La lista de monedas dice «Pesos uruguayos ($)» y «Dólares (US$)». Los valores que se guardan siguen siendo UYU, USD y AMBAS.
+  - **Sin cambios de lógica:** mismos pedidos y guardado, comparados con `diff`.
+  - **Probado en local** a 1600 y 390 px: el árbol, la lista del celular (49 cuentas, sin desborde de costado) y la ventana de editar (cerrada sin guardar). Solo salieron pedidos GET.
+  - **Dato raro, sin tocar:** la cuenta 1.1.5 «Valores a Depositar (Cheques)» tiene «1» como moneda, en vez de UYU, USD o AMBAS. La pantalla lo muestra tal cual. En la ventana, el selector muestra «Pesos uruguayos» porque «1» no es una opción, pero si se guarda sin tocarlo sigue guardando «1», igual que antes.
+- **Contabilidad › Motor de Eventos Contables (`/contabilidad/motor`) con la estética nueva (28/10).**
+  - **Encabezado:** como en las demás pantallas, con el libro en brand-cyan. «Nuevo evento» va en brand-cyan con texto blanco; antes el texto era oscuro sobre azul y casi no se leía.
+  - **Tabla clara.** El efecto en saldo va con color de estado: «Resta saldo» en magenta, «Suma saldo» en verde, «Neutro» en gris. «Genera deuda: Sí» va en ámbar y «Usa recursos: Sí» en brand-cyan (antes violeta). Los eventos inactivos dicen «Inactivo».
+  - **Editar y eliminar siempre visibles.** Antes aparecían solo al pasar el mouse por la fila, así que en el celular no se veían.
+  - **En el celular, un evento por tarjeta**, en vez de la tabla de 7 columnas.
+  - **Eliminar** pide confirmación con la ventana propia del sistema («¿Eliminar este tipo de evento?», con el código), en vez del `window.confirm` del navegador.
+  - **Ventana del evento:**
+    - Queda por encima de la barra de arriba (antes `z-50`).
+    - Las pestañas van en pastillas, con la elegida en negro, y el efecto en saldo como pastillas en vez de radios escondidos.
+    - Las casillas son brand-cyan y DEBE/HABER y la fórmula usan el Selector propio.
+    - En el celular, el formulario va en una columna y cada línea de asiento tiene la cuenta en su propio renglón.
+  - **Textos con acentos:** «Código», «Descripción», «Configuración», «línea», «automáticamente», «Antigüedad»…
+  - **Sin cambios de lógica:** mismos pedidos y guardado. Lo único distinto es la confirmación de eliminar, comparada con `diff`.
+  - **Probado en local** a 1600 y 390 px: la lista, la ventana con sus dos pestañas y la confirmación de eliminar (cancelada; no salió ningún DELETE). Sin desborde de costado en el celular.
+- **Contabilidad › Libro Diario / Mayor (`/contabilidad/libro-mayor`) con la estética nueva (28/10).**
+  - **Encabezado** como en las demás pantallas: el libro en brand-cyan (antes naranja) y el título en mayúsculas. El total de debe y haber de todo el filtro va en una tarjeta blanca, en negro (antes verde). Las cantidades salen con punto de miles («55.325 asientos»). Ya no hay un ancho máximo que dejaba los costados vacíos.
+  - **Filtros:**
+    - Las fechas usan el selector propio (antes el calendario del navegador, que mostraba «mm/dd/yyyy»), con «Borrar».
+    - El origen usa el Selector propio.
+    - «Filtrar por fecha» va en brand-cyan (antes naranja) y «Limpiar» como botón secundario.
+  - **Asientos:**
+    - Tarjetas blancas con el número en gris (antes ámbar) y la hora en 24 h («16:59», antes «04:59 p. m.»).
+    - «Ver OP» va en brand-cyan.
+    - Los montos van en negro y el descuadre en magenta, con un ícono en vez del «⚠».
+    - En el celular los montos bajan de renglón, en vez de quedar escondidos.
+    - El detalle desplegado tiene scroll propio de costado en el celular.
+  - **«$» y «US$»** en pantalla, en vez de UYU y USD.
+  - **Ventana de la OP:** por encima de la barra de arriba (antes `z-50`), clara, con los montos en negro y la tabla con scroll propio en el celular.
+  - **Sin cambios de lógica:** la parte de estados, pedidos y filtros es idéntica a la anterior (comparada con `diff`).
+  - **Probado en local** a 1600 y 390 px: la lista, un asiento desplegado y los filtros. Sin desborde de costado en el celular.
+  - **«Ver OP» no abría nunca (arreglado):** `GET /contabilidad/caja/transaccion/:id` daba 500 por «Invalid column name 'MPaCodigo'». Pasaba desde el 27/04, y la pantalla se tragaba el error sin avisar.
+    - La consulta de los pagos en `cajaService.getTransaccion` pedía `mp.MPaCodigo`. `MetodosPagos` no tiene esa columna (verificado en la copia: MPaIdMetodoPago, MPaDescripcionMetodo, MPaAfectaCaja, MPaTipo, MPaActivo), y nadie leía ese dato. Se sacó.
+    - Probado en local: las OP 22563 y 2286 dan 200 con su comprobante y su pago, y la ventana abre.
+    - **En la ventana, los comprobantes salen con su moneda (arreglado):** antes siempre decían «$», aunque la orden fuera en dólares (la OP 22563 mostraba «$ 63,58» y eran US$ 63,58). Ahora usan el símbolo que ya mandaba el backend (`RefMonedaSimbolo`) para el monto original, el ajuste y el final. Visto en el navegador con la OP 22563: «US$ 63,58».
+- **Recursos Humanos › Descuento a Trabajadores (`/rrhh/descuento-trabajadores`) con la estética nueva (28/10).**
+  - **Encabezado** como en las demás pantallas: ícono en brand-cyan sin el cuadrado de color, título en mayúsculas, y a la derecha el total «con descuento», actualizar y «Ayuda». Ya no va dentro de una tarjeta ni con un ancho máximo que dejaba los costados vacíos.
+  - **Colores:** el índigo pasa a brand-cyan. «Quitar» es un botón gris que se pone magenta al pasar el mouse, y en la ventana de confirmación «Quitar descuento» va en magenta. «Vincular trabajador» y «Elegir» son botones blancos con el ícono en brand-cyan. Grises zinc en toda la pantalla.
+  - **Tabla clara**, con los otros perfiles como etiquetas redondeadas. En el celular, una cuenta por tarjeta (cuenta y «Quitar» arriba; CI/RUT, actualizado y otros perfiles en un recuadro; la ficha de RRHH o «Vincular trabajador» abajo) en vez de la tabla corrida de costado.
+  - **Ventanas** (ayuda, quitar, corregir cédula, vincular) por encima de la barra de arriba (antes `z-50`), con el ícono sin círculo de color y la ayuda sin la cabecera en degradé. La casilla de las opciones al vincular va en brand-cyan.
+  - **Sin cambios de lógica:** mismos endpoints, búsquedas, filtros, ventanas y acciones (aplicar, quitar, vincular, desvincular, corregir CI de la cuenta y del trabajador).
+  - **Probado en local** a 1600 y 390 px: la lista, la ayuda, la confirmación de quitar (cancelada) y la ventana de vincular. Sin desborde de costado en el celular, y todos los pedidos de la pantalla dieron 200. No se guardó nada.
+- **Caja › Gestión de pagos (`/caja/pagos-online`) con la estética nueva (27/10).** Las cinco pestañas: Todos los pagos, Handy, Handy fallidos, MercadoPago y MercadoPago fallidos.
+  - **Encabezado y pestañas** como en las demás pantallas: la elegida en negro y, en el celular, un selector. Los íconos de las pestañas de fallidos van en magenta; el «!» fijo que tenían se sacó porque no contaba nada.
+  - **Filtros:** fechas y método con el selector propio (antes, el calendario y la lista del navegador) y «Filtrar» en brand-cyan. El buscador de lo ya cargado y el contador de resultados pasan arriba de la tabla.
+  - **Tablas claras** y, en el celular, un pago por tarjeta en vez de la tabla corrida de costado. En «Todos los pagos», las órdenes de cada pago se siguen desplegando, también en la tarjeta.
+  - **Montos y fechas en formato uruguayo:** «$ 2.595,34» (antes «$ 2,595.34» o «2595.34») y «27/10/26, 13:22» (antes «1:22 p. m.»). Las pestañas de Handy y Mercado Pago dicen «$» y «US$» como la primera, en vez de UYU y USD.
+  - **El color va en lo que significa algo:** el estado del intento (Pagado en verde, Pendiente o Sin completar en ámbar, Fallido en magenta) y el resultado. «Sin completar» salía con el color de falla y no es un rechazo: ahora va en ámbar. Los montos van en negro (antes, todos en verde).
+  - **Detalles:** un pago sin cliente dice «Sin cliente» (antes «—» y «Cód: —»); «Total (1 orden)» (antes «1 órdenes»). La ventana del detalle queda por encima de la barra de arriba (antes `z-50`).
+  - **Sin cambios de lógica:** los mismos endpoints, filtros, paginado de a 50 y el interruptor «Solo sin pagar».
+  - **Probado en local** a 1600 y 390 px: las cinco pestañas, el desplegado de órdenes, el detalle de un pago de Mercado Pago y las tarjetas del celular. Sin desborde de costado ni errores en la consola.
+- **Pagos con deuda (`/logistica/excepciones`) con la estética nueva (27/10).**
+  - **Encabezado y resumen:** encabezado como en las demás pantallas, a todo el ancho (antes `max-w-7xl`). Las cinco tarjetas llevan el ícono en brand-cyan sin fondo de color. El monto pendiente tenía 3 decimales («$ 3.531.491,172») y ahora tiene 2.
+  - **Filtros:** estado y fuente son pastillas con la elegida en negro, sin emojis; en el celular, dos selectores. Fechas con el selector propio y «Limpiar» que se pone magenta al pasar.
+  - **De a 50:** antes se dibujaban los 1.874 registros de una; ahora entran 50 más al acercarse al final, con «Mostrando 50 de 1.874…». La búsqueda y los filtros siguen mirando todos.
+  - **Tabla clara** y, en el celular, una tarjeta por retiro con estado, fuente, motivo, nota o vencimiento, quién autorizó, las órdenes desplegables y «Gestionar».
+  - **Colores:** Pendiente en ámbar (antes rojo), Cobrado en verde, Condonado en gris. «Vía caja» va en brand-cyan (antes ámbar, que se confundía con un aviso). Los montos van en negro: todos son deuda, y el estado ya lo dice.
+  - **Arreglado:** en el detalle de las órdenes, el total salía bajo la columna Cantidad; ahora sale bajo Monto. Montos y fechas en formato uruguayo con 2 decimales y hora de 24 h.
+  - **Ventana «Gestionar deuda»** clara (antes, encabezado gris oscuro con degradé), con la cruz de Lucide y por encima de la barra de arriba (antes `z-50`).
+  - **Sin cambios de lógica:** las mismas dos fuentes, filtros, búsqueda y la misma gestión (endpoints de caja y de excepciones).
+  - **Probado en local** a 1600 y 390 px: el filtro «Vía caja» (335 de 1.874), el desplegado de órdenes, la carga de a 50 al bajar y la ventana de gestión, que solo se abrió: no se guardó nada. Sin desborde de costado ni errores en la consola.
+- **Antigüedad de deuda (`/contabilidad/antiguedad`, y dentro de Reportes de Contabilidad) con la estética nueva (27/10).**
+  - **Encabezado** como en las demás pantallas, a todo el ancho (antes `max-w-[1400px]`), con «Exportar a CSV» y «Recargar» en brand-cyan (antes índigo).
+  - **Una sola escala de color para los tramos,** con un punto en cada tarjeta, en el encabezado de cada columna y en la barra de antigüedad:
+    - al día, en verde;
+    - vencido: 1-30 y 31-60 en ámbar, 61-90 y +90 en magenta;
+    - por vencer: hoy y 1-7 en ámbar, 8-15 y 16-30 en cian, +30 en verde.
+  - **Tarjetas:** los importes van en negro y los que están en cero, en gris claro, para que se vea dónde hay plata. Antes eran todos de color, también los 0,00.
+  - **Alerta del cliente:** «Vencida +30 d» en magenta lleno (antes gris oscuro), «Vencida» en magenta suave, «Vence hoy» y «Vence en N d» en ámbar, «Al día» en verde. El semáforo de crédito usa la misma escala.
+  - **Control de crédito:** el tipo de cambio y «Solo clientes cerca del límite o excedidos» con el estilo nuevo (un botón que se marca en vez del checkbox del navegador). Excedidos y Cerca van en gris cuando son 0.
+  - **Filtros:** vendedor con el selector propio (antes, una fila de pastillas por vendedor). Tipo de cliente en pastillas con la elegida en negro y, en el celular, un selector.
+  - **Tabla clara:** los tramos con su color, «—» gris cuando no hay deuda (antes, una raya negra) y orden por columna con flecha de Lucide. En el detalle, el botón del PDF va en brand-cyan y el estado del documento en chip.
+  - **En el celular,** una tarjeta por cuenta con la alerta, la barra, los tramos con deuda, el crédito y los documentos desplegables; al final, el gran total.
+  - **Sin cambios de lógica:** mismos endpoints, cuentas, crédito por cliente, orden, filtros y CSV.
+  - **Probado en local** a 1600 y 390 px, suelta y dentro de Reportes de Contabilidad: el desplegado de documentos en la tabla y en la tarjeta. Sin desborde de costado ni errores en la consola.
+- **Bandeja de facturación electrónica (`/contabilidad/bandeja-cfe`, y la del cliente en la Vista 360) con la estética nueva (27/10).**
+  - **Encabezado** como en las demás pantallas. «Nueva factura manual» y «Enviar seleccionados» en brand-cyan (antes azul y verde); «NC factura externa» pasa a botón secundario (antes rojo lleno, como si borrara algo).
+  - **Filtros** en una tarjeta, sin la barra «Filtros de búsqueda»: fechas con el selector de fecha propio y estado, tipo, empresa y método de pago con el selector propio (antes, los del navegador). El cliente elegido se muestra en una tarjeta gris compacta.
+  - **Estados con color de estado:**
+    - Pendiente en ámbar, Aceptado en verde y Rechazado en magenta.
+    - Borrador en gris; antes era violeta, con un emoji.
+    - «Debía ser …» en magenta con ícono, en vez del ⚠.
+  - **Tabla clara:** hora de 24 h (antes «09:39 p. m.»); número interno en mono y el retiro debajo en cian; montos con «$» y «US$» (antes UYU y USD); número oficial en cian.
+  - **Acciones:** íconos parejos, grises, que se ponen cian al pasar, o magenta los que anulan. «Enviar a DGI» es un botón cian (antes verde) y «Regularizar» un chip magenta.
+  - **En el celular,** una tarjeta por documento con su casilla, estado, cliente, tipo, total, número oficial y las mismas acciones.
+  - **Anular y «Reversar y generar» confirman con la ventana del sistema** (antes, la ventana gris del navegador).
+  - **La ventana «Nota de crédito que llegó mal a DGI»** va por encima de la barra de arriba (antes `z-50`).
+  - **Sin otros cambios de lógica:** la parte de lógica del archivo es la misma línea por línea, salvo los dos `window.confirm` y los dos hooks nuevos (comparado con `diff`).
+  - **Las ventanas que abre** (factura manual, NC externa, nota de crédito, vista previa DGI, enviar por email, editar nota) no se tocaron.
+  - **Probado en local** a 1600 y 390 px: la búsqueda por número (53 documentos), pendientes y aceptados, y la confirmación de anular abierta y cancelada. No salió ninguna escritura a la API. Sin desborde de costado ni errores en la consola.
+- **Bandeja de documentos internos (`/contabilidad/bandeja-interna`) con la estética nueva (27/10).**
+  - **Encabezado** como en las demás pantallas, a todo el ancho (antes `max-w-7xl` sobre un degradé).
+  - **Totales** en tarjetas blancas con el monto en negro y la flecha de ingreso en verde o de egreso en magenta (antes, cuatro tarjetas de colores distintos). Arriba dicen «Totales de esta página · los anulados no suman», que es lo que siempre sumaron: los 50 documentos de la página que se está viendo.
+  - **Filtros:** fechas con el selector de fecha propio y tipo, caja y moneda con el selector propio (antes, los del navegador). «Buscar» en brand-cyan (antes índigo).
+  - **Tabla clara:**
+    - el tipo en chip: ingreso en verde, egreso en magenta;
+    - la caja «Administrativa» en cian, «Central» en gris;
+    - el anulado, con la fila en gris (antes rosa) y el monto tachado;
+    - hora de 24 h en pantalla; el ticket que se imprime sigue igual;
+    - «US$» en vez de «U$S» en pantalla.
+  - **Acciones:** los mismos botones; se ponen cian al pasar y el de anular, magenta.
+  - **En el celular,** una tarjeta por documento con número, cliente, total, tipo, concepto, fecha, medio de pago, usuario, acciones y la paginación.
+  - **Ventana de anular / editar monto** clara, por encima de la barra de arriba (antes `z-[1200]`). «Anular» en magenta y «Guardar cambios» en cian.
+  - **Sin cambios de lógica:** comparada con `diff`, la parte de lógica es la misma salvo la clase de los botones, la hora de pantalla y el hook del celular.
+  - **Probado en local** a 1600 y 390 px: la lista (50 documentos), la ventana de anular abierta y cancelada (no salió ninguna escritura a la API) y las tarjetas del celular. Sin desborde de costado ni errores en la consola.
+- **Tesorería y cartera (`/contabilidad/tesoreria`) con la estética nueva (27/10).**
+  - **Encabezado** como en las demás pantallas: «Recibir cheque» en brand-cyan y «Emitir cheque» como secundario con la flecha en magenta (antes, un botón verde y otro ámbar).
+  - **Pestañas** en pastillas con la elegida en negro y su contador; en el celular, un selector.
+  - **Tabla clara:** número en mono, importe en negro, vencimiento en negro (antes índigo).
+  - **Estados:** en cartera verde, depositado cian, emitido ámbar (falta el débito), rechazado magenta; endosado, cobrado y anulado en gris.
+  - **Acciones:** antes eran cinco botones de cinco colores en cada fila. Ahora son botones blancos parejos, que se ponen cian al pasar; «Rechazar» y «Anular», magenta.
+  - **En el celular,** una tarjeta por cheque.
+  - **Ventana de anular** clara, por encima de la barra de arriba (antes `z-50`). «Anular y revertir asiento» va en magenta.
+  - **Sin cambios de lógica** (comparada con `diff`).
+  - **Ventanas «Ver / Editar» y «Emitir cheque propio»** (`tesoreria/ChequeDetalleModal.jsx` y `ChequeEmitirModal.jsx`, que solo usa Tesorería):
+    - claras y por encima de la barra de arriba; antes estaban en `z-50` y el título de «Ver / Editar» quedaba tapado;
+    - banco y «Cliente que lo depositó» con el selector propio, que trae buscador (son ~6.000 clientes y abre en ~0,4 s en local);
+    - fechas con el selector de fecha propio;
+    - «Guardar cambios» y «Emitir cheque» en brand-cyan (antes índigo y ámbar).
+    - La lógica es la misma (comparada con `diff`).
+  - **Ventana «Recibir cheque»** (`tesoreria/ChequeRecibirModal.jsx`, a pedido de Santiago). La usan también la Caja y su panel de pago, así que el cambio se ve ahí:
+    - va por encima de la barra de arriba (antes `z-50`, con el título tapado), y el aviso de cheque repetido por encima de ella;
+    - propio/tercero y común/diferido en pastillas, en vez de radios del navegador;
+    - moneda, banco, cliente y rubro con el selector propio, y fechas con el selector de fecha propio;
+    - «Pago parcial» es una casilla que se pone ámbar al marcarla (antes, un recuadro rojo fijo);
+    - «Aceptar y cargar» en brand-cyan (antes verde).
+    - La lógica es la misma (comparada con `diff`). El aviso de React de opciones sin `key` en esta ventana ya salía antes del cambio.
+  - **Probado en local** a 1600 y 390 px:
+    - la cartera (101 cheques; 99 en una segunda pasada, porque dos cheques cambiaron en la copia local entre una y otra, y no por estas pruebas, que no escribieron nada);
+    - las ventanas de anular, ver / editar y emitir, abiertas y canceladas: no salió ninguna escritura a la API;
+    - las tarjetas del celular.
+    - Sin desborde de costado ni errores en la consola.
+- **Atención al cliente › Estado de cuenta de tela de cliente (`/atencion-cliente/tela-cuenta`) con la estética nueva (27/10).**
+  - **Encabezado y barra:** encabezado como en las demás pantallas. Buscador, filtro de estado (Todas / Activas / Cerradas, con su número), Filtros, Actualizar y Exportar quedan en una sola tarjeta. Las fechas del panel de filtros usan el selector de fecha propio y el tipo de tela, el selector propio.
+  - **El cliente elegido** se muestra en una tarjeta con su ID y la cantidad de bobinas.
+  - **Las bobinas se ven como en el Inventario de tela:** barra de color al costado y chip de estado (pendiente ámbar, disponible verde, agotada o cerrada gris). La fecha va con ceros y las medidas dicen «Largo 60,00 m · Ancho 1,60 m».
+  - **Movimientos:** el ingreso va en verde, el consumo en magenta y los ajustes y mermas en ámbar, con hora de 24 h. La confirmación de medida muestra «±», porque lo que guarda es la diferencia contra lo declarado.
+  - **En el celular:**
+    - el estado se elige con un selector;
+    - cada bobina muestra ingreso, consumo y saldo en tres columnas;
+    - los movimientos van en tarjetas. Antes la tabla se cortaba y no se veían el saldo, la referencia ni el operario.
+  - **El PDF que se exporta no cambió.**
+  - **Sin cambios de lógica** (comparada con `diff`: el hook del celular y una prop nueva de la tarjeta de bobina).
+  - **Probado en local** a 1600 y 390 px con los clientes Mandra (4 bobinas) y Emilia: no salió ninguna escritura a la API, sin desborde de costado ni errores en la consola.
+  - **Visto y sin arreglar (ya pasaba):** después de elegir un cliente, la lista de sugerencias se vuelve a abrir sola, porque elegirlo cambia el texto del buscador y dispara otra búsqueda. Tapa la barra de Filtros y Exportar hasta que se vuelve a tocar.
+- **Atención al cliente › Solicitudes de insumo del cliente (`/atencion-cliente/solicitudes-insumo`) con la estética nueva (27/10).**
+  - **Encabezado** como en las demás pantallas. Abiertas / Resueltas / Todas en pastillas con su número (antes índigo); en el celular, un selector.
+  - **Cada estado con su color:**
+    - sin avisar, en ámbar (antes rojo);
+    - avisada, esperando al cliente, en cian;
+    - venció sin respuesta, en magenta (antes naranja);
+    - resuelta, en verde.
+    - El plazo vencido va en magenta y el que vence en 2 días o menos, en ámbar.
+  - **Debajo de 1280 px y en el celular,** una tarjeta por solicitud. A 1100 px la tabla no entraba al lado del menú.
+  - **Panel de detalle claro** y por encima de la barra de arriba (antes `z-40`). Las opciones de la decisión del cliente son tarjetas para elegir, en vez de radios. La bobina o prendas y «cómo confirmó el cliente» usan el selector propio.
+  - **Confirmaciones:** «Avisar al cliente», «Registrar decisión» y «Aprobar reposición» se confirman con la ventana del sistema (antes, la del navegador), con el mismo texto.
+  - **Sin cambios de lógica** (comparada con `diff`: el hook del celular, las dos confirmaciones y funciones de render).
+  - **Probado en local** a 390, 900, 1100, 1366 y 1600 px. La copia local no tiene ninguna solicitud, así que las filas, las tarjetas y el detalle se vieron con 5 solicitudes inventadas en el navegador; a la base no llegó nada. Las dos confirmaciones se abrieron y se cancelaron, sin escrituras a la API, desborde ni errores en la consola.
+  - **Visto y sin arreglar (ya pasaba):** si falla la carga del detalle, el fondo de «cargando» queda tapando la pantalla y no se puede cerrar sin recargar.
+- **Atención al cliente › Recepción (`/atencion-cliente/recepcion`) con la estética nueva (27/10).**
+  - **Encabezado:** a todo el ancho, con «Próximo código PRE-xxx» a la derecha. El título dice «Recepción» y abajo «Atención al cliente · ingreso de telas y paquetes de prendas» (antes «Atención al Cliente / Gestion de Ingresos y Despachos»).
+  - **Tipo de ingreso:** dos botones, «Paquete de prendas» y «Tela de cliente», en vez de una lista con emojis. Tocar otra vez el elegido no borra los servicios, igual que antes.
+  - **Selector propio** en área destino, excedente de cada bobina, solicitud que repone y referencias.
+  - **Medidas por bobina:** en la computadora, una fila por bobina; en el celular, un bloque por bobina con sus cuatro campos de a dos, sin correrse de costado.
+  - **Stock de tela del cliente:** etiquetas claras con un punto de color según cuánto se consumió (cian; ámbar desde 50 %; magenta desde 80 %).
+  - **Historial reciente:**
+    - los botones para reimprimir la etiqueta y el comprobante se ven siempre (antes solo al pasar el mouse, así que en el celular no se podían tocar);
+    - fecha uruguaya con hora de 24 h.
+  - **Avisos:**
+    - los errores de impresión se avisan con un mensaje en pantalla (antes, la ventana del navegador);
+    - el resultado de guardar sale en verde si salió bien y en magenta si falló;
+    - sale en ámbar si se guardó pero no se pudo vincular la solicitud (antes salía en verde, como si todo hubiera salido bien).
+  - **En el celular,** el formulario y el historial van uno abajo del otro.
+  - **Lo que se imprime** (etiquetas 100×150 y ticket) no cambió.
+  - **Sin cambios de lógica** (comparada con `diff`: solo un `alert` pasó a mensaje). Se corrigió también un aviso de React por claves repetidas en el stock de tela, cambiando solo la clave.
+  - **Probado en local** a 1600 y 390 px: cliente, dos bobinas con excedente, lote, tela, observaciones y el modo paquete con un servicio y una referencia, sin guardar. No salió ninguna escritura a la API, sin desborde de costado ni errores en la consola.
+  - **Visto y sin arreglar:**
+    - el historial siempre muestra los primeros 20, porque no tiene botones de página;
+    - el selector de «sumar a tela existente» no aparece nunca, porque nada lo activa desde que se sacó la pregunta.
+- **Atención al cliente › Realizar pedido WMS (`/atencion-cliente/pedidos-wms`) con la estética nueva (27/10).**
+  - **Encabezado:** «Realizar pedido WMS» en una línea, con el subtítulo debajo; antes se partía en tres renglones. Los interruptores, el buscador y «Sincronizar» van en una barra aparte, que en el celular se acomoda en dos renglones (antes se salía de la pantalla). Los interruptores se ven en cian cuando están prendidos.
+  - **Catálogo** en tarjetas blancas con precio y stock; el stock en 0 va en magenta. Si no aparece ningún producto (catálogo vacío, búsqueda sin resultados o todo oculto por «Ocultar sin stock»), un aviso lo dice; antes la pantalla quedaba en blanco.
+  - **Carrito claro** (antes azul marino): cliente, ítems con − / + y precio editable, tipo de cambio, subtotal y total. «Confirmar» es el botón principal en cian y «Cotizar» el secundario. En la computadora el carrito queda fijo arriba al recorrer el catálogo.
+  - **Montos** en formato uruguayo con «$» y «US$» (antes «U$S 200.00»). El ticket que se imprime no cambió.
+  - **Ventanas** de variantes (talle en pastillas, color con stock y precio) y de pedido registrado: claras y por encima de la barra de arriba. Van en un portal sobre la página, así ningún contenedor las deja debajo.
+  - **En el celular:** catálogo en 2 columnas y el carrito abajo, con una barra «Ver carrito · N ítems · total» que acompaña al recorrer y lleva al carrito.
+  - **Sin cambios de lógica** (comparada con `diff`: sin diferencias).
+  - **Embebido en Ventas › Pedido de prenda:** sigue oscuro como esa pantalla; solo cambia el formato de los montos.
+  - **Probado en local** a 1600 y 390 px, con stock inventado en el navegador (en la copia local los 199 productos tienen stock 0): variantes, carrito con tres ítems, cliente elegido y la ventana de pedido registrado (forzada en el navegador). No se tocaron Sincronizar, Cotizar ni Confirmar, ni salió ninguna escritura a la API. Sin desborde de costado ni errores en la consola.
+  - **Visto y sin arreglar (ya pasaba):** con talle «S» el color sale mal (por ejemplo, «HORT S AZUL FRANCIA» en Shorts), porque busca la «S» en el nombre y encuentra la de «Short». El catálogo tarda unos 10 s en cargar.
+- **Atención al cliente › Venta de rollo por adelantado (`/atencion-cliente/venta-rollo`): encabezado con la estética nueva (28/10).** Solo lo propio de la pantalla:
+  - el encabezado como en las demás, con el número de documento, el TC y el tipo de comprobante en chips a la derecha;
+  - el marco a todo el ancho (antes `max-w-[1400px]` sobre fondo gris);
+  - el aviso «Requisito DGI» con ícono en vez de ✓ / ✗, y en magenta cuando falta algo (antes rojo).
+  - «Documento a generar» (`CajaPanelPago`) y cliente y conceptos (`CajaVentaDirectaTab`) son piezas de la Caja y quedan como estaban, porque Santiago eligió no tocar la Caja por ahora.
+  - **Arreglo en la fila del medio de pago** (`CajaPanelPago`, pedido por Santiago):
+    - con «Transferencia», «Adjuntar comprobante» no entraba en la fila: aparecía una barra de scroll y el monto quedaba cortado («0.0»). Ahora va en una línea propia, debajo del medio y a todo el ancho;
+    - si falta el comprobante, se marca en magenta (antes rojo).
+    - Solo esta pantalla muestra el comprobante (es la única que pasa `onComprobanteFile`), así que en la Caja eso no cambia.
+  - **En el celular** (debajo de 640 px), el monto de cada medio de pago baja a su propia línea, a todo el ancho; antes se cortaba. Esto vale también para la Caja en el celular. En la computadora, la fila de la Caja queda igual que antes (verificado con una captura de Caja administrativa).
+- **Ventas › Beneficios predefinidos (`/beneficios/predefinidos`) con la estética nueva (28/10).**
+  - **Encabezado** como en las demás pantallas, a todo el ancho (antes `max-w-7xl` sobre un degradé).
+    - «Nuevo beneficio predefinido» en brand-cyan; «Quién aprueba» y «Actualizar» como secundarios.
+    - El interruptor general sigue en verde (encendidos) o ámbar (apagados).
+  - **Tabla clara:**
+    - «Todos · portal» en cian y «Solo por pacto» en gris (antes celeste y violeta);
+    - las acciones son botones parejos: «Enviar a aprobación» y «Aprobar y publicar» en cian; Rechazar, Pausar y Reanudar se ponen magenta, ámbar y verde al pasar.
+    - En el celular, una tarjeta por plantilla.
+  - **Ventana de nuevo / editar beneficio:**
+    - clara, sin el encabezado con degradé, y por encima de la barra de arriba (antes `z-50`);
+    - «¿Quién puede activarlo?» y la vigencia son opciones para elegir (antes, radios del navegador);
+    - moneda y tipo de carga van en pastillas;
+    - los días de vigencia y la fecha («Hasta una fecha», con el calendario del sistema) aparecen debajo, según lo elegido.
+    - El editor de reglas y la etiqueta de estado son piezas compartidas con la Vista 360 de vendedores y no se tocaron.
+  - **«Quién aprueba»:** ventana clara, con el selector propio para elegir a la persona.
+  - **Confirmaciones:**
+    - las cinco que usaban la ventana del navegador (activar o desactivar en lote, enviar, aprobar, pausar o reanudar, el interruptor general y quitar un aprobador) usan ahora la del sistema, con el mismo texto;
+    - «Rechazar» pide el motivo en una ventana propia (antes `window.prompt`); el motivo sigue siendo obligatorio.
+  - **Sin otros cambios de lógica** (comparada con `diff`: solo las confirmaciones, el motivo del rechazo y el hook del celular).
+  - **Probado en local** a 1600 y 390 px: la lista, la ventana de nuevo beneficio (con «Hasta una fecha») y «Quién aprueba», abiertas y cerradas sin guardar. No salió ninguna escritura a la API, sin desborde de costado ni errores en la consola. En la copia local no hay plantillas, así que las filas y las tarjetas con datos no se vieron.
+- **Ventas › Beneficios pactados (`/beneficios/pactos`) con la estética nueva (28/10).**
+  - **Encabezado y resumen:**
+    - encabezado como en las demás pantallas, a todo el ancho;
+    - las cuatro tarjetas son blancas, con el número en color solo si hay algo: pendientes en ámbar, aprobados sin activar en cian (antes índigo), activos en verde;
+    - la de pendientes se resalta cuando hay alguno.
+  - **Filtros:** cliente con buscador, estado con el selector propio y fechas con el selector de fecha propio (antes, los del navegador).
+  - **Tabla clara:**
+    - el pendiente con fondo ámbar suave y el elegido en cian;
+    - «N precios peores que los de hoy» en magenta (antes rojo);
+    - las acciones son botones parejos: «Revisar y aprobar» en cian; Cancelar, Pausar, Reanudar, Cerrar, Cargar en caja y Editar y reenviar se ponen del color de su acción al pasar.
+    - En el celular, una tarjeta por pacto, con el estado debajo del cliente.
+  - **Panel de revisión:**
+    - claro, con el borde ámbar solo si el pacto está pendiente;
+    - el aviso de precios peores y las filas peores en magenta;
+    - «Qué pasa al aprobar» en cian;
+    - «Aprobar» en cian y «Rechazar» como secundario magenta.
+  - **Confirmaciones:**
+    - aprobar, rechazar, pausar, reanudar y cerrar el beneficio usan la ventana del sistema, con el mismo texto (antes, la del navegador);
+    - «Cancelar» un pacto pide el motivo (opcional) en una ventana propia (antes `window.prompt`).
+  - **Sin otros cambios de lógica** (comparada con `diff`: solo las confirmaciones, el motivo de la cancelación y el hook del celular). La venta de saldo, «pactar beneficio» y la etiqueta de estado son compartidas y no se tocaron.
+  - **Probado en local** a 1600 y 390 px. Como la copia local no tiene pactos, la tabla, las tarjetas, el panel de revisión, la ventana de cancelar y la confirmación de cerrar se vieron con 3 pactos inventados en el navegador. No salió ninguna escritura a la API, sin desborde de costado ni errores en la consola.
+- **Precios y escalas de volumen (`/admin/base-prices`, `/admin/precios-base` y dentro de Perfiles de precio) con la estética nueva (28/10).**
+  - **Encabezado y colores:**
+    - título con ícono y todo claro (gris y cian), sin violeta ni verde lleno;
+    - el grupo elegido va en cian y el filtro Todos / Activos / Inactivos elegido, en negro;
+    - el nombre del perfil (ej. «SUBLIMACION ESCALONADOS») va en cian o gris;
+    - «Simular precio» con el botón en cian.
+  - **Moneda y tipo de cálculo de cada fila** con el selector propio (antes, los del navegador), con borde ámbar cuando hay un cambio sin guardar. Las monedas se ven «$» y «US$».
+  - **Tabla:** el encabezado con las escalas («Min 100 m…») queda fijo al bajar, y la barra de cambios pendientes queda fija abajo.
+  - **Recuadro de tarifa** (bordado por puntadas, estampado por bajadas) con el mismo estilo.
+  - **Nombre de los grupos:**
+    - los artículos de una familia sin grupo asignado se veían como un grupo «1» (solo el número de la familia); ahora dicen «1 - Sin grupo», en la lista y en la tarjeta del grupo, que explica «N productos de la familia 1 que no tienen grupo asignado»;
+    - un grupo sin perfil de escalas muestra cuántos productos tiene y «sin perfil de escalas» (antes, solo el nombre);
+    - la clave del grupo no cambia: es solo lo que se muestra.
+  - **«Simular precio»** va dentro de la tarjeta del grupo (antes, en un recuadro al lado del título): igual en la pantalla suelta y dentro de Perfiles de precio, y sin un hueco al lado del nombre del grupo.
+  - **Ventana de agregar o cambiar escala:** clara, sin desenfoque (antes `backdrop-blur`) y por encima de la barra de arriba (antes `z-50`).
+  - **Confirmaciones:** quitar una escala y guardar una tarifa usan la ventana del sistema, con el mismo texto (antes, la del navegador).
+  - **En el celular:**
+    - buscador, estado y grupo arriba, con selectores;
+    - una tarjeta por artículo, con precio, moneda, cálculo y escalas;
+    - las escalas del grupo se cambian o quitan desde pastillas debajo del título.
+  - **El simulador** muestra el monto en formato uruguayo.
+  - **Sin cambios de lógica:** comparada con `diff`, solo cambian los dos `window.confirm` y los hooks del celular. Las cuentas de las escalas, los inputs y la fila TOTAL que vivían dentro del JSX se compararon por separado y salieron idénticas. `TablaTarifa` y `tarifasCobro` no se tocaron. `PriceGroup` no se usa en ningún lado: se estilizó y no se borró.
+  - **Probado en local** a 1600 y 390 px, en las tres ubicaciones:
+    - `/admin/precios-base` no está en el menú de la copia local: se vio agregando la fila solo en la respuesta del navegador de prueba;
+    - se probaron Sublimación con escalas, Bordado, Estampado, la ventana de escala, la confirmación de quitar escala y la de guardar tarifa, abiertas y canceladas;
+    - el simulador no se probó, porque es un POST.
+    - No salió ninguna escritura a la API, sin desborde de costado ni errores en la consola.
+    - Con el grupo de 177 artículos, cada tecla tarda unos 30 ms (antes unos 11 ms): no se nota.
+  - **Visto y sin arreglar (ya pasaba):** «Todos los productos» con el buscador vacío vuelve solo al primer grupo.
+- **Matriz de catálogo por cliente (`/admin/price-catalog`) con la estética nueva (28/10).**
+  - **Encabezado y filtros:**
+    - título con ícono, como en las demás pantallas;
+    - cliente, familia y búsqueda de artículo en una tarjeta;
+    - el cliente y la familia con el selector propio (antes, los del navegador); en la lista de clientes, el código va debajo del nombre.
+  - **Tabla clara:**
+    - el precio del cliente va en verde si es menor que el de lista, en magenta si es mayor (antes rojo) y en gris si es igual;
+    - las reglas van como etiquetas: descuento en verde, precio fijo en cian (antes violeta), recargo en ámbar;
+    - montos en formato uruguayo con «US$».
+  - **Mientras calcula:**
+    - la barra de arriba muestra el avance real y al lado dice «Calculados N de M»;
+    - el artículo que todavía no tiene precio dice «Calculando…»; si el cálculo terminó y no trajo precio, «Sin calcular» (antes «Esperando...» para siempre).
+  - **En el celular y la tablet:** una tarjeta por artículo, con el precio, el de lista y las reglas.
+  - **Lógica:** comparada con `diff`, la búsqueda de clientes, el cálculo por lotes y la cuenta de cada fila son idénticos, salvo los dos arreglos de abajo.
+  - **Bug arreglado: la página pedía la lista entera de clientes una y otra vez (ya pasaba en prod).**
+    - Con la página abierta, sin tocar nada, la pedía 19 veces en 15 s, y eran 6.014 clientes con todos sus datos cada vez (medido en local).
+    - La causa: `CustomerPriceCatalogPage` creaba `searchCustomers` de nuevo en cada render. El hijo lo tiene en las dependencias de su espera de 500 ms, y cada respuesta volvía a dibujar al padre, lo que disparaba otra búsqueda.
+    - Ahora va con `useCallback`: una vez al abrir y una por cada búsqueda (medido: 1 pedido en 15 s).
+  - **Bug arreglado: podía calcular con las reglas de otro cliente (ya pasaba en prod).**
+    - La página mandaba el código del cliente y el cálculo lo probaba primero como id interno: si ese número era el id de otro cliente, tomaba al otro.
+    - En la copia local pasaba con 2 de 6.014 clientes: «DTF URUGUAY 2» (código 886) salía como «Pura idea» (id 886) y «Valentina Marquez» (código 2849), como «Alvaro Martinez».
+    - Ahora el cliente se elige por su id interno y se manda `{ cliIdCliente }`, la forma que el cálculo ya aceptaba (la usa la sincronización de pedidos). Sin cambios en el backend.
+    - Verificado reproduciendo con las mismas consultas cómo resuelve el cliente: antes daba el otro cliente; ahora, el correcto.
+  - **Probado en local** a 1600 y 390 px con «el calandrer» (Descuento Trabajadores 10 %) y la familia Sublimacion Tela.
+    - Se calcularon los 76 artículos, 75 con la regla. `/prices/calculate` es solo lectura.
+    - No salió ninguna escritura a la API, sin desborde de costado.
+    - La consola avisa una clave repetida, que ya pasaba: en Sublimacion Tela el artículo 3 («otra») está dos veces.
+- **Precios y perfiles (`/admin/price-profiles`) con la estética nueva, con sus 7 pestañas (28/10).**
+  - **Encabezado y pestañas:** encabezado como en las demás pantallas; pestañas en pastillas, la elegida en negro; en el celular, un selector con las 7.
+  - **Precios estándar:** es la pantalla de Precios y escalas, embebida sin su título (ya está el de arriba).
+  - **Gestión de perfiles:**
+    - lista de perfiles agrupada a la izquierda y editor a la derecha; en el celular se ve uno por vez, con «Volver»;
+    - matriz de precios con la moneda en su columna ($ / US$) y el tipo de regla con el selector propio (antes, los del navegador); en el celular, una tarjeta por producto y los rangos se agregan o quitan desde una barra arriba;
+    - vista Lista: en el celular, tarjetas;
+    - carga masiva, asistente de escalas e importar Excel en ventanas claras, que se usan bien en el celular;
+    - el buscador para agregar productos abre la lista hacia abajo, o hacia arriba si no hay lugar (antes, con pocas filas, la lista quedaba cortada).
+  - **Asignación a clientes:** tarjetas más limpias, filtros en pastillas y la lista se dibuja de a 50 (son 6.014 clientes).
+  - **Simulador de precios:** todo claro, los datos y el resultado en tarjetas, el cliente con el selector propio y los montos en formato uruguayo con «US$» o «$».
+  - **Inteligencia de precios:**
+    - la lista de clientes se dibuja de a 50 (antes, los ~6.000 de una);
+    - los niveles con su número y cantidad, y las tablas por cantidad más limpias (en el celular, una tarjeta por producto);
+    - montos en formato uruguayo, con «US$» cuando la regla está en dólares;
+    - en el celular la lista va arriba y el reporte abajo (antes el reporte quedaba fuera de la pantalla).
+  - **Excepciones de urgencia:** formulario y tabla a todo el ancho; en el celular, tarjetas.
+  - **Precios por variante:** en el celular, una tarjeta por variante; montos en formato uruguayo con «US$».
+  - **Confirmaciones y pedidos de datos con las ventanas del sistema** (antes, las del navegador):
+    - borrar perfil, borrar excepción, quitar rango, «la primera escala no empieza en 1» y «pasar a regla simple»;
+    - los 5 `prompt` (agregar rango y los 4 datos de la fórmula por bloques) piden el valor en una ventana propia. Cancelar se comporta igual que antes.
+  - **Ventanas** por encima de la barra de arriba y sin desenfoque (antes `backdrop-blur`).
+  - **Sin cambios de lógica:**
+    - comparada con `diff`, solo cambian las confirmaciones y los pedidos de datos (los handlers pasan a `async`), los hooks del celular y los colores del avatar;
+    - las cuentas que vivían dentro del JSX se compararon por separado y salieron iguales, con las mismas 21 llamadas a la API;
+    - el Simulador y la Inteligencia de precios dan `diff` vacío en sus consultas y estados.
+  - **Probado en local** a 1600 y 390 px, las 7 pestañas, con todas las ventanas y confirmaciones abiertas y canceladas: no salió ninguna escritura a la API y no hubo desborde de costado.
+  - **Visto y sin arreglar (ya pasaba):**
+    - la consola avisa claves repetidas: `/prices/base` trae los artículos 3, 28 y 115 dos veces;
+    - 15 de 6.014 clientes tienen el nombre lleno de espacios (ej. #10300 y #6883, los primeros de la lista): salen sin nombre y con «?» en las iniciales.
+- **Caja › Cuadre diario (`/caja/cuadre`) con la estética nueva (28/10).**
+  - **Encabezado y filtros:**
+    - encabezado como en las demás pantallas; «Exportar PDF» como botón secundario;
+    - desde y hasta con el selector de fecha propio y la situación con el selector propio (antes, los del navegador, con emojis en las opciones);
+    - «Buscar» en cian.
+  - **Resumen:** cuatro tarjetas blancas, con el número en color solo si hay algo: pagados en verde (con lo cobrado por moneda), autorizados en ámbar, sin pago en magenta (antes rojo).
+  - **Tabla clara:**
+    - situación en etiquetas verde / ámbar / magenta, y la fila sin pago con un fondo magenta muy suave;
+    - el botón de órdenes abre el detalle (código, producto, modo, cantidad y monto) dentro de la tabla;
+    - la hora en 24 h (antes «1:17 p. m.»);
+    - la lista se dibuja de a 50 (dos meses son unos 200 retiros).
+  - **En el celular y la tablet:** una tarjeta por retiro, con la situación, el pago o la deuda, el tipo de cliente y el botón «N órdenes», que abre el detalle en la tarjeta.
+  - **Sin cambios de lógica:** comparada con `diff`, la búsqueda, el filtro en los resultados, las cuentas del resumen y el armado del PDF son idénticos. El PDF impreso no cambia.
+  - **Probado en local** a 1920 y 390 px con los 62 retiros del 20 al 28/10: no salió ninguna escritura a la API, sin desborde de costado ni errores en la consola.
+- **Precios especiales (`/admin/special-prices`, `/logistica/precios` y dentro de la Vista 360 › Precios) con la estética nueva (28/10).**
+  - **Lista de clientes:**
+    - al costado, fija al bajar; pestañas «Con tarifas» y «Buscar en la base», la elegida en negro;
+    - las iniciales en gris y el cliente elegido en cian (antes, colores al azar);
+    - las dos listas se dibujan de a 50: buscar «ma» en la base trae 5.695 clientes, y antes se dibujaban todos de una.
+  - **Ficha del cliente:** «Guardar tarifa» en cian y los demás botones secundarios; datos en un recuadro; chips de excepciones y perfiles en cian; urgencia en ámbar si tiene excepciones; «Cambios sin guardar» en ámbar.
+  - **Tabla de reglas:** íconos en vez de emojis; montos como «US$ 22,00» y el descuento como «25 % menos» en verde, o «10 % más» en magenta si es recargo (antes «USD 16.50 (25.0% OFF)»).
+  - **Catálogo completo:** la familia con el selector propio (antes, el del navegador, con «⭐»); el «US$» ya no se pisa con el número.
+  - **Panel de nueva y editar excepción:** por encima de la barra de arriba (antes `z-[990]`: quedaba tapado), con pestañas Todos / Sin regla / Con regla.
+  - **Ventana de perfiles:** sin desenfoque (antes `backdrop-blur`) y por encima de la barra; la casilla se ve (usaba una clase que no existe).
+  - **«Quitar cliente»** confirma con la ventana del sistema, con el mismo texto (antes, la del navegador).
+  - **En el celular:** la lista va arriba y se pliega al elegir un cliente («Cambiar de cliente»); reglas y catálogo en tarjetas.
+  - **Dentro de la Vista 360:** igual que antes (sin encabezado ni lista, con el cliente fijo), con las piezas nuevas.
+  - **Sin cambios de lógica:** comparada con `diff`, solo cambian la confirmación, los hooks del celular y el plegado de la lista. Las cuentas que vivían dentro del JSX se compararon por separado y salieron iguales.
+  - **Probado en local** a 1600 y 390 px, con todas las ventanas abiertas y canceladas: no salió ninguna escritura a la API y no hubo desborde de costado. La consola avisa claves repetidas en el catálogo, que ya pasaba (`/prices/base` trae los artículos 3, 28 y 115 dos veces).
+  - **Visto y sin arreglar (ya pasaba en prod): «Guardar tarifa» borra las reglas de familia del cliente y cambia los descuentos `percentage_discount`.**
+    - Las de familia no se muestran y se borran; un descuento de 25 % sobre US$ 22 se guarda como 16,5 %.
+    - En la copia local ya hay 24 reglas de 8 clientes cambiadas.
+    - Diagnóstico, consultas para prod y plan en el informe INF-SIS-2026-12 («Precios especiales que se pierden al guardar · Plan.pdf», en el Escritorio). Espera OK.
+- **El valor de la UI para el tope del e-Ticket se trae solo del BCU (27/10).** Antes se cargaba a mano en Configuración › Empresas › Parámetros DGI, y en prod seguía en 6,5321 (la UI del 09/05/2026). Las recargas del portal leían otra clave, `VALOR_UI`, que no existía, y usaban 6,5 fijo.
+  - **Qué UI:** la del 31/12 del año anterior, hoy 6,4234. Es la que usa SISNET: rechazó el 23861 por «venta mayor a 5000.0 U.I. ($32117.0)», y 32.117 ÷ 5.000 = 6,4234, la UI del 31/12/2025 según el BCU. La del día (6,6792 el 27/10) daría un tope más alto que el de SISNET.
+  - **Cómo:** el mismo web service del BCU que trae el dólar, moneda 9800. Un job (`jobs/valorUI.job.js`) mira al arrancar, a las 00:20 y a las 09:25 si está guardada la UI de esa fecha. Al BCU solo va cuando falta, o sea el 1/1 o si antes no contestó. Si el BCU no contesta, queda el valor anterior y lo anota en el log.
+  - **Pantalla:** en Parámetros DGI el tope sigue editable. El valor de la UI ahora solo se muestra, con su fecha, cuándo se trajo y un botón ↻ para traerla en el momento (`POST /api/contabilidad/cfe/config-dgi/actualizar-ui`).
+  - **Lo usan:** el control al emitir el CFE, las pantallas de facturación (vía `/config-dgi`) y las recargas del portal, que ahora leen `DGI_VALOR_UI`. Para el portal el tope baja de $ 65.000 a $ 64.234 (sigue en 10.000 UI y con IVA; eso lo corrige el plan INF-SIS-2026-05).
+  - **No cambia:** el tope en UI (en prod sigue en 10.000; DGI pide 5.000) ni la comparación con IVA. Las dos cosas son del plan INF-SIS-2026-05, que espera OK.
+  - **Probado en local:** el BCU devuelve 6,4234 para el 31/12/2025 y 6,6792 para el 27/10. Contra la copia: el job la guardó solo al reiniciarse el backend. Una segunda pasada no vuelve a consultar al BCU. `GET /config-dgi` devuelve el valor con su fecha. `PUT` ignora un `valorUI` del body y rechaza un tope inválido con 400, y el botón la vuelve a traer. El panel compila en Vite. La pantalla no se vio en el navegador (no había sesión).
 - **Panel de Producción Avanzado e Informe de producción: la «Demora promedio por prioridad» sale del ciclo en planta (26/10).** Antes iba del ingreso al primer Pronto y le restaba 12 h a cada día de calendario, sin mirar el horario del área, los fines de semana ni los feriados: para SUB Normal de septiembre decía 22,5 h cuando fueron 10,6 h laborales (45,2 h corridas). Ahora usa el mismo número que el tiempo de respuesta de cada área. La pantalla no cambia, solo la aclaración debajo del título. Sin la tabla `OrdenesCicloPlanta`, sigue la cuenta vieja.
 - **Solicitudes › arte para TIZADA: aviso cuando una capa «Editable …» está vacía (26/10).** Antes, un arte con las capas «Editable escudo» y «Editable logo» vacías decía «Sin editables: todo va sublimado», igual que un arte sin esas capas.
   - **El caso:** «camiseta naranja agus.ai» (solicitud #3). El escudo y el logo estaban dibujados en la capa «diseño», en las 6 mesas, y sus capas «Editable …» quedaron vacías.
@@ -391,6 +804,114 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - La proporción es la del **dibujo**, sin el fondo ni el margen que lo rodea (ver «el margen del logo ya no cuenta» en Arreglado). Un SVG se mide por su viewBox, con el margen que tenga.
 
 ### Arreglado
+- **Reconciliación Contable WMS (`/contabilidad/reconciliacion`): si la auditoría fallaba, la pantalla decía «Todo en orden» (28/10).**
+  - **Lo que pasaba:** los datos arrancan en «0 órdenes sin contabilizar». Si el pedido de auditoría fallaba (error del servidor, sesión vencida o sin conexión), solo salía un aviso arriba y abajo seguía «Todo en orden» y «Sistema contable íntegro». Además, en el primer instante, antes de que empezara a cargar, también se veía «Todo en orden».
+  - **Ahora:**
+    - Mientras carga, dice «Auditando…».
+    - Si falla, la tarjeta de estado dice «No se pudo auditar» en magenta y «Sin contabilizar» muestra «—» en vez de 0. Abajo aparece «No se pudo hacer la auditoría» con el motivo y un botón «Reintentar».
+    - «Todo en orden» solo sale cuando la auditoría respondió de verdad. Si la respuesta no trae la lista de órdenes, también cuenta como error.
+  - **Mensajes de error más claros:**
+    - Un 502/504 del proxy (que viene en HTML) dice «Error 502» en vez de «Unexpected token <».
+    - La sesión vencida o sin permiso muestra el mensaje del servidor; antes decía solo «Error 403».
+    - Sin conexión dice «No hay conexión con el servidor.».
+    - Esto también vale para «Ejecutar reparación», que usa el mismo pedido.
+  - **Probado en local:**
+    - Normal: «Todo en orden» con 0.
+    - Con un 500, un 502 en HTML y sin conexión, cambiando la respuesta en el navegador.
+    - Con 2 pendientes de mentira: «Reintentar» las trae.
+    - Con un 403 real: el archivo se recargó solo cuando la sesión de prueba ya estaba borrada.
+    - En 390 px no se desborda nada. Solo salieron pedidos GET.
+  - **Archivo:** `src/components/pages/ContabilidadReconciliacionView.jsx`. Solo el front.
+- **Miniaturas de archivos grandes: el cron ya no baja el archivo entero a la memoria ni reintenta lo que falló (28/10, INF-SIS-2026-08).**
+  - **Lo que pasaba (27/10):** el monitor mostró al cron de miniaturas (`backfillThumbnails.js`) con 2,9 GB y 110 % de CPU. Bajaba el banner de 2,7 GB de EUV-38376 entero a la memoria y fallaba al escribir la copia (Node no escribe más de 2 GiB de una vez). Lo reintentaba cada 10 minutos durante 3 días. La subida tampoco le había podido hacer miniatura, porque leía el archivo entero y Node no lee más de 2 GiB así. Ese día se cortó a mano (fase 0).
+  - **Ahora el cron:**
+    - Mira el tamaño en Drive sin bajar el archivo (`driveService.getFileMeta`).
+    - **Hasta 1 GB**, lo baja a un temporal en disco y hace la miniatura por ruta: `pdftoppm` y `sharp` leen el archivo de disco. El temporal se borra al terminar, y si una corrida muere, la siguiente borra los de más de un día.
+    - **Más de 1 GB**, no lo baja: usa la miniatura que genera Drive (`driveService.getThumbnailImage`, a 1000 px). Como Drive tarda en generarla, durante las 2 primeras horas después de la subida espera a la corrida siguiente.
+  - **Sin reintentos:** lo que no da miniatura queda con la marca `{ArchivoID}.sin-miniatura` (fecha y motivo) al lado de donde iría el .jpg, y el cron no lo vuelve a intentar. `--force` y `--noDocERP` ignoran la marca, para reintentar a mano. Los errores de Drive o de red no marcan, y si falta `pdftoppm` en el servidor tampoco (si no, quedarían marcados todos los PDF).
+  - **`pdftoppm` tiene un límite de 2 minutos**, también en la miniatura desde memoria (sync del ERP, reposiciones).
+  - **La subida hace la miniatura sobre la copia en disco**, por ruta. Arriba de 1 GB no rasteriza: queda para el cron, con la miniatura de Drive. El archivo entero ya solo se lee si corre el perfil de color o el preflight. El perfil de color de un archivo de más de 2 GiB sigue sin poder leerse, igual que antes.
+  - **El límite se cambia sin deploy** con `THUMB_MAX_MB` en el `.env` (por defecto, 1024).
+  - **Probado en local** (con la carpeta de miniaturas en otro lado):
+    - El banner de EUV-38376 queda marcado sin bajarse («2.697 MB: más que el límite de 1.024 MB y Drive no tiene miniatura»), con un pico de 215 MB.
+    - Un PNG de 15 MB (DTF-39006) se baja a disco, sale la miniatura y el temporal se borra.
+    - El mismo, con límite de 1 MB, sale con la miniatura de Drive a 1000×750.
+    - Por ruta: imagen OK, formato no rasterizable y archivo inexistente dan su motivo.
+    - **No probado:** rasterizar un PDF (en esta PC no está `pdftoppm`, sí en el servidor) ni el corte a los 2 minutos.
+- **Devoluciones de tela de cliente que nadie contestaba (28/10, INF-SIS-2026-11).**
+  - **Lo que pasó** (copia del 27/10): hay 6 solicitudes de devolución en toda la historia, todas pedidas por los clientes desde el portal y las 6 PENDIENTE. Nadie las aprobó ni las rechazó. Las 6 bobinas se cerraron con «Cerrar / Terminar» → «Fin de Bobina» (13,54 m como desecho), porque cerrar una bobina no miraba si el cliente había pedido la devolución. Rechazar desde la bandeja tampoco le avisaba nada al cliente.
+  - **Cerrar con un pedido abierto, bloqueado:**
+    - Si una bobina tiene una devolución o un descarte pedido (PENDIENTE o APROBADA), no se puede cerrar como Agotada ni dejar en ≤ 0,5 m con un ajuste. El servidor contesta 409: «El cliente pidió la devolución de esta tela el dd/mm (solicitud #N). Solución: resolvela en Tela de cliente › Bandeja de devoluciones…».
+    - En «Administrar bobina» se ve el mismo aviso, con «Ir a la bandeja», y los botones quedan deshabilitados.
+    - Un cierre que deja la bobina Disponible (con metros y sin «Sacar de inventario») sigue andando, y los consumos de las órdenes no se frenan.
+  - **Rechazar pide el motivo y le avisa al cliente:**
+    - En la bandeja, «Rechazar» abre una ventana con dos motivos fijos («No quedó tela para devolver…», «Lo que quedaba era un retazo…») y uno libre.
+    - El cliente recibe el motivo como aviso del portal, con el mismo servicio que el aviso de tela sobrante (le llega si tiene los avisos activados). Además lo ve en «Mis telas», en el bulto.
+    - Se puede rechazar una solicitud pendiente o una aprobada sin empaquetar. Antes rechazaba sin motivo, solo las pendientes, y sin avisar.
+  - **«Ya se entregó»:** acción nueva en la bandeja para las devoluciones (`POST /api/tela-cliente/bandeja/:tevId/entregada`), con confirmación propia. Deja la solicitud RESUELTA con «Entregada en mano». Si la bobina sigue abierta, la cierra con un movimiento DEVOLUCION_FISICA_CLIENTE (el mismo que el empaquetado), sin orden ni bulto.
+  - **La bandeja muestra primero los pedidos abiertos de bobinas agotadas o cerradas**, en rojo: «La bobina ya está agotada y el cliente sigue esperando respuesta…». A esas devoluciones no se les ofrece «Aprobar», porque después no se podrían empaquetar.
+  - **Probado en local, contra la copia:**
+    - Cerrar con un pedido abierto (con 0 m y con «Sacar de inventario») da 409, y una rebaja que agota también, sin movimientos.
+    - Rechazar sin motivo da 400; con motivo queda RECHAZADA con el motivo, y el estado de cuenta lo devuelve. Rechazar dos veces da 409.
+    - «Ya se entregó» con la bobina abierta la cierra con −0,64 m de DEVOLUCION_FISICA_CLIENTE; con la bobina agotada solo resuelve la solicitud; sobre un descarte da 400.
+    - La bandeja ordena primero las 6 colgadas.
+    - En el navegador: el aviso y el botón apagado en el modal, «Ir a la bandeja», las tarjetas en rojo y la ventana de rechazo.
+    - Todo con solicitudes de prueba, borradas al terminar; BOB-294 quedó como estaba y las 6 reales, sin tocar.
+    - **No probado:** el portal en el navegador (compila en Vite) y que el aviso llegue a un celular (en local no hay avisos configurados).
+  - **Pendiente fuera del sistema:** preguntarle a Noelia qué pasó con la tela de las 6 y cerrarlas una por una. Los motivos y el SQL con respaldo están en el PDF del plan. Después, que Atención al cliente le conteste a cada cliente.
+- **Ajuste de bobinas y devoluciones de tela de cliente: mensajes con la salida y botones que no dejan intentar lo imposible (28/10, INF-SIS-2026-10).** El log del 28/10 traía dos errores. Ninguno cambió datos: eran controles que frenaban bien, pero sin decir qué hacer.
+  - **Rebaja mayor al stock:** Noelia (SB) intentó 4 veces, de 07:13 a 07:25, una rebaja que dejaba una bobina en negativo. Salía 500 y quedaba como ERROR, con «El stock no puede quedar negativo». Ahora:
+    - El servidor contesta 400 con los metros reales y la salida: «BOB-294 tiene 0,64 m en el sistema y la rebaja es de 2,00 m: quedaría en negativo. Solución: si el rollo tiene más tela, usá «Corrección (fijar)» con los metros reales; si se terminó, «Cerrar / Terminar».». Si la bobina no existe, 404. Los dos quedan en el log como aviso.
+    - «Administrar bobina» relee los metros de la bobina al abrirse, con la ruta nueva `GET /api/inventory/stock/bobina/:id`. Antes usaba los de la lista, que pueden haber cambiado: las órdenes descuentan tela solas y una cancelación la devuelve.
+    - Si la rebaja no alcanza, «Quedarán» sale en rojo con la salida y un «Actualizar», y «Aplicar ajuste» queda deshabilitado. Si igual llega al servidor, el modal muestra los metros que devuelve y la lista se recarga.
+  - **El motivo es obligatorio al cambiar metros, y hay un motivo nuevo, «Corrección de medida», que va primero:** antes venía marcado «Producción», que no estaba entre los botones, así que todos los ajustes quedaban con ese motivo y el historial no decía qué fue cada uno.
+    - Los 62 ajustes de Noelia en 60 días son todos «Producción» sobre tela de cliente.
+    - 54 los hizo en los 5 minutos antes de confirmar la medida. Corrigen lo medido, no descuentan consumo: para eso es «Corrección de medida».
+    - Solo 6 vinieron después de un consumo de orden, y 5 de esos suman metros.
+    - Un ajuste solo de ancho no pide motivo.
+  - **Solicitud de devolución repetida:** a las 07:43 alguien pidió devolver una tela que ya tenía una solicitud en curso. El servicio la frenaba con 400, pero quedaba como ERROR y sin la salida, y el botón se ofrecía igual. Ahora:
+    - Contesta 409. Adentro dice «Esta bobina ya tiene una solicitud de devolución en curso, pedida el 28/10. Solución: seguila en Tela de cliente › Bandeja de devoluciones.». En el portal dice «Ya pediste la devolución de esta tela el 28/10. Te avisamos cuando esté lista.». La fecha va en hora de Uruguay.
+    - Si dos pedidos llegan a la vez, el índice único frena el segundo con el mismo 409.
+    - Los demás controles (bobina agotada, acción inválida) dan 400, y si la bobina no es del cliente, 404. Todos quedan como aviso. Una falla real ahora da 500; antes daba 400.
+  - **Las listas saben de la solicitud en curso:** el inventario (`getInventoryByArea`) y el estado de cuenta de tela (`getEstadoCuenta`, que usa «Mis telas» del portal) la devuelven por bobina. En la tarjeta de Tela de cliente, en vez del botón ↶ sale «Devolución pedida» (o «Descarte pedido»), que lleva a la Bandeja de devoluciones. En el portal sale «Devolución pedida el dd/mm · te avisamos cuando esté lista».
+  - **Probado en local, contra la copia:**
+    - Los controllers con pedidos de mentira: la rebaja de 2 m sobre BOB-294 (0,64 m) da 400 con el mensaje y no registra ningún movimiento; la bobina inexistente da 404.
+    - La solicitud repetida da 409 con los dos mensajes. La probé con una solicitud temporal sobre BOB-294, borrada al terminar.
+    - El inventario y el estado de cuenta traen la solicitud. En el log quedan como WARN, sin nada en el de errores.
+    - En el navegador, con una sesión de prueba local: el modal en rojo, el botón apagado sin motivo, el motivo obligatorio, la tarjeta con «Devolución pedida» y el paso a la bandeja.
+    - **No probado:** el portal en el navegador (compila en Vite) y el 409 por el índice único.
+  - **Dato aparte:** en la copia hay 6 solicitudes PENDIENTE desde septiembre y octubre (BOB-171, 209, 222, 238, 255 y 267) sobre bobinas ya Agotadas. Quedan en la bandeja sin poder cumplirse.
+- **Retiros del tótem y de mostrador con pesos y dólares: quedaban en dólares con el total sumado sin convertir (27/10, INF-SIS-2026-07).**
+  - **Antes:** si alguna orden era en dólares, el retiro entero quedaba en dólares, y el total sumaba pesos y dólares como si fueran la misma moneda. En la copia local al 21/10 había 476 así (458 del tótem y 18 de mostrador). Ejemplo: RT-34046, $ 3.000 + $ 3.000 + US$ 5,28, figuraba «US$ 6.005,28». La caja los cobró bien porque convierte orden por orden: el RT-34046 se cobró $ 6.215,05.
+  - **«Pagos pendientes» cobraba ese total en dólares:** generó links de Handy por US$ 1.847,95 (RT-28206: $ 1.764 + US$ 83,95) y US$ 311 (RT-24240: $ 300 + US$ 11). Ninguno se pagó. Además armaba el link con el total y los importes que mandaba la pantalla y no miraba de quién era el retiro.
+  - **Ahora:** el retiro nace en pesos con el total convertido. «Pagos pendientes» recalcula el retiro al pagar, con la cotización de ese momento, y muestra el total en pesos. Solo se puede pagar un retiro propio y pendiente (estado 1 o 7).
+  - **Los retiros mezclados que ya existen:** el arreglo de datos está en las notas de deploy.
+- **Detalle del lote: las confirmaciones usan la ventana del sistema en vez de la del navegador (27/10).** Quedaban 7 `window.confirm` nativos en `RollDetailsModal.jsx`. Pasaron a `ui/useConfirmar`, con el mismo resultado: Cancelar o Escape no hacen nada y confirmar sigue igual que antes.
+  - **Las que se usan:**
+    - Sacar varias órdenes del lote. Ahora dice que vuelven a Pendientes y, si se sacan todas, que el lote queda vacío y se cancela (cierra) solo. Es el mismo aviso que ya daba sacar la última de a una.
+    - Asignar una bobina que no alcanza: «El rollo requiere 59.38 m y la bobina tiene 6.73 m…».
+    - Descargar sin carpeta automática, para bajar un ZIP. El texto ahora dice que hace falta Chrome o Edge con HTTPS o localhost; antes culpaba solo a la conexión, y en Safari o Firefox no es eso.
+  - **Las que no se pueden disparar, cambiadas igual:** «Descargar y medir» (`handleServerProcess`), que ningún botón llama y quedó marcada SIN USO, y las dos de etiquetas de bulto, cuyo botón está comentado.
+  - **Probado en local** con el lote #6398, contestando con un éxito falso todo lo que escribe en la base (no se tocó ningún dato):
+    - Sacar 2: la ventana aparece, Cancelar y Escape no mandan nada, y Sacar manda los 2 `POST /orders/unassign-roll`.
+    - Sacar las 8: avisa que el lote queda vacío.
+    - Bobina de 6,73 m para un lote de 59,38 m: avisa, y con Cancelar el selector de bobinas sigue abierto sin asignar.
+    - Sin carpeta automática: avisa y Cancelar no descarga.
+    - En ningún caso salió un diálogo nativo ni hubo errores en la página.
+  - **Archivo:** front `modals/RollDetailsModal.jsx` (va en el build).
+- **Descarga de un lote: el aviso dice qué archivo no se pudo bajar (27/10).** El 27/10 a las 11:21 Drive cortó a la mitad la descarga del archivo 67633 («El origen cortó la descarga: Premature close»). El resto del lote bajó, pero el aviso solo decía «N de M archivos descargados (1 fallaron)» y el nombre quedaba en la consola, así que el operario no sabía qué faltaba en la carpeta.
+  - **Ahora:** el aviso nombra el archivo que falló (hasta 5, y «y N más»), con el singular bien puesto, dice que hay que volver a descargar el lote y queda fijo hasta que lo cierran. El archivo que falla no se escribe a medias: se escribe solo cuando llegó entero, igual que antes.
+  - **Probado en local** con el lote #6398 (8 órdenes, 10 archivos), cortando a propósito la descarga del primero: se escribieron los otros 9 y el aviso dijo «9 de 10 archivos descargados en "26oct27-sb-03-StefaniF CATEGORIA 1". No se pudo bajar: Hexagonal (1,83)-SUB-38951_Kasak-1899_Arch 1 de 1 (x8).pdf. Volvé a descargar el lote para completarlo.» Siguió en pantalla a los 37 s, sin errores en la página. La carpeta fue simulada y los archivos chicos de prueba, en lugar de los de Drive.
+  - **Archivo:** front `modals/RollDetailsModal.jsx` (va en el build).
+- **Log de errores del front: se descarta el error que mete Instagram en iPhone (27/10).** «undefined is not an object (evaluating 'window._META.IABInnerFrame')» aparece cuando alguien entra a user.com.uy desde el link de la bio de Instagram en un iPhone. Sale de un script que inyecta el navegador interno de Instagram: la app no usa `_META`. WebKit le pone a ese script la URL de nuestra página, así que el filtro de extensiones no lo reconocía.
+  - **Ahora:** los mensajes que mencionan `_META` no se mandan, ni se guardan si llegan de un front viejo. Es la misma regla que ya había para Instagram en Android (`iabjs://`).
+  - **Probado:** las dos reglas, la del front y la del backend, descartan el mensaje del log y «Can't find variable: _META». Siguen pasando «Load failed», un error de la app y `AREA_META is not defined` (una constante nuestra). Lo que ya se filtraba se sigue filtrando: extensiones, `__firefox__` e `iabjs://`.
+  - **Archivos:** front `utils/errorReporter.js` (va en el build); backend `controllers/sysadminController.js` (con reinicio). Pueden ir por separado.
+- **Registro del portal: una dirección de más de 80 caracteres ya no hace fallar el alta (26/10).** El 26/10 a las 16:55 el registro dio error 500 («String or binary data would be truncated … column 'DireccionTrabajo'») con una dirección que traía las calles de referencia, y el cliente no quedó registrado.
+  - **Causa:** las columnas de texto de `Clientes` son `char` con tope (dirección 80, email 40, teléfono 20, cédula/RUT 20, nombre y razón social 150) y ni el formulario ni el backend limitaban lo que se escribía. La edición del perfil del portal tenía lo mismo. El alta y la edición desde el sistema interno ya recortaban, así que ahí no fallaba.
+  - **Ahora:** el registro y la edición del perfil controlan el largo y contestan «La dirección puede tener hasta 80 caracteres (tiene 90).» (400) en vez del 500. El formulario ya no deja escribir de más: dirección 80, con un contador desde los 60 caracteres que se pone en magenta al llegar al tope; email 40, teléfono 20, razón social 150, nombre y apellido 70 cada uno. La edición del perfil muestra ese mensaje en vez de «Error al guardar los cambios». Los textos se guardan sin espacios de más al principio ni al final. No se tocó la base.
+  - **Probado en local:** el registro rechaza la dirección de 90, el email de 42 y el teléfono de 21, y el perfil la dirección y una razón social de 151, todo antes de escribir en la base (no se probó un alta completa, que manda el mail de bienvenida y escribe en Google Sheets). En `/register`, la dirección se corta en 80 y el contador marca 80/80.
+  - **Archivos:** backend `controllers/webAuthController.js` (con reinicio); front `shared/ClientFormFields.jsx`, `pages/RegisterPage.jsx` y `client-portal/modulos/ProfileEdit.jsx` (van en el build). Sin SQL.
 - **Entregar retiros: dos entregas a la vez ya no se traban, y si chocan se reintenta sola (26/10).** El 26/10 a las 16:07, dos entregas de Retiros web del mismo operario (RT-34959 y RT-34956) perdieron un deadlock y la pantalla mostró error. El operario las volvió a entregar a las 16:07:51.
   - **Causa:** según el registro de deadlocks de SQL Server en prod, chocaron en `OcupacionEstantes.IX_OcupacionEstantes_OrdenRetiro`. El DELETE que libera el estante en `marcarEntregado` armaba el código del retiro dentro del WHERE, con una subconsulta. Así SQL Server recorría todo el índice (Index Scan, 3.957 filas en la copia local) tomando un candado en cada fila, y dos entregas a la vez se cruzaban.
   - **Arreglo:** el código del retiro se calcula antes en una variable y se borra por ese valor, que va directo a la fila (Index Seek).
@@ -450,6 +971,10 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Probado en local, con docker simulado y datos como los de producción:** sin healthcheck, con healthcheck, parado y con tope de memoria, contenedor inexistente (el log sale una sola vez) y salida que no es JSON.
   - **RAM del contenedor:** sale de sus archivos de cgroup. En el servidor existe la primera ruta que prueba el código: `/sys/fs/cgroup/system.slice/docker-<id>.scope`, de cgroup v2 con systemd. Verificado el 26/10. La lectura misma se ve después del deploy.
   - **Archivo:** backend `services/monitorService.js` (necesita reiniciar). Sin SQL.
+- **Monitor del servidor: el número de las tarjetas ya no pasa a dos líneas (27/10).** En «Red (Mbps)», con valores como «100.80 / 20.60», el número no entraba en el ancho de la tarjeta, pasaba a dos líneas y agrandaba la fila.
+  - **Ahora:** el número va siempre en una línea. Si no entra, la letra se achica lo justo, y se vuelve a calcular cuando cambia el ancho de la pantalla. Vale para todas las tarjetas de arriba; las que ya entraban quedan igual.
+  - **Probado** en el navegador con el mismo cálculo y las mismas clases, con letra de 24 y 30 px y tarjetas de 150 a 300 px: «166.84 / 4.97», «100.80 / 20.60» y «1023.55 / 488.12» entran siempre (con 190 px y letra de 30 px, bajan a 26, 23,5 y 20 px); «22 ms» y «39 %» no cambian. La pantalla misma no se vio: en local no había sesión iniciada.
+  - **Archivo:** front `pages/admin/MonitorServidorPage.jsx`, va en el build.
 - **Logística (WMS): «En Viaje» ahora muestra solo lo de tu área (23/10).**
   - **Antes:** la solapa recibía el área elegida arriba, pero no la usaba. Con TWC elegida mostraba los remitos de DF, SB, ECOUV, Terminaciones y los demás.
   - **Ahora:** con un área elegida muestra solo los remitos que salieron de ella o que van hacia ella. Cada tarjeta lleva la etiqueta «Enviado por tu sector» o «Viene a tu sector».
@@ -694,6 +1219,53 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Queda pendiente:** los 18 cobros de Entrega de pedidos del 11/06 al 13/08 no tienen asiento contable (por el bug de `procesarEventoContable` que arregló Yoania). Las cuentas 713, 89, 402 y 1297 tienen una factura que figura impaga aunque el pago entró. Las facturas ET-122 y ET-392 siguen en estado PENDIENTE ante DGI desde junio.
 
 ### Notas de deploy
+- **«Ver OP» del Libro Mayor:** sin SQL. Backend con reinicio: `services/cajaService.js`. La estética nueva del Libro Mayor va en el build del front (`pages/LibroMayorView.jsx`), y las dos partes son independientes.
+- **Miniaturas de archivos grandes (INF-SIS-2026-08):** sin SQL y sin cambios en el front.
+  - **Backend, con reinicio** (por la subida): `utils/thumbnailGenerator.js`, `services/driveService.js` y `controllers/webOrdersController.js`.
+  - **Cron:** `scripts/backfillThumbnails.js`. Toma el script nuevo en la corrida siguiente, sin tocar el crontab.
+  - **Opcional:** `THUMB_MAX_MB` en el `.env` para mover el límite de 1 GB.
+  - **Para ver que anduvo:** en `/home/logs/backfill-thumbs-cron.log` ya no se repite un mismo archivo en dos corridas. Lo que no da miniatura aparece una sola vez como «🚫 Sin miniatura, no se reintenta». La miniatura gris que se dejó a mano el 27/10 para EUV-38376 puede quedar.
+- **Devoluciones de tela sin respuesta (INF-SIS-2026-11):** sin SQL. Va junto con el INF-SIS-2026-10 (usa el dato de la solicitud que ese agrega a las listas). Backend y front juntos.
+  - **Backend, con reinicio:** `services/telaClienteDevolucionFisicaService.js`, `controllers/telaClienteController.js`, `routes/telaClienteRoutes.js` y `controllers/inventoryController.js`.
+  - **Front, en el build:** `pages/BandejaDevolucionesTelaPanel.jsx`, `modals/inventory/ManageBobinaModal.jsx`, `pages/TelaClienteInventarioPage.jsx`, `services/modules/telaClienteService.js` y `client-portal/modulos/RecursosView.jsx`.
+  - **Después del deploy:** avisarle a planta que una bobina con devolución pedida ya no se cierra desde el inventario, se resuelve en Tela de cliente › Bandeja de devoluciones.
+- **Ajuste de bobinas y devoluciones de tela (INF-SIS-2026-10):** sin SQL. Backend y front juntos: el modal nuevo relee la bobina con la ruta nueva, y con el backend viejo avisa que no pudo y usa los metros de la lista.
+  - **Backend, con reinicio:** `controllers/inventoryController.js`, `routes/inventoryRoutes.js`, `services/telaClienteDevolucionFisicaService.js` y `controllers/telaClienteController.js`.
+  - **Front, en el build:** `modals/inventory/ManageBobinaModal.jsx`, `pages/TelaClienteInventarioPage.jsx`, `services/modules/inventoryService.js` y `client-portal/modulos/RecursosView.jsx`.
+  - **Para ver que anduvo:** en los logs, una rebaja que no alcanza queda como `[WARN] [AJUSTE BOBINA] … rechazado` y ya no como «Error adjustBobina».
+- **UI del BCU para el tope del e-Ticket:** sin SQL; el job crea las claves `DGI_VALOR_UI_FECHA` y `DGI_VALOR_UI_ACTUALIZADO` y pisa `DGI_VALOR_UI` a los 20 s de arrancar.
+  - **Backend, con reinicio:** `jobs/valorUI.job.js` y `services/valorUIService.js` (nuevos), `jobs/cotizacionBCU.job.js`, `controllers/cfeController.js`, `routes/contabilidadRoutes.js`, `controllers/webOrdersController.js` (`_umbralEticketUI`) y `server.js`.
+  - **Front, en el build:** `pages/admin/EmpresasAdminPanel.jsx`. Si sube solo el backend, el panel viejo manda el valor de la UI al guardar y el backend lo ignora.
+  - **Para ver que anduvo:** en `/home/logs`, la línea «[VALOR UI] UI del 2025-12-31 según el BCU: 6.4234 (antes: 6.5321)». Otra opción es entrar a Parámetros DGI.
+- **Retiros con pesos y dólares (INF-SIS-2026-07):** backend y front en el mismo deploy. Si sube solo el front, la pantalla deja mezclar y el backend viejo arma el retiro en dólares con el total sin convertir.
+  - **Backend, con reinicio:**
+    - `services/retiroService.js`: `cotizarSeleccion`, `recalcularTotalRetiro`, `cotizacionDelDia` y `crearRetiro`.
+    - `controllers/webOrdersController.js`: la lista del portal, crear retiro del portal y del tótem, comprobante PDF, inicio de pago de Mercado Pago y Handy, billetera y los dos webhooks.
+    - `controllers/webRetirosController.js`: «Pagos pendientes».
+    - `controllers/ordenesRetiroController.js`: mostrador y los 3 recálculos.
+    - `controllers/quotationController.js`.
+  - **Front, en el build:** `client-portal/modulos/PickupView.jsx` y `client-portal/modulos/UnpaidPickupsView.jsx`.
+  - **Sin SQL de estructura.**
+  - **Después del deploy:** `backend/scripts/retiros_mezclados_a_pesos_2026-10-27.sql`. `*.sql` está en el `.gitignore`: hay que pasarlo a mano.
+    - Bloques 1 y 2, solo lectura: los retiros mezclados vivos y los links en dólares de retiros mezclados.
+    - Bloque 3: pasa a pesos los mezclados vivos sin pago real, con respaldo en `_BK_RetirosMezclados_20261027`. Primero con `@Aplicar = 0`, que es prueba en seco y deshace todo.
+    - En la copia local da solo RT-32647, de US$ 722,40 a $ 1.534,73, y los 4 links de Handy ya conocidos.
+  - **Los links de pago armados antes del deploy** se siguen pagando como antes: sin cotización guardada, la caja usa la del día.
+- **Aviso de la descarga de un lote y confirmaciones del detalle del lote:** solo front, en el build: `modals/RollDetailsModal.jsx` (los dos cambios están en el mismo archivo).
+- **Gestión de pagos con la estética nueva:** solo front, en el build: `pages/VerificarPagosOnlineView.jsx`. Sin backend ni SQL.
+- **Pagos con deuda con la estética nueva:** solo front, en el build: `pages/ExcepcionesDeudaView.jsx`. Sin backend ni SQL.
+- **Antigüedad de deuda con la estética nueva:** solo front, en el build: `pages/ContabilidadAntiguedadView.jsx`. Sin backend ni SQL.
+- **Bandeja CFE con la estética nueva:** solo front, en el build: `pages/ContabilidadBandejaCFE.jsx`. Sin backend ni SQL.
+- **Bandeja de documentos internos con la estética nueva:** solo front, en el build: `pages/BandejaDocumentosInternos.jsx`. Sin backend ni SQL.
+- **Tesorería con la estética nueva:** solo front, en el build: `pages/ContabilidadTesoreriaView.jsx`, `pages/tesoreria/ChequeDetalleModal.jsx`, `pages/tesoreria/ChequeEmitirModal.jsx` y `pages/tesoreria/ChequeRecibirModal.jsx` (este último también se ve en la Caja). Sin backend ni SQL.
+- **Atención al cliente con la estética nueva:** solo front, en el build: `pages/customer-service/TelaClienteEstadoCuenta.jsx`, `pages/customer-service/SolicitudesInsumoPage.jsx`, `pages/customer-service/ReceptionPage.jsx` y `pages/customer-service/WmsOrderPage.jsx` (este también se ve, solo en los montos, en Ventas › Pedido de prenda) , `pages/customer-service/VentaRolloAdelantoPage.jsx` (solo el encabezado) y `pages/CajaPanelPago.jsx` (la línea del comprobante y el monto en el celular). Sin backend ni SQL.
+- **Beneficios predefinidos y pactados con la estética nueva:** solo front, en el build: `pages/BeneficiosPredefinidos.jsx` y `pages/BeneficiosPactados.jsx`. Sin backend ni SQL.
+- **Precios y escalas de volumen con la estética nueva:** solo front, en el build: `pages/BasePrices.jsx` (se ve también dentro de Perfiles de precio). Sin backend ni SQL.
+- **Matriz de catálogo por cliente con la estética nueva y sus dos arreglos:** solo front, en el build: `pages/CustomerPriceCatalog.jsx` y `pages/CustomerPriceCatalogPage.jsx`. Sin backend ni SQL.
+- **Precios y perfiles con la estética nueva:** solo front, en el build: `pages/PriceProfiles.jsx`, `pages/PriceCalculatorTest.jsx`, `pages/PriceReports.jsx` y `pages/BasePrices.jsx` (el modo embebido, sin su título). Sin backend ni SQL.
+- **Cuadre diario con la estética nueva:** solo front, en el build: `pages/CuadreDiarioView.jsx`. Sin backend ni SQL.
+- **Precios especiales con la estética nueva:** solo front, en el build: `pages/SpecialPrices.jsx` (se ve también en la Vista 360 › Precios). Sin backend ni SQL. No arregla la pérdida de reglas al guardar (INF-SIS-2026-12).
+- **Filtro del error de Instagram en iPhone:** front `utils/errorReporter.js` (build) y backend `controllers/sysadminController.js` (reinicio). Independientes: el backend solo ya descarta los que mande el front viejo.
 - **Entregar retiros sin deadlocks:** solo backend, con reinicio; sin SQL ni build. Archivos: `services/retiroService.js`, `controllers/webRetirosController.js`, `controllers/ordenesRetiroController.js`, `routes/webRetirosRoutes.js` y `routes/getwayOrdenesRetiro.js`. Después del deploy, correr `backend/scripts/diag_deadlocks_entrega_multiple_2026-10-26.sql` a la tarde, que es cuando más se entrega: no tiene que aparecer ningún deadlock sobre `OcupacionEstantes`.
 - **Orden del Control igual al del detalle del lote:** backend con reinicio, `controllers/productionFileController.js` y `routes/productionFileRoutes.js` (`GET /api/production-file-control/lote/:rolloId/orden`, nuevo). Front, en el build: `utils/ordenLote.js` (nuevo), `pages/FilePrintControl.jsx`, `modals/RollDetailsModal.jsx` y `services/modules/fileControlService.js`. Van juntos: el front nuevo sin el backend ordena el Control solo por Secuencia (en SB, de mayor a menor, porque arranca en la vista de calandra).
 - **Tiempo de respuesta de las áreas (ciclo en planta):**

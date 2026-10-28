@@ -15,6 +15,7 @@ router.get('/bandeja',                                  verifyToken, ctrl.getBan
 router.get('/bandeja/para-empaquetar',                  verifyToken, ctrl.getParaEmpaquetar);
 router.post('/bandeja/:tevId/aprobar',                  verifyToken, ctrl.aprobarEvento);
 router.post('/bandeja/:tevId/rechazar',                 verifyToken, ctrl.rechazarEvento);
+router.post('/bandeja/:tevId/entregada',                verifyToken, ctrl.marcarEntregada); // se le dio en mano
 router.post('/bandeja/:tevId/empaquetar',               verifyToken, ctrl.empaquetarDevolucion);
 router.post('/bandeja/:tevId/marcar-enviado',           verifyToken, ctrl.marcarAvisoEnviado);
 

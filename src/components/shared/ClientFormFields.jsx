@@ -7,6 +7,10 @@ const selectClass = "w-full pl-10 pr-10 py-2 bg-[#111] border border-[#3f3f46] r
 const labelClass = "text-xs font-bold text-zinc-100 uppercase tracking-wider ml-1";
 const iconClass = "absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-[#00AEEF] transition-colors";
 
+// Largos de dbo.Clientes: el backend (webAuthController) rechaza lo que se pase. Nombre y apellido van juntos a una
+// columna de 150 (70 + 70), el teléfono a una de 20, la razón social a una de 150.
+export const LARGO_DIRECCION = 80;
+
 export const Field = ({ label, icon: Icon, required, error, children }) => (
     <div className="space-y-1">
         <label className={labelClass}>
@@ -85,21 +89,21 @@ export const ClientFormFields = ({ form, set, fieldErrors = {}, handleBlur, depa
             {/* Nombre | Apellido */}
             <div className="grid grid-cols-2 gap-3">
                 <Field label="Nombre" icon={User} required error={fieldErrors.nombre}>
-                    <input type="text" className={`${inputClass} ${fieldErrors.nombre ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.nombre} value={form.nombre} onChange={set('nombre')} onBlur={blur('nombre')} />
+                    <input type="text" className={`${inputClass} ${fieldErrors.nombre ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.nombre} value={form.nombre} maxLength={70} onChange={set('nombre')} onBlur={blur('nombre')} />
                 </Field>
                 <Field label="Apellido" icon={User} required error={fieldErrors.apellido}>
-                    <input type="text" className={`${inputClass} ${fieldErrors.apellido ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.apellido} value={form.apellido} onChange={set('apellido')} onBlur={blur('apellido')} />
+                    <input type="text" className={`${inputClass} ${fieldErrors.apellido ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.apellido} value={form.apellido} maxLength={70} onChange={set('apellido')} onBlur={blur('apellido')} />
                 </Field>
             </div>
 
             {/* Teléfono */}
             <Field label="Teléfono" icon={Phone} required error={fieldErrors.telefono}>
-                <input type="text" className={`${inputClass} ${fieldErrors.telefono ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.telefono} value={form.telefono} onChange={set('telefono')} onBlur={blur('telefono')} />
+                <input type="text" className={`${inputClass} ${fieldErrors.telefono ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.telefono} value={form.telefono} maxLength={20} onChange={set('telefono')} onBlur={blur('telefono')} />
             </Field>
 
             {/* Razón Social */}
             <Field label="Razón Social" icon={Building}>
-                <input type="text" className={inputClass} placeholder={ph.razonSocial} value={form.razonSocial} onChange={set('razonSocial')} />
+                <input type="text" className={inputClass} placeholder={ph.razonSocial} value={form.razonSocial} maxLength={150} onChange={set('razonSocial')} />
             </Field>
 
             {/* Cédula o RUT */}
@@ -109,9 +113,15 @@ export const ClientFormFields = ({ form, set, fieldErrors = {}, handleBlur, depa
 
 
 
-            {/* Dirección */}
+            {/* Dirección: la base guarda hasta 80 caracteres (Clientes.DireccionTrabajo); con más, el registro daba error.
+                Cerca del tope se muestra cuánto queda. */}
             <Field label="Dirección" icon={MapPin} required error={fieldErrors.direccion}>
-                <input type="text" className={`${inputClass} ${fieldErrors.direccion ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.direccion} value={form.direccion} onChange={set('direccion')} onBlur={blur('direccion')} />
+                <input type="text" className={`${inputClass} ${(form.direccion || '').length >= 60 ? 'pr-14' : ''} ${fieldErrors.direccion ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder={ph.direccion} value={form.direccion} maxLength={LARGO_DIRECCION} onChange={set('direccion')} onBlur={blur('direccion')} />
+                {(form.direccion || '').length >= 60 && (
+                    <span className={`absolute right-3 top-1/2 -translate-y-1/2 text-[10px] font-bold tabular-nums pointer-events-none ${(form.direccion || '').length >= LARGO_DIRECCION ? 'text-custom-magenta' : 'text-zinc-500'}`}>
+                        {(form.direccion || '').length}/{LARGO_DIRECCION}
+                    </span>
+                )}
             </Field>
 
             {/* Lógica condicional del Layout para Departamento, Localidad y Agencia */}

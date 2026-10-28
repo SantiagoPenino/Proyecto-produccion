@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import Selector from '../../ui/Selector';
 import { inventoryService } from '../../../services/modules/inventoryService';
 import { toast } from 'sonner';
-import { X, History, AlertTriangle, Settings2, SlidersHorizontal, PackageX, Undo2, Check, Loader2 } from 'lucide-react';
+import { X, History, AlertTriangle, Settings2, SlidersHorizontal, PackageX, Undo2, Check, Loader2, RefreshCw } from 'lucide-react';
 
 // Estética nueva (22/10/2026, como el Inventario de tela): modal blanco redondeado, encima de la barra de arriba
 // (z-[6000]; antes z-50 y quedaba por debajo), pestañas con la elegida en negro, campos con foco brand-cyan y el
@@ -16,7 +16,9 @@ const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-4 py-
 const segmento = (activo) => `flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-colors ${
     activo ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800'}`;
 
-const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
+const fechaCorta = (f) => (f ? new Date(f).toLocaleDateString('es-UY', { timeZone: 'America/Montevideo', day: '2-digit', month: '2-digit' }) : '');
+
+const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess, onVerBandeja }) => {
     const [activeTab, setActiveTab] = useState('adjust'); // 'adjust' | 'close' | 'history'
     const [loading, setLoading] = useState(false);
 
@@ -24,11 +26,22 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const [history, setHistory] = useState([]);
     const [loadingHistory, setLoadingHistory] = useState(false);
 
+    // SALDO ACTUAL: el de la lista puede ser viejo (las órdenes descuentan tela solas y una cancelación
+    // la devuelve). Se relee al abrir y con «Actualizar»; si el servidor rechaza una rebaja, trae el real.
+    const [restante, setRestante] = useState(() => Number(bobina?.MetrosRestantes) || 0);
+    const [leyendoSaldo, setLeyendoSaldo] = useState(false);
+    // Devolución/descarte pedido por el cliente y todavía abierto: con eso no se cierra ni se deja en cero
+    // desde acá, se resuelve en la bandeja (INF-SIS-2026-11: así se perdieron 6 pedidos del portal).
+    const [solicitud, setSolicitud] = useState(() => (bobina?.SolicitudTevID
+        ? { TevID: bobina.SolicitudTevID, Accion: bobina.SolicitudAccion, Fecha: null } : null));
+
     // ADJUST STATE
     const [adjustType, setAdjustType] = useState('subtract');
     const [amount, setAmount] = useState('');
     const [orden, setOrden] = useState('');
-    const [concept, setConcept] = useState('Producción');
+    // Sin motivo por defecto (antes venía «Producción», que no estaba entre los botones, y todos los
+    // ajustes quedaban con ese motivo): hay que elegirlo, para que el historial diga qué fue cada ajuste.
+    const [concept, setConcept] = useState('');
     const [customConcept, setCustomConcept] = useState('');
     const [anchoReal, setAnchoReal] = useState(''); // Corrección de ancho real (opcional)
 
@@ -50,6 +63,24 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     const anchoRelevante = (bobina?.Ancho != null && bobina.Ancho !== '')
         || (bobina?.AnchoReal != null && bobina.AnchoReal !== '');
 
+    const releerSaldo = async () => {
+        setLeyendoSaldo(true);
+        try {
+            const actual = await inventoryService.getBobina(bobina.BobinaID);
+            setRestante(Number(actual.MetrosRestantes) || 0);
+            setSolicitud(actual.SolicitudTevID
+                ? { TevID: actual.SolicitudTevID, Accion: actual.SolicitudAccion, Fecha: actual.SolicitudFecha } : null);
+        } catch (e) {
+            toast.error('No se pudo leer el saldo actual de la bobina: ' + (e?.response?.data?.error || e.message) + '. Se muestra el de la lista.');
+        } finally {
+            setLeyendoSaldo(false);
+        }
+    };
+
+    useEffect(() => {
+        releerSaldo();
+    }, [bobina.BobinaID]);
+
     useEffect(() => {
         if (activeTab === 'history') {
             loadHistory();
@@ -69,16 +100,27 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     };
 
     // --- LOGIC: ADJUST ---
+    const cantIngresada = parseFloat(amount);
+    const hayCantidad = amount !== '' && !isNaN(cantIngresada) && cantIngresada > 0;
+    // Una rebaja que deja la bobina en negativo: el servidor la rechaza igual, acá se frena antes.
+    const noAlcanza = adjustType === 'subtract' && hayCantidad && restante - cantIngresada < -0.005;
+    const finalConcept = (customConcept.trim() || (concept !== 'Otro' ? concept : '')).trim();
+    // El motivo es obligatorio cuando cambian los metros (un ajuste solo de ancho no lo necesita).
+    const faltaMotivo = hayCantidad && !finalConcept;
+    // Un ajuste que deja la bobina en ≤ 0,5 m la agota (el servidor la pasa a Agotado): es un cierre.
+    const agotaAjuste = hayCantidad && !noAlcanza
+        && (adjustType === 'subtract' ? restante - cantIngresada : cantIngresada) <= 0.5;
+    const ajusteBloqueado = !!solicitud && agotaAjuste;
+
     const handleAdjustSubmit = async (e) => {
         e.preventDefault();
-
-        const finalConcept = customConcept || concept;
+        if (noAlcanza || faltaMotivo || ajusteBloqueado) return;
 
         // --- Metros ---
-        const cant = parseFloat(amount);
+        const cant = cantIngresada;
         let delta = 0;
-        if (amount !== '' && !isNaN(cant) && cant > 0) {
-            delta = adjustType === 'subtract' ? -Math.abs(cant) : (cant - bobina.MetrosRestantes);
+        if (hayCantidad) {
+            delta = adjustType === 'subtract' ? -Math.abs(cant) : (cant - restante);
         }
         const metrosCambio = Math.abs(delta) >= 0.01;
 
@@ -107,19 +149,51 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
         } catch (error) {
             console.error(error);
             toast.error(error?.response?.data?.error || 'Error al ajustar');
+            // El servidor rechazó la rebaja con el saldo real: se muestra ese y se recarga la lista.
+            const real = error?.response?.data?.metrosRestantes;
+            if (real != null) {
+                setRestante(Number(real) || 0);
+                onSuccess?.();
+            }
         } finally {
             setLoading(false);
         }
     };
 
     // --- LOGIC: CLOSE ---
+    // Cerrar con «Sacar de inventario» o con menos de 0,5 m deja la bobina Agotada (ver closeBobina).
+    const cierreAgota = finish || parseFloat(metrosFinales || 0) < 0.5;
+    const cierreBloqueado = !!solicitud && cierreAgota;
+
+    const avisoSolicitud = solicitud && (
+        <div className="flex items-start gap-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2.5">
+            <Undo2 className="w-4 h-4 shrink-0 text-rose-600 mt-px" />
+            <div>
+                <p>
+                    El cliente pidió {solicitud.Accion === 'DESCARTAR' ? 'el descarte' : 'la devolución'} de esta tela
+                    {solicitud.Fecha ? ` el ${fechaCorta(solicitud.Fecha)}` : ''} (solicitud #{solicitud.TevID}). No se puede cerrar
+                    ni dejar en cero desde acá: resolvela en la <strong>Bandeja de devoluciones</strong>
+                    {solicitud.Accion === 'DESCARTAR'
+                        ? ' (aprobala y la bobina se cierra sola, o rechazala).'
+                        : ': aprobala y empaquetala, marcala «Ya se entregó» si se la diste en mano, o rechazala si no queda tela.'}
+                </p>
+                {onVerBandeja && (
+                    <button type="button" onClick={onVerBandeja} className="mt-1 inline-flex items-center gap-1 font-bold text-rose-700 hover:text-rose-900">
+                        Ir a la bandeja
+                    </button>
+                )}
+            </div>
+        </div>
+    );
+
     const handleCalculateWaste = () => {
-        const waste = bobina.MetrosRestantes - metrosFinales;
+        const waste = restante - metrosFinales;
         setCalculatedWaste(waste >= 0 ? waste : 0);
     };
 
     const handleCloseSubmit = async (e) => {
         e.preventDefault();
+        if (cierreBloqueado) return;
         setLoading(true);
         try {
             const res = await inventoryService.closeBobina({
@@ -145,7 +219,10 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
     };
 
     // CONCEPTS PRESETS
+    // «Corrección de medida» primero: es el ajuste más común en tela de cliente (corregir lo medido
+    // justo antes de confirmar la medida; 54 de 62 ajustes en 60 días, copia del 27/10).
     const concepts = [
+        "Corrección de medida",
         "Muestra / Prueba",
         "Mermas Operativas",
         "Ajuste de Inventario",
@@ -166,7 +243,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                             <h2 className="text-lg font-black text-zinc-800 leading-tight truncate">{insumoName || 'Administrar bobina'}</h2>
                             <div className="flex items-center gap-2 text-xs text-zinc-500 mt-1 flex-wrap">
                                 <span className="font-mono font-bold bg-zinc-100 text-zinc-700 px-1.5 py-0.5 border border-zinc-200 rounded">{bobina.CodigoEtiqueta}</span>
-                                <span>Restante actual: <strong className="text-zinc-800 tabular-nums">{bobina.MetrosRestantes} m</strong></span>
+                                <span>Restante actual: <strong className="text-zinc-800 tabular-nums">{leyendoSaldo ? '…' : `${restante} m`}</strong></span>
                             </div>
                         </div>
                     </div>
@@ -239,11 +316,29 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                     placeholder="0.00"
                                     autoFocus
                                 />
-                                {adjustType === 'subtract' && amount && (
+                                {adjustType === 'subtract' && amount && !noAlcanza && (
                                     <p className="text-xs text-zinc-400 mt-1">
-                                        Quedarán: <strong className="text-zinc-700 tabular-nums">{(bobina.MetrosRestantes - parseFloat(amount || 0)).toFixed(2)} m</strong>
+                                        Quedarán: <strong className="text-zinc-700 tabular-nums">{(restante - parseFloat(amount || 0)).toFixed(2)} m</strong>
                                     </p>
                                 )}
+                                {noAlcanza && (
+                                    <div className="mt-1.5 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                                        <p>
+                                            Quedarán: <strong className="tabular-nums">{(restante - cantIngresada).toFixed(2)} m</strong>.
+                                            {' '}No alcanza: la bobina tiene <strong className="tabular-nums">{restante.toFixed(2)} m</strong>.
+                                            {' '}Si el rollo tiene más, usá <strong>«Corrección (fijar)»</strong> con los metros reales; si se terminó, <strong>«Cerrar / Terminar»</strong>.
+                                        </p>
+                                        <button
+                                            type="button"
+                                            onClick={releerSaldo}
+                                            disabled={leyendoSaldo}
+                                            className="mt-1 inline-flex items-center gap-1 font-bold text-rose-700 hover:text-rose-900 disabled:opacity-50"
+                                        >
+                                            <RefreshCw className={`w-3 h-3 ${leyendoSaldo ? 'animate-spin' : ''}`} /> Actualizar
+                                        </button>
+                                    </div>
+                                )}
+                                {ajusteBloqueado && <div className="mt-1.5">{avisoSolicitud}</div>}
                             </div>
 
                             {/* ANCHO REAL — opcional, solo para bobinas con ancho (tela) */}
@@ -298,11 +393,14 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                                         onChange={e => { setCustomConcept(e.target.value); setConcept('Otro'); }}
                                     />
                                 )}
+                                {faltaMotivo && (
+                                    <p className="text-xs text-amber-700 mt-1.5">Elegí el motivo del ajuste.</p>
+                                )}
                             </div>
 
                             <div className="pt-2 flex justify-end gap-2">
                                 <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>Cancelar</button>
-                                <button type="submit" disabled={loading} className={BTN_PRINCIPAL}>
+                                <button type="submit" disabled={loading || noAlcanza || faltaMotivo || ajusteBloqueado} className={BTN_PRINCIPAL}>
                                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Check className="w-4 h-4" />} Aplicar ajuste
                                 </button>
                             </div>
@@ -312,6 +410,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
                     {/* --- TAB: CLOSE --- */}
                     {activeTab === 'close' && (
                         <form onSubmit={handleCloseSubmit} className="space-y-4">
+                            {avisoSolicitud}
                             <div className="flex gap-2 items-start text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2.5">
                                 <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0" />
                                 <p>Esta acción marcará la bobina como <strong>Agotada</strong> o finalizada. Use esta opción si el rollo ya no se utilizará.</p>
@@ -336,7 +435,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
 
                             {calculatedWaste !== null && (
                                 <div className={`text-sm px-3 py-2 rounded-xl border flex justify-between gap-2 ${calculatedWaste > 0 ? 'bg-rose-50 text-rose-700 border-rose-200' : 'bg-emerald-50 text-emerald-700 border-emerald-200'}`}>
-                                    <span>Sistema esperada: {bobina.MetrosRestantes}m</span>
+                                    <span>Sistema esperada: {restante}m</span>
                                     <strong className="tabular-nums">Desecho: {calculatedWaste.toFixed(2)} m</strong>
                                 </div>
                             )}
@@ -371,7 +470,7 @@ const ManageBobinaModal = ({ bobina, insumoName, onClose, onSuccess }) => {
 
                             <div className="pt-2 flex justify-end gap-2">
                                 <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>Cancelar</button>
-                                <button type="submit" disabled={loading} className={BTN_PELIGRO}>
+                                <button type="submit" disabled={loading || cierreBloqueado} className={BTN_PELIGRO}>
                                     {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <PackageX className="w-4 h-4" />} Confirmar cierre
                                 </button>
                             </div>

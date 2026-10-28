@@ -18,6 +18,21 @@ export function fmtDiasHabiles(min, minutosJornada, { corto = false } = {}) {
     return `${n} ${n === '1,0' ? 'día hábil' : 'días hábiles'}`;
 }
 
+// (27/10/2026) El ciclo en la unidad que se entiende: menos de una jornada del área va en horas («6 h 15 min»); desde
+// una jornada, en días hábiles («1,2 días hábiles»). «0,3 días hábiles» no le decía nada a nadie.
+export const superaJornada = (min, minutosJornada) => !!minutosJornada && Number(min) >= Number(minutosJornada);
+export function fmtCiclo(min, minutosJornada, opciones) {
+    return superaJornada(min, minutosJornada) ? fmtDiasHabiles(min, minutosJornada, opciones) : fmtDuracion(min);
+}
+
+// Etiqueta corta para las barras de las semanas: «45 min» · «6,3 h»
+export function fmtHorasCorto(min) {
+    if (min == null) return '—';
+    const m = Math.max(0, Math.round(Number(min)));
+    if (m < 60) return `${m} min`;
+    return `${(m / 60).toLocaleString('es-UY', { maximumFractionDigits: 1 })} h`;
+}
+
 // Reloj de pared, para comparar: «14 h 22 min» o, con más de dos días, «21,8 días»
 export function fmtCorridos(min) {
     if (min == null) return '—';

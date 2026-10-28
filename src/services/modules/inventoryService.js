@@ -29,6 +29,12 @@ export const inventoryService = {
         return response.data;
     },
 
+    // Saldo actual de una bobina (el modal de ajuste la relee al abrirse)
+    getBobina: async (bobinaId) => {
+        const response = await api.get(`/inventory/stock/bobina/${bobinaId}`);
+        return response.data;
+    },
+
     // Ajuste Manual (Sin Cierre)
     adjustBobina: async (data) => {
         const response = await api.post('/inventory/stock/adjust', data);

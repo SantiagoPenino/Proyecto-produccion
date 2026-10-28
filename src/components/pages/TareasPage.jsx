@@ -3,8 +3,9 @@ import { tareasService } from '../../services/api';
 import { socket } from '../../services/socketService';
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
-import Swal from 'sweetalert2';
-import { ListChecks, Plus, Trash2, CheckCircle2, Circle, User, Clock } from 'lucide-react';
+import { ListChecks, Plus, Trash2, CheckCircle2, Circle, User, Clock, Loader2 } from 'lucide-react';
+import Selector from '../ui/Selector';
+import useConfirmar from '../ui/useConfirmar';
 
 // Fecha corta DD/MM/YY HH:mm (24h) — mismo criterio que el resto del sistema.
 const fmt = (v) => {
@@ -15,6 +16,14 @@ const fmt = (v) => {
     return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)} ${p(d.getHours())}:${p(d.getMinutes())}`;
 };
 
+// Estética nueva (28/10/2026): encabezado con ícono brand-cyan sin fondo y título en mayúsculas, ancho completo,
+// pestañas en pastillas (Selector en el celular), confirmación de borrado con useConfirmar (antes SweetAlert) y el
+// tacho siempre visible (antes aparecía solo al pasar el mouse: en el celular no se podía borrar).
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+
 const TareasPage = () => {
     const { user } = useAuth();
     const [tareas, setTareas] = useState([]);
@@ -24,6 +33,7 @@ const TareasPage = () => {
     const [descripcion, setDescripcion] = useState('');
     const [guardando, setGuardando] = useState(false);
     const [mostrandoForm, setMostrandoForm] = useState(false); // el alta aparece al pulsar "Nueva tarea"
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     const cerrarForm = () => { setMostrandoForm(false); setTitulo(''); setDescripcion(''); };
 
@@ -79,16 +89,7 @@ const TareasPage = () => {
     };
 
     const eliminar = async (tarea) => {
-        const r = await Swal.fire({
-            title: '¿Borrar tarea?',
-            text: tarea.TarTitulo,
-            icon: 'warning',
-            showCancelButton: true,
-            confirmButtonText: 'Borrar',
-            cancelButtonText: 'Cancelar',
-            confirmButtonColor: '#e11d48',
-        });
-        if (!r.isConfirmed) return;
+        if (!(await confirmar({ titulo: '¿Borrar tarea?', texto: tarea.TarTitulo, confirmar: 'Borrar', peligro: true }))) return;
         try {
             await tareasService.remove(tarea.TarId);
             setTareas((prev) => prev.filter((x) => x.TarId !== tarea.TarId));
@@ -104,28 +105,28 @@ const TareasPage = () => {
     ];
 
     return (
-        <div className="max-w-3xl mx-auto p-4 md:p-6">
+        <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
+            {ventanaConfirmar}
+
             {/* Encabezado */}
-            <div className="flex items-center gap-3 mb-6">
-                <div className="w-11 h-11 rounded-xl bg-brand-cyan/10 text-brand-cyan flex items-center justify-center">
-                    <ListChecks size={24} />
+            <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="min-w-0">
+                    <div className="flex items-center gap-3">
+                        <ListChecks size={30} className="text-brand-cyan shrink-0" />
+                        <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Tareas</h1>
+                    </div>
+                    <p className="text-sm text-zinc-500 mt-2">Lista compartida — cualquiera crea y cualquiera marca hecha.</p>
                 </div>
-                <div>
-                    <h1 className="text-2xl font-black text-zinc-800 leading-none">Tareas</h1>
-                    <p className="text-sm text-zinc-400 mt-1">Lista compartida — cualquiera crea y cualquiera marca hecha.</p>
-                </div>
+                {!mostrandoForm && (
+                    <button onClick={() => setMostrandoForm(true)} className={`${BTN_PRINCIPAL} w-full sm:w-auto`}>
+                        <Plus size={16} /> Nueva tarea
+                    </button>
+                )}
             </div>
 
             {/* Alta de tarea: aparece solo al pulsar "Nueva tarea" */}
-            {!mostrandoForm ? (
-                <button
-                    onClick={() => setMostrandoForm(true)}
-                    className="w-full mb-5 inline-flex items-center justify-center gap-2 px-4 py-3 rounded-2xl border-2 border-dashed border-zinc-200 text-zinc-400 text-sm font-bold hover:border-brand-cyan/40 hover:text-brand-cyan transition-colors"
-                >
-                    <Plus size={18} /> Nueva tarea
-                </button>
-            ) : (
-                <form onSubmit={crear} className="bg-white border border-zinc-200 rounded-2xl p-4 shadow-sm mb-5">
+            {mostrandoForm && (
+                <form onSubmit={crear} className={`${CARD} p-4 flex flex-col gap-2`}>
                     <input
                         type="text"
                         value={titulo}
@@ -133,60 +134,65 @@ const TareasPage = () => {
                         placeholder="¿Qué hay que hacer?"
                         maxLength={300}
                         autoFocus
-                        className="w-full text-base font-semibold text-zinc-800 placeholder:text-zinc-300 outline-none"
+                        className={`${CAMPO} font-semibold`}
                     />
                     <textarea
                         value={descripcion}
                         onChange={(e) => setDescripcion(e.target.value)}
                         placeholder="Detalle (opcional)"
-                        rows={descripcion ? 2 : 1}
-                        className="w-full mt-2 text-sm text-zinc-600 placeholder:text-zinc-300 outline-none resize-none"
+                        rows={descripcion ? 3 : 2}
+                        className={`${CAMPO} resize-none`}
                     />
-                    <div className="flex justify-end items-center gap-2 mt-2">
-                        <button
-                            type="button"
-                            onClick={cerrarForm}
-                            className="px-4 py-2 rounded-xl text-zinc-400 text-sm font-bold hover:bg-zinc-100 transition-colors"
-                        >
+                    <div className="flex flex-wrap justify-end items-center gap-2 mt-1">
+                        <button type="button" onClick={cerrarForm} className={BTN_SECUNDARIO}>
                             Cancelar
                         </button>
-                        <button
-                            type="submit"
-                            disabled={!titulo.trim() || guardando}
-                            className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold disabled:opacity-40 disabled:cursor-not-allowed hover:bg-brand-cyan/90 transition-colors"
-                        >
-                            <Plus size={16} /> Agregar
+                        <button type="submit" disabled={!titulo.trim() || guardando} className={BTN_PRINCIPAL}>
+                            {guardando ? <Loader2 size={16} className="animate-spin" /> : <Plus size={16} />} Agregar
                         </button>
                     </div>
                 </form>
             )}
 
-            {/* Filtros */}
-            <div className="flex items-center gap-1 mb-4">
-                {tabs.map((t) => (
-                    <button
-                        key={t.key}
-                        onClick={() => setFiltro(t.key)}
-                        className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${filtro === t.key ? 'bg-zinc-800 text-white' : 'text-zinc-400 hover:bg-zinc-100'}`}
-                    >
-                        {t.label}
-                    </button>
-                ))}
+            {/* Filtros: pastillas en pantallas anchas, Selector en el celular */}
+            <div>
+                <div className="hidden md:inline-flex rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+                    {tabs.map((t) => (
+                        <button
+                            key={t.key}
+                            onClick={() => setFiltro(t.key)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-black uppercase tracking-wide transition-colors ${filtro === t.key ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}
+                        >
+                            {t.label}
+                        </button>
+                    ))}
+                </div>
+                <div className="md:hidden">
+                    <Selector value={filtro} onChange={(e) => setFiltro(e.target.value)} aria-label="Qué tareas ver">
+                        {tabs.map((t) => <option key={t.key} value={t.key}>{t.label}</option>)}
+                    </Selector>
+                </div>
             </div>
 
             {/* Lista */}
             {loading ? (
-                <div className="text-center text-zinc-400 py-12 animate-pulse">Cargando…</div>
+                <div className="flex justify-center py-16">
+                    <Loader2 size={28} className="animate-spin text-brand-cyan" />
+                </div>
             ) : tareas.length === 0 ? (
-                <div className="text-center text-zinc-400 py-12">
-                    {filtro === 'hechas' ? 'Todavía no hay tareas hechas.' : 'No hay tareas. ¡A cargar!'}
+                <div className={`${CARD} flex flex-col items-center justify-center text-center px-4 py-14 gap-2`}>
+                    <ListChecks size={40} className="text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">
+                        {filtro === 'hechas' ? 'Todavía no hay tareas hechas.' : 'No hay tareas. ¡A cargar!'}
+                    </p>
+                    {filtro !== 'hechas' && <p className="text-xs text-zinc-400">Las que cargue cualquiera aparecen acá al instante.</p>}
                 </div>
             ) : (
-                <div className="flex flex-col gap-2">
+                <div className={`${CARD} overflow-hidden divide-y divide-zinc-100`}>
                     {tareas.map((t) => (
                         <div
                             key={t.TarId}
-                            className={`group bg-white border rounded-xl p-3 flex items-start gap-3 transition-colors ${t.TarHecha ? 'border-zinc-100 bg-zinc-50/60' : 'border-zinc-200 hover:border-brand-cyan/40'}`}
+                            className={`px-3 sm:px-4 py-3 flex items-start gap-3 transition-colors ${t.TarHecha ? 'bg-zinc-50/60' : 'hover:bg-zinc-50/60'}`}
                         >
                             {/* Check */}
                             <button
@@ -199,11 +205,11 @@ const TareasPage = () => {
 
                             {/* Cuerpo */}
                             <div className="min-w-0 flex-1">
-                                <div className={`font-semibold text-sm ${t.TarHecha ? 'text-zinc-400 line-through' : 'text-zinc-800'}`}>
+                                <div className={`font-semibold text-sm break-words ${t.TarHecha ? 'text-zinc-400 line-through' : 'text-zinc-900'}`}>
                                     {t.TarTitulo}
                                 </div>
                                 {t.TarDescripcion && (
-                                    <div className={`text-xs mt-0.5 whitespace-pre-wrap ${t.TarHecha ? 'text-zinc-300' : 'text-zinc-500'}`}>
+                                    <div className={`text-xs mt-0.5 whitespace-pre-wrap break-words ${t.TarHecha ? 'text-zinc-300' : 'text-zinc-500'}`}>
                                         {t.TarDescripcion}
                                     </div>
                                 )}
@@ -222,11 +228,12 @@ const TareasPage = () => {
                                 </div>
                             </div>
 
-                            {/* Borrar (el backend permite solo al creador o admin) */}
+                            {/* Borrar (el backend permite solo al creador o admin). Siempre visible: en el celular no hay «pasar el mouse». */}
                             <button
                                 onClick={() => eliminar(t)}
                                 title="Borrar tarea"
-                                className="shrink-0 text-zinc-300 hover:text-brand-magenta opacity-0 group-hover:opacity-100 transition-all"
+                                aria-label="Borrar tarea"
+                                className="shrink-0 p-1.5 -m-1 rounded-lg border border-transparent text-zinc-300 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 transition-colors"
                             >
                                 <Trash2 size={16} />
                             </button>

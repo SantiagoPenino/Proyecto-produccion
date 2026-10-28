@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle, Landmark, Calendar, Building2, Hash, DollarSign } from 'lucide-react';
+import { X, CheckCircle, Landmark, Calendar, Building2, Hash, DollarSign, Loader2 } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
+import Selector from '../../ui/Selector';
+import SelectorFecha from '../../ui/SelectorFecha';
+
+// Estética nueva (27/10/2026): ventana clara por encima de la barra de arriba (antes z-50), banco con el Selector
+// propio, fechas con SelectorFecha y «Emitir cheque» en brand-cyan (antes ámbar). La lógica no cambió.
+const ETIQUETA = 'flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const CAMPO = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
 
 export default function ChequeEmitirModal({ onClose, onSuccess }) {
   const [bancos, setBancos] = useState([]);
@@ -56,47 +63,48 @@ export default function ChequeEmitirModal({ onClose, onSuccess }) {
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50  animate-in fade-in">
-      <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full overflow-hidden flex flex-col">
+    <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[92vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-          <div className="flex items-center gap-3">
-            <div className="bg-amber-100 p-2.5 rounded-xl text-amber-600">
-              <Building2 size={24} />
-            </div>
+        <div className="px-6 py-4 border-b border-zinc-100 flex items-start justify-between gap-3 shrink-0">
+          <div className="flex items-start gap-3">
+            <Building2 size={24} className="text-brand-cyan shrink-0 mt-0.5" />
             <div>
-              <h2 className="text-xl font-black text-slate-800 tracking-tight">Emitir Cheque Propio</h2>
-              <p className="text-sm font-medium text-slate-500">Pago diferido a Proveedores</p>
+              <h2 className="text-lg font-black text-zinc-900 tracking-tight">Emitir cheque propio</h2>
+              <p className="text-sm text-zinc-500">Pago diferido a proveedores</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors">
-            <X size={24} />
+          <button onClick={onClose} aria-label="Cerrar"
+            className="shrink-0 text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors">
+            <X size={18} />
           </button>
         </div>
 
         {/* Body */}
-        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5 overflow-y-auto max-h-[70vh]">
+        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-4 overflow-y-auto">
           {/* Fila 1 */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Hash size={16} className="text-slate-400" /> N° de Cheque *
+              <label htmlFor="emitir-numero" className={ETIQUETA}>
+                <Hash size={12} /> N° de cheque *
               </label>
               <input
+                id="emitir-numero"
                 type="text"
                 name="NumeroCheque"
                 value={formData.NumeroCheque}
                 onChange={handleChange}
                 required
                 placeholder="Ej. 99887766"
-                className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                className={`${CAMPO} font-mono`}
               />
             </div>
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <DollarSign size={16} className="text-slate-400" /> Importe *
+              <label htmlFor="emitir-monto" className={ETIQUETA}>
+                <DollarSign size={12} /> Importe *
               </label>
               <input
+                id="emitir-monto"
                 type="number"
                 step="0.01"
                 name="Monto"
@@ -104,91 +112,72 @@ export default function ChequeEmitirModal({ onClose, onSuccess }) {
                 onChange={handleChange}
                 required
                 placeholder="0.00"
-                className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+                className={`${CAMPO} font-black tabular-nums`}
               />
             </div>
           </div>
 
           {/* Fila 2 */}
           <div>
-            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-              <Landmark size={16} className="text-slate-400" /> Mi Banco (Chequera) *
-            </label>
-            <select
-              name="IdBanco"
-              value={formData.IdBanco}
-              onChange={handleChange}
-              required
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500 bg-white"
-            >
-              <option value="">Seleccione mi banco...</option>
+            <span className={ETIQUETA}>
+              <Landmark size={12} /> Mi banco (chequera) *
+            </span>
+            <Selector name="IdBanco" className="w-full" value={String(formData.IdBanco)} onChange={handleChange} aria-label="Mi banco" anchoLista={260}>
+              <option value="">{loadingBancos ? 'Cargando bancos…' : 'Seleccione mi banco...'}</option>
               {bancos.map(b => (
-                <option key={b.IdBanco} value={b.IdBanco}>{b.NombreBanco}</option>
+                <option key={b.IdBanco} value={String(b.IdBanco)}>{b.NombreBanco}</option>
               ))}
-            </select>
+            </Selector>
           </div>
 
           {/* Fila 3 */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Calendar size={16} className="text-slate-400" /> Fecha Emisión *
-              </label>
-              <input
-                type="date"
-                name="FechaEmision"
-                value={formData.FechaEmision}
-                onChange={handleChange}
-                required
-                className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
-              />
+              <span className={ETIQUETA}>
+                <Calendar size={12} /> Fecha emisión *
+              </span>
+              <SelectorFecha name="FechaEmision" className="w-full" value={formData.FechaEmision} onChange={handleChange} aria-label="Fecha de emisión" />
             </div>
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Calendar size={16} className="text-amber-400" /> Fecha Vencimiento *
-              </label>
-              <input
-                type="date"
-                name="FechaVencimiento"
-                value={formData.FechaVencimiento}
-                onChange={handleChange}
-                required
-                className="w-full border border-amber-200 rounded-xl px-4 py-2.5 font-medium text-amber-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
-              />
+              <span className={ETIQUETA}>
+                <Calendar size={12} className="text-brand-cyan" /> Fecha vencimiento *
+              </span>
+              <SelectorFecha name="FechaVencimiento" className="w-full" value={formData.FechaVencimiento} onChange={handleChange} aria-label="Fecha de vencimiento" />
             </div>
           </div>
 
           {/* Fila 4 */}
           <div>
-            <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-              <Building2 size={16} className="text-slate-400" /> ID Proveedor Destino
+            <label htmlFor="emitir-proveedor" className={ETIQUETA}>
+              <Building2 size={12} /> ID proveedor destino
             </label>
             <input
+              id="emitir-proveedor"
               type="number"
               name="IdProveedorDestino"
               value={formData.IdProveedorDestino}
               onChange={handleChange}
               placeholder="ID del proveedor en el sistema (opcional)"
-              className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-amber-500/20 focus:border-amber-500"
+              className={CAMPO}
             />
           </div>
         </form>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-100 bg-slate-50 flex justify-end gap-3">
+        <div className="px-6 py-3 border-t border-zinc-100 flex justify-end gap-2 shrink-0">
           <button
             type="button"
             onClick={onClose}
-            className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors"
+            className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors"
           >
             Cancelar
           </button>
           <button
             onClick={handleSubmit}
             disabled={procesando}
-            className="px-5 py-2.5 rounded-xl font-bold bg-amber-600 text-white hover:bg-amber-700 transition-colors flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
-            {procesando ? 'Procesando...' : <><CheckCircle size={18} /> Emitir Cheque</>}
+            {procesando ? <><Loader2 size={15} className="animate-spin" /> Procesando...</> : <><CheckCircle size={15} /> Emitir cheque</>}
           </button>
         </div>
       </div>

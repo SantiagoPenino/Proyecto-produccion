@@ -1,6 +1,23 @@
 import React, { useState, useEffect } from 'react';
+import { Calculator, Search, Lock, Lightbulb, Loader2, Receipt, Minus, Pencil, Bug } from 'lucide-react';
 import api from '../../services/api'; // Ajustar import según tu estructura
 import { toast } from 'react-hot-toast';
+import Selector from '../ui/Selector';
+
+// Estética nueva (28/10/2026): todo claro (zinc + brand-cyan), datos y resultado en tarjetas, cliente con Selector,
+// íconos Lucide y montos en formato uruguayo con «US$»/«$». Sin encabezado propio (va dentro de la pestaña de
+// Perfiles de Precios). Los cálculos, las llamadas y los estados no cambiaron.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const CAMPO_NUM = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 font-mono tabular-nums placeholder:text-zinc-400 placeholder:font-sans focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const CHIP = 'inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+
+// Montos en pantalla: formato uruguayo y «US$» / «$» (solo presentación; las cuentas siguen igual)
+const monto = (n) => Number(n).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const simbolo = (m) => (m === 'USD' ? 'US$' : m === 'UYU' ? '$' : (m || '$'));
+const precioEnPantalla = (v) => (v !== null && v !== undefined && v !== '' && !isNaN(Number(v)) ? monto(v) : v);
 
 const ProductSearchInput = ({ value, onChange, catalog = [] }) => {
     const [suggestions, setSuggestions] = useState([]);
@@ -27,33 +44,37 @@ const ProductSearchInput = ({ value, onChange, catalog = [] }) => {
 
     return (
         <div className="relative">
-            <input
-                className="w-full border border-slate-300 rounded p-2 font-mono text-sm focus:border-indigo-400 outline-none uppercase"
-                value={value}
-                onChange={e => handleSearch(e.target.value)}
-                placeholder="Busca un producto..."
-                onFocus={() => { if (value === '' && catalog.length > 0) { setSuggestions(catalog.slice(0, 10)); setShowSuggestions(true); } else if (value) { handleSearch(value); } }}
-                onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
-            />
+            <div className="relative">
+                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                <input
+                    className={`${CAMPO} font-mono uppercase placeholder:normal-case placeholder:font-sans`}
+                    value={value}
+                    onChange={e => handleSearch(e.target.value)}
+                    placeholder="Busca un producto..."
+                    aria-label="Producto"
+                    onFocus={() => { if (value === '' && catalog.length > 0) { setSuggestions(catalog.slice(0, 10)); setShowSuggestions(true); } else if (value) { handleSearch(value); } }}
+                    onBlur={() => setTimeout(() => setShowSuggestions(false), 200)}
+                />
+            </div>
             {selectedProduct && (
-                <div className="mt-1 ml-1 leading-tight">
-                    <div className="text-xs text-slate-600 font-bold">{selectedProduct.Descripcion}</div>
-                    <div className="text-[10px] text-slate-500">Precio Base: ${selectedProduct.Precio}</div>
+                <div className="mt-2 rounded-xl bg-zinc-50 border border-zinc-100 px-3 py-2 leading-tight">
+                    <div className="text-xs text-zinc-700 font-bold">{selectedProduct.Descripcion}</div>
+                    <div className="text-[11px] text-zinc-500 mt-0.5">Precio Base: <span className="font-mono font-bold tabular-nums text-zinc-700">{simbolo(selectedProduct.Moneda)} {precioEnPantalla(selectedProduct.Precio)}</span></div>
                 </div>
             )}
             {showSuggestions && (
-                <div className="absolute top-full left-0 w-full bg-white border border-slate-200 shadow-lg rounded z-50 max-h-60 overflow-y-auto mt-1">
+                <div className="absolute top-full left-0 w-full bg-white border border-zinc-200 shadow-lg shadow-zinc-900/5 rounded-xl z-50 max-h-60 overflow-y-auto mt-1 py-1">
                     {suggestions.map(s => (
                         <div
                             key={s.CodArticulo}
-                            className="p-2 hover:bg-indigo-50 cursor-pointer text-xs border-b last:border-0 flex justify-between items-center"
+                            className="px-3 py-2 hover:bg-zinc-50 cursor-pointer text-xs border-b border-zinc-100 last:border-0 flex justify-between items-center gap-2"
                             onClick={() => { onChange(s.CodArticulo); setShowSuggestions(false); }}
                         >
-                            <div className="flex flex-col overflow-hidden">
-                                <span className="font-bold text-indigo-700">{s.CodArticulo}</span>
-                                <span className="text-[10px] text-slate-400">{s.GrupoNombre || s.Grupo}</span>
+                            <div className="flex flex-col overflow-hidden min-w-0">
+                                <span className="font-mono font-bold text-brand-cyan">{s.CodArticulo}</span>
+                                <span className="text-[10px] text-zinc-400 truncate">{s.GrupoNombre || s.Grupo}</span>
                             </div>
-                            <span className="text-slate-500 truncate max-w-[150px] text-right ml-2">{s.Descripcion}</span>
+                            <span className="text-zinc-500 truncate max-w-[150px] sm:max-w-[220px] text-right ml-2">{s.Descripcion}</span>
                         </div>
                     ))}
                 </div>
@@ -180,17 +201,17 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
     };
 
     return (
-        <div className="p-6 max-w-4xl mx-auto bg-white rounded-lg shadow-md mt-6 animate-fade-in">
-            <h2 className="text-2xl font-bold mb-6 text-slate-800 border-b pb-2 flex items-center gap-2">
-                <i className="fa-solid fa-calculator text-indigo-600"></i>
-                Simulador de Precios
-            </h2>
+        <div className="flex flex-col gap-4 min-w-0 text-zinc-700 animate-fade-in">
+            <div className="flex items-center gap-2.5">
+                <Calculator size={20} className="text-brand-cyan shrink-0" />
+                <h2 className="text-base font-black text-zinc-800 leading-tight">Simulador de Precios</h2>
+            </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 items-start">
                 {/* CONFIGURACIÓN */}
-                <div className="space-y-5">
+                <div className={`${CARD} p-4 sm:p-5 flex flex-col gap-4 min-w-0`}>
                     <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-1">Producto</label>
+                        <label className={ETIQUETA}>Producto</label>
                         <ProductSearchInput
                             value={selectedProduct}
                             onChange={setSelectedProduct}
@@ -198,56 +219,61 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
                         />
                     </div>
 
-                    <div className="flex gap-4">
-                        <div className="flex-1">
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Cliente</label>
+                    <div>
+                        <label className={ETIQUETA}>Cliente</label>
 
-                            {/* Combo Buscador Clientes */}
-                            <div className="border border-slate-300 rounded p-1 bg-slate-50/50 focus-within:ring-2 focus-within:ring-indigo-100 transition-shadow">
+                        {/* Combo Buscador Clientes */}
+                        <div className="flex flex-col gap-2">
+                            <div className="relative">
+                                <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
                                 <input
-                                    className="w-full text-xs p-1 bg-transparent outline-none border-b border-slate-200 mb-1 text-slate-600 placeholder:text-slate-400"
-                                    placeholder="🔍 Buscar cliente..."
+                                    className={CAMPO}
+                                    placeholder="Buscar cliente..."
+                                    aria-label="Buscar cliente"
                                     value={clientFilter}
                                     onChange={e => setClientFilter(e.target.value)}
                                 />
-                                <select
-                                    className="w-full bg-transparent text-sm outline-none font-medium text-slate-800"
-                                    value={clientId}
-                                    onChange={e => setClientId(e.target.value)}
-                                >
-                                    <option value="">-- Cliente Genérico --</option>
-                                    {filteredCustomers.map(c => (
-                                        <option key={c.CodCliente} value={c.CodCliente}>
-                                            {c.Nombre || c.NombreFantasia} (ID: {c.CodCliente})
-                                        </option>
-                                    ))}
-                                </select>
                             </div>
-                            <p className="text-[10px] text-slate-400 mt-1">Busca arriba para filtrar la lista.</p>
+                            <Selector
+                                aria-label="Cliente"
+                                value={clientId}
+                                onChange={e => setClientId(e.target.value)}
+                                anchoLista={320}
+                            >
+                                <option value="">-- Cliente Genérico --</option>
+                                {filteredCustomers.map(c => (
+                                    <option key={c.CodCliente} value={c.CodCliente}>
+                                        {c.Nombre || c.NombreFantasia} (ID: {c.CodCliente})
+                                    </option>
+                                ))}
+                            </Selector>
                         </div>
+                        <p className="text-[11px] text-zinc-400 mt-1.5">Busca arriba para filtrar la lista.</p>
+                    </div>
 
-                        <div className="w-24">
-                            <label className="block text-sm font-bold text-slate-700 mb-1">Cantidad</label>
+                    <div className="grid grid-cols-2 gap-3">
+                        <div className="min-w-0">
+                            <label className={ETIQUETA}>Cantidad</label>
                             <input
                                 type="number"
-                                className="w-full border border-slate-300 rounded p-2 font-mono text-center focus:ring-2 focus:ring-indigo-100 outline-none"
+                                className={CAMPO_NUM}
                                 min="1"
+                                aria-label="Cantidad"
                                 value={quantity}
                                 onChange={e => setQuantity(e.target.value)}
                             />
                         </div>
-                    </div>
 
-                    <div className="flex gap-4">
-                        <div className="w-1/2">
-                            <label className="block text-sm font-bold text-slate-700 mb-1">
-                                <i className="fa-solid fa-calculator text-blue-500 mr-2"></i>Puntadas (Opcional)
+                        <div className="min-w-0">
+                            <label className={ETIQUETA}>
+                                Puntadas (Opcional)
                             </label>
                             <input
                                 type="number"
                                 placeholder="Ej: 7500"
-                                className="w-full border border-slate-300 rounded p-2 font-mono focus:ring-2 focus:ring-blue-100 outline-none text-slate-700"
+                                className={CAMPO_NUM}
                                 min="0"
+                                aria-label="Puntadas (opcional)"
                                 value={puntadas}
                                 onChange={e => setPuntadas(e.target.value)}
                                 title="Usado solo si el perfil tiene reglas matemáticas por puntadas"
@@ -256,10 +282,10 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
                     </div>
 
                     <div>
-                        <label className="block text-sm font-bold text-slate-700 mb-2">
+                        <label className={ETIQUETA}>
                             Condiciones / Perfiles Aplicados
                         </label>
-                        <div className="border rounded-lg p-3 bg-slate-50 max-h-60 overflow-y-auto space-y-2">
+                        <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-2 max-h-72 overflow-y-auto space-y-1.5">
                             {profiles.map(p => {
                                 const isBase = baseProfileIds.includes(p.ID);
                                 const isChecked = isBase || extraProfiles.includes(p.ID);
@@ -267,41 +293,41 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
                                 return (
                                     <label
                                         key={p.ID}
-                                        className={`flex items-center gap-3 p-2 rounded border transition-colors ${isBase
-                                            ? 'bg-blue-50 border-blue-200 cursor-not-allowed'
+                                        className={`flex items-center gap-3 px-3 py-2 rounded-xl border transition-colors ${isBase
+                                            ? 'bg-brand-cyan/5 border-brand-cyan/20 cursor-not-allowed'
                                             : isChecked
-                                                ? 'bg-indigo-50 border-indigo-200 cursor-pointer'
-                                                : 'bg-white border-slate-200 hover:border-slate-300 cursor-pointer'
+                                                ? 'bg-white border-zinc-400 cursor-pointer'
+                                                : 'bg-white border-zinc-200 hover:border-zinc-300 cursor-pointer'
                                             }`}
                                     >
                                         <input
                                             type="checkbox"
                                             checked={activeProfiles.includes(p.ID)}
                                             onChange={() => toggleProfile(p.ID)}
-                                            className={`rounded w-4 h-4 ${isBase ? 'text-blue-500' : 'text-indigo-600 focus:ring-indigo-500'}`}
+                                            className="w-4 h-4 shrink-0 accent-[#006E97]"
                                         />
-                                        <div className="flex-1">
-                                            <div className="flex justify-between items-center">
-                                                <span className={`text-sm font-bold ${isBase ? 'text-blue-800' : 'text-slate-700'}`}>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex justify-between items-center gap-2">
+                                                <span className={`text-sm font-bold ${isBase ? 'text-brand-cyan' : 'text-zinc-700'}`}>
                                                     {p.Nombre}
                                                 </span>
                                                 {isBase && (
-                                                    <span className="text-[10px] uppercase font-bold text-blue-600 bg-blue-100 px-1.5 rounded border border-blue-200 flex items-center gap-1">
-                                                        <i className="fa-solid fa-lock text-[8px]"></i>
+                                                    <span className={`${CHIP} bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20`}>
+                                                        <Lock size={10} />
                                                         {p.EsGlobal ? 'Global' : 'Cliente'}
                                                     </span>
                                                 )}
                                             </div>
-                                            {p.Descripcion && <div className="text-xs opacity-70 mt-0.5">{p.Descripcion}</div>}
+                                            {p.Descripcion && <div className="text-xs text-zinc-500 mt-0.5">{p.Descripcion}</div>}
                                         </div>
                                     </label>
                                 );
                             })}
                         </div>
-                        <p className="text-[10px] text-slate-500 mt-2 bg-yellow-50 p-2 rounded border border-yellow-100 flex gap-2">
-                            <i className="fa-solid fa-lightbulb text-yellow-500"></i>
+                        <p className="text-[11px] text-zinc-500 mt-2 bg-zinc-50 px-3 py-2 rounded-xl border border-zinc-200 flex gap-2">
+                            <Lightbulb size={14} className="text-brand-cyan shrink-0 mt-px" />
                             <span>
-                                Usa los perfiles marcados en azul (🔒) para ver lo que el cliente ya tiene. Marca otros (como <b>Tinta</b> o <b>Urgencias</b>) para simular.
+                                Usa los perfiles marcados en azul (<Lock size={10} className="inline -mt-0.5 text-brand-cyan" />) para ver lo que el cliente ya tiene. Marca otros (como <b>Tinta</b> o <b>Urgencias</b>) para simular.
                             </span>
                         </p>
                     </div>
@@ -309,19 +335,19 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
                     <button
                         onClick={handleCalculate}
                         disabled={loading}
-                        className="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-2 px-4 rounded transition-colors flex justify-center items-center gap-2"
+                        className={`${BTN_PRINCIPAL} w-full py-2.5`}
                     >
-                        {loading ? <i className="fa-solid fa-spinner fa-spin"></i> : <i className="fa-solid fa-calculator"></i>}
+                        {loading ? <Loader2 size={15} className="animate-spin" /> : <Calculator size={15} />}
                         Calcular Precio
                     </button>
                 </div>
 
                 {/* RESULTADOS */}
-                <div className="bg-slate-50 border rounded-lg p-4 h-full relative">
+                <div className={`${CARD} p-4 sm:p-5 min-w-0 relative`}>
                     {!result ? (
-                        <div className="flex flex-col items-center justify-center h-full text-slate-400">
-                            <i className="fa-solid fa-receipt text-4xl mb-2 opacity-50"></i>
-                            <p>Ingresa datos para ver el desglose</p>
+                        <div className="flex flex-col items-center justify-center text-center min-h-[260px] gap-2">
+                            <Receipt size={40} className="text-brand-cyan" />
+                            <p className="text-sm font-bold text-zinc-700">Ingresa datos para ver el desglose</p>
                         </div>
                     ) : (
                         <div className="animate-fade-in-up">
@@ -357,44 +383,45 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
 
                                 return (
                                     <>
-                                        <div className="flex justify-between items-end border-b pb-3 mb-3">
-                                            <div>
-                                                <h3 className="text-lg font-bold text-slate-800">{result.codArticulo}</h3>
-                                                <p className="text-sm text-slate-500">{result.cantidad} unidades</p>
+                                        <div className="flex flex-wrap justify-between items-end gap-3 border-b border-zinc-100 pb-4 mb-3">
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Artículo</span>
+                                                <h3 className="text-lg font-black font-mono text-zinc-900 leading-tight break-all">{result.codArticulo}</h3>
+                                                <p className="text-sm text-zinc-500 mt-0.5"><span className="tabular-nums">{result.cantidad}</span> unidades</p>
                                             </div>
-                                            <div className="text-right">
-                                                <p className="text-xs text-slate-500 uppercase font-bold tracking-wider">Precio Unitario</p>
-                                                <p className="text-3xl font-bold text-indigo-700">
-                                                    ${finalUnit.toFixed(2)}
-                                                    <span className="text-xs text-slate-400 ml-1 font-normal">{result.moneda}</span>
+                                            <div className="text-right ml-auto">
+                                                <p className="text-[10px] text-zinc-400 uppercase font-black tracking-widest">Precio Unitario</p>
+                                                <p className="text-3xl font-black text-zinc-900 tabular-nums whitespace-nowrap leading-tight mt-0.5">
+                                                    <span className="text-base font-bold text-zinc-400 mr-1">{simbolo(result.moneda)}</span>
+                                                    {monto(finalUnit)}
                                                 </p>
                                             </div>
                                         </div>
 
                                         {/* Desglose */}
-                                        <div className="space-y-2 text-sm">
+                                        <div className="text-sm">
                                             {/* 1. Base y Descuentos */}
                                             {filteredBreakdown.map((item, idx) => {
                                                 if (item.tipo === 'SURCHARGE' || item.tipo === 'INFO') return null;
                                                 return (
-                                                    <div key={idx} className="flex justify-between items-center py-1 border-b border-dashed border-slate-200">
-                                                        <div className="flex items-center gap-2">
-                                                            {item.tipo === 'BASE' && <span className="w-2 h-2 rounded-full bg-slate-400"></span>}
-                                                            {item.tipo === 'DISCOUNT' && <i className="fa-solid fa-minus text-green-500 text-xs"></i>}
-                                                            {item.tipo === 'OVERRIDE' && <i className="fa-solid fa-pen text-purple-500 text-xs"></i>}
-                                                            <span className={`${item.tipo === 'BASE' ? 'font-bold' : ''} text-slate-700`}>{item.desc}</span>
+                                                    <div key={idx} className="flex justify-between items-center gap-3 py-2 border-b border-dashed border-zinc-200">
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            {item.tipo === 'BASE' && <span className="w-2 h-2 rounded-full bg-zinc-400 shrink-0"></span>}
+                                                            {item.tipo === 'DISCOUNT' && <Minus size={13} className="text-emerald-600 shrink-0" />}
+                                                            {item.tipo === 'OVERRIDE' && <Pencil size={12} className="text-brand-cyan shrink-0" />}
+                                                            <span className={`${item.tipo === 'BASE' ? 'font-bold' : ''} text-zinc-700`}>{item.desc}</span>
                                                         </div>
-                                                        <span className={`font-mono ${item.valor < 0 ? 'text-green-600' : 'text-slate-600'}`}>
-                                                            {item.valor > 0 && item.tipo !== 'BASE' ? '+' : ''}{item.valor.toFixed(2)}
+                                                        <span className={`font-mono font-bold tabular-nums whitespace-nowrap ${item.valor < 0 ? 'text-emerald-600' : 'text-zinc-600'}`}>
+                                                            {item.valor > 0 && item.tipo !== 'BASE' ? '+' : ''}{monto(item.valor)}
                                                         </span>
                                                     </div>
                                                 );
                                             })}
 
                                             {/* Subtotal Neto (Nuevo) */}
-                                            <div className="flex justify-between items-center py-2 border-t border-b border-indigo-100 bg-indigo-50/50 font-bold text-indigo-900 rounded px-2 -mx-2">
+                                            <div className="flex justify-between items-center gap-3 my-2 px-3 py-2 rounded-xl border border-brand-cyan/20 bg-brand-cyan/5 font-bold text-brand-cyan">
                                                 <span>Precio Neto (sin recargos)</span>
-                                                <span>${netPrice.toFixed(2)}</span>
+                                                <span className="font-mono tabular-nums whitespace-nowrap">{simbolo(result.moneda)} {monto(netPrice)}</span>
                                             </div>
 
                                             {/* 2. Recargos (Simulables) */}
@@ -402,29 +429,32 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
                                                 if (item.tipo !== 'SURCHARGE') return null;
                                                 const isIgnored = ignoredSurcharges.includes(idx);
                                                 return (
-                                                    <div key={idx} className={`flex justify-between items-center py-1 border-b border-dashed border-slate-200 transition-opacity ${isIgnored ? 'opacity-50' : 'opacity-100'}`}>
-                                                        <label className="flex items-center gap-2 cursor-pointer select-none hover:text-amber-600">
+                                                    <div key={idx} className={`flex justify-between items-center gap-3 py-2 border-b border-dashed border-zinc-200 transition-opacity ${isIgnored ? 'opacity-50' : 'opacity-100'}`}>
+                                                        <label className="flex items-center gap-2 min-w-0 cursor-pointer select-none hover:text-amber-700">
                                                             <input
                                                                 type="checkbox"
                                                                 checked={!isIgnored}
                                                                 onChange={() => setIgnoredSurcharges(prev => isIgnored ? prev.filter(i => i !== idx) : [...prev, idx])}
-                                                                className="rounded text-amber-500 focus:ring-amber-500 w-4 h-4 cursor-pointer"
+                                                                className="w-4 h-4 shrink-0 accent-amber-500 cursor-pointer"
                                                             />
-                                                            <span className={`text-slate-700 ${isIgnored ? 'line-through decoration-slate-400' : ''}`}>
+                                                            <span className={`text-zinc-700 ${isIgnored ? 'line-through decoration-zinc-400' : ''}`}>
                                                                 {item.desc}
                                                             </span>
                                                         </label>
-                                                        <span className={`font-mono ${isIgnored ? 'line-through text-slate-400' : 'text-amber-600'}`}>
-                                                            +{item.valor.toFixed(2)}
+                                                        <span className={`font-mono font-bold tabular-nums whitespace-nowrap ${isIgnored ? 'line-through text-zinc-400' : 'text-amber-600'}`}>
+                                                            +{monto(item.valor)}
                                                         </span>
                                                     </div>
                                                 );
                                             })}
                                         </div>
 
-                                        <div className="mt-4 pt-4 border-t border-slate-300 flex justify-between items-center font-bold text-lg">
-                                            <span>Total Final</span>
-                                            <span>${finalTotal.toFixed(2)}</span>
+                                        <div className="mt-4 pt-4 border-t border-zinc-200 flex justify-between items-center gap-3">
+                                            <span className="text-sm font-black uppercase tracking-wide text-zinc-800">Total Final</span>
+                                            <span className="text-2xl font-black text-zinc-900 tabular-nums whitespace-nowrap">
+                                                <span className="text-sm font-bold text-zinc-400 mr-1">{simbolo(result.moneda)}</span>
+                                                {monto(finalTotal)}
+                                            </span>
                                         </div>
                                     </>
                                 );
@@ -435,17 +465,17 @@ const PriceCalculatorTest = ({ customers = [], assignments = {}, onSearch }) => 
             </div>
 
             {/* DEBUG SECTION */}
-            <div className="mt-8 pt-4 border-t border-slate-200">
+            <div className="flex flex-col gap-2">
                 <button
                     onClick={() => setShowDebug(!showDebug)}
-                    className="text-xs text-slate-400 hover:text-slate-600 flex items-center gap-1"
+                    className="self-start inline-flex items-center gap-1.5 text-xs font-bold text-zinc-400 hover:text-zinc-700 transition-colors"
                 >
-                    <i className={`fa-solid fa-bug ${showDebug ? 'text-indigo-500' : ''}`}></i>
+                    <Bug size={13} className={showDebug ? 'text-brand-cyan' : ''} />
                     {showDebug ? 'Ocultar Info Técnica' : 'Ver Info Técnica (Debug)'}
                 </button>
 
                 {showDebug && result && result._debug && (
-                    <div className="mt-2 p-3 bg-slate-900 text-green-400 font-mono text-xs rounded overflow-x-auto">
+                    <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl font-mono text-xs text-zinc-700 overflow-x-auto">
                         <pre>{JSON.stringify(result._debug, null, 2)}</pre>
                     </div>
                 )}

@@ -1,7 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import api from '../../services/api';
 import { toast } from 'sonner';
-import { PlusCircle, Save, X, Edit, Trash2, BookOpen, Info } from 'lucide-react';
+import { PlusCircle, Save, X, Edit, Trash2, BookOpen, Info, Loader2 } from 'lucide-react';
+import Selector from '../ui/Selector';
+import useConfirmar from '../ui/useConfirmar';
 
 const fetchAPI = async (url, method = 'GET', body = undefined) => {
   try {
@@ -18,11 +20,37 @@ const fetchAPI = async (url, method = 'GET', body = undefined) => {
 
 const FORMULAS = ['TOTAL', 'NETO', 'IVA', 'DESCUENTO'];
 
+// Estética nueva (28/10/2026): encabezado con ícono brand-cyan sin fondo, tabla clara (en el celular, tarjetas),
+// el efecto en saldo con color de estado (resta en magenta, suma en verde), editar y eliminar siempre visibles
+// (antes solo al pasar el mouse), confirmación propia en vez de window.confirm, selects con el Selector propio,
+// el efecto como pastillas y la ventana en z-[6000].
 const EFECTO_LABELS = {
-  '-1': { label: 'RESTA saldo', color: 'text-red-400 bg-red-900/20 border-red-800/40' },
-  '0':  { label: 'NEUTRO',      color: 'text-slate-500 bg-slate-50/50 border-slate-100' },
-  '1':  { label: 'SUMA saldo',  color: 'text-emerald-600 bg-emerald-900/20 border-emerald-800/40' },
+  '-1': { label: 'Resta saldo', color: 'text-brand-magenta bg-brand-magenta/10 border-brand-magenta/20' },
+  '0':  { label: 'Neutro',      color: 'text-zinc-500 bg-zinc-50 border-zinc-200' },
+  '1':  { label: 'Suma saldo',  color: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
 };
+
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const TH = 'px-4 py-3 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-0.5 rounded-full border whitespace-nowrap';
+const BTN_ICONO = 'p-2 rounded-lg border border-zinc-200 bg-white text-zinc-400 transition-colors';
+
+// Tabla en pantallas anchas; en el celular, tarjetas. Se dibuja una sola de las dos vistas.
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+  const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MQ_TABLA);
+    const cambio = () => setConTabla(mq.matches);
+    mq.addEventListener('change', cambio);
+    return () => mq.removeEventListener('change', cambio);
+  }, []);
+  return conTabla;
+}
 
 const EMPTY_FORM = {
   EvtCodigo: '', EvtNombre: '', EvtDescripcion: '', EvtPrefijo: '', EvtSubtipo: '',
@@ -38,6 +66,8 @@ export default function ContabilidadMotorReglasAdmin() {
   const [form, setForm] = useState(null);
   const [tab, setTab] = useState('comportamiento'); // 'comportamiento' | 'asiento'
   const [mostrarInactivos, setMostrarInactivos] = useState(false);
+  const [confirmar, ventanaConfirmar] = useConfirmar();
+  const conTabla = useConTabla();
 
   const loadData = useCallback(async () => {
     setLoading(true);
@@ -84,7 +114,7 @@ export default function ContabilidadMotorReglasAdmin() {
   };
 
   const handleDelete = async (codigo) => {
-    if (!window.confirm('Eliminar este tipo de evento y sus reglas de asiento?')) return;
+    if (!(await confirmar({ titulo: '¿Eliminar este tipo de evento?', texto: `Se borra el evento ${codigo} y sus reglas de asiento.`, confirmar: 'Eliminar', peligro: true }))) return;
     try {
       await fetchAPI('/api/contabilidad/motor/transacciones/' + codigo, 'DELETE');
       toast.success('Eliminado');
@@ -105,189 +135,232 @@ export default function ContabilidadMotorReglasAdmin() {
   const isExisting = form && eventos.some(x => x.EvtCodigo === form.EvtCodigo);
   const eventosMostrados = eventos.filter(t => mostrarInactivos || t.EvtActivo);
 
+  // Piezas de la lista, para la tabla y para las tarjetas del celular
+  const chipEfecto = (t) => {
+    const ef = EFECTO_LABELS[String(t.EvtAfectaSaldo)] || EFECTO_LABELS['0'];
+    return <span className={`${CHIP} ${ef.color}`}>{ef.label}</span>;
+  };
+  const textoDeuda = (t) => (t.EvtGeneraDeuda
+    ? <span className="text-amber-700 text-xs font-bold">Sí</span>
+    : <span className="text-zinc-400 text-xs">No</span>);
+  const textoRecursos = (t) => (t.EvtAplicaRecurso
+    ? <span className="text-brand-cyan text-xs font-bold">Sí (metros/kg)</span>
+    : <span className="text-zinc-400 text-xs">No</span>);
+  const botonReglas = (t) => (
+    <button onClick={() => openForm(t.EvtCodigo)} className="text-xs font-bold text-brand-cyan hover:underline underline-offset-2">Ver reglas</button>
+  );
+  const acciones = (t) => (
+    <div className="inline-flex gap-1.5">
+      <button onClick={() => openForm(t.EvtCodigo)} title="Editar" aria-label="Editar"
+        className={`${BTN_ICONO} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5`}><Edit size={14} /></button>
+      <button onClick={() => handleDelete(t.EvtCodigo)} title="Eliminar" aria-label="Eliminar"
+        className={`${BTN_ICONO} hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`}><Trash2 size={14} /></button>
+    </div>
+  );
+  const codigo = (t) => (
+    <span className="font-mono text-xs font-bold text-zinc-600 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-lg">{t.EvtCodigo}</span>
+  );
+  const nombre = (t) => (
+    <>
+      <div className="font-bold text-zinc-900">
+        {t.EvtNombre}
+        {!t.EvtActivo && <span className={`${CHIP} ml-2 align-middle bg-zinc-100 text-zinc-500 border-zinc-200`}>Inactivo</span>}
+      </div>
+      {t.EvtDescripcion && <div className="text-xs text-zinc-500 mt-0.5">{t.EvtDescripcion.substring(0,60)}{t.EvtDescripcion.length > 60 ? '...' : ''}</div>}
+    </>
+  );
+
   return (
-    <div className="flex flex-col min-h-screen bg-slate-50 text-slate-800">
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
       {/* Header */}
-      <div className="flex-shrink-0 px-6 py-5 border-b border-slate-100 bg-white flex justify-between items-center">
-        <div>
-          <h1 className="text-xl font-semibold text-slate-800 flex items-center gap-3">
-            <BookOpen className="text-blue-500" size={22} />
-            Motor de Eventos Contables
-          </h1>
-          <p className="text-xs text-slate-500 mt-1 ml-9 max-w-3xl">
+      <div className="flex flex-wrap items-center gap-3">
+        <BookOpen size={30} className="text-brand-cyan shrink-0" />
+        <div className="min-w-[220px] flex-1">
+          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Motor de Eventos Contables</h1>
+          <p className="text-sm text-zinc-500 mt-1 max-w-3xl">
             Tabla unificada: define cómo cada tipo de evento afecta el saldo del cliente (Submayor)
             y qué asiento genera en el Libro Mayor. Reemplaza toda la lógica hardcodeada del sistema.
           </p>
         </div>
-        <div className="flex gap-3 items-center">
-          <label className="flex items-center gap-2 text-sm text-slate-500 cursor-pointer hover:text-slate-700 transition-colors bg-white border border-slate-200 px-3 py-2 rounded-lg">
-            <input type="checkbox" checked={mostrarInactivos} onChange={(e) => setMostrarInactivos(e.target.checked)} className="rounded text-blue-500 w-4 h-4" />
+        <div className="flex gap-2 items-center w-full sm:w-auto sm:ml-auto">
+          <label className={`${BTN_SECUNDARIO} cursor-pointer flex-1 sm:flex-none`}>
+            <input type="checkbox" checked={mostrarInactivos} onChange={(e) => setMostrarInactivos(e.target.checked)} className="w-4 h-4 accent-[#006E97]" />
             Mostrar inactivos
           </label>
-          <button onClick={() => openForm(null)} className="bg-blue-600 hover:bg-blue-500 text-slate-800 px-4 py-2 rounded-lg text-sm font-semibold flex items-center gap-2 transition-all shadow-sm">
-            <PlusCircle size={15} /> Nuevo Evento
+          <button onClick={() => openForm(null)} className={`${BTN_PRINCIPAL} flex-1 sm:flex-none`}>
+            <PlusCircle size={15} /> Nuevo evento
           </button>
         </div>
       </div>
 
       {/* Table */}
-      <div className="flex-1 overflow-auto p-6">
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-lg">
-          <table className="w-full text-sm text-left">
-            <thead className="bg-white border-b border-slate-200 text-xs uppercase text-slate-500 font-semibold">
-              <tr>
-                <th className="px-4 py-3">Codigo</th>
-                <th className="px-4 py-3">Nombre</th>
-                <th className="px-4 py-3">Efecto Saldo</th>
-                <th className="px-4 py-3">Genera Deuda</th>
-                <th className="px-4 py-3">Usa Recursos</th>
-                <th className="px-4 py-3">Reglas Asiento</th>
-                <th className="px-4 py-3 text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-200">
-              {loading ? (
-                <tr><td colSpan={7} className="text-center py-10 text-slate-400">
-                  <div className="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full mx-auto mb-2" />
-                  Cargando eventos...
-                </td></tr>
-              ) : eventosMostrados.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-10 text-slate-400">Sin eventos configurados</td></tr>
-              ) : eventosMostrados.map(t => {
-                const ef = EFECTO_LABELS[String(t.EvtAfectaSaldo)] || EFECTO_LABELS['0'];
-                return (
-                  <tr key={t.EvtCodigo} className={`hover:bg-white/60 transition-colors group ${!t.EvtActivo ? 'opacity-50 grayscale' : ''}`}>
-                    <td className="px-4 py-3">
-                      <span className="font-mono text-xs bg-slate-50 py-1 px-2 rounded-md text-blue-300 border border-slate-200">{t.EvtCodigo}</span>
-                    </td>
-                    <td className="px-4 py-3 font-medium text-slate-700">
-                      {t.EvtNombre}
-                      {t.EvtDescripcion && <div className="text-[10px] text-slate-400 mt-0.5">{t.EvtDescripcion.substring(0,60)}{t.EvtDescripcion.length > 60 ? '...' : ''}</div>}
-                    </td>
-                    <td className="px-4 py-3">
-                      <span className={`text-xs px-2 py-0.5 rounded border ${ef.color}`}>{ef.label}</span>
-                    </td>
-                    <td className="px-4 py-3">
-                      {t.EvtGeneraDeuda ? <span className="text-amber-600 text-xs">Si</span> : <span className="text-slate-600 text-xs">No</span>}
-                    </td>
-                    <td className="px-4 py-3">
-                      {t.EvtAplicaRecurso ? <span className="text-purple-400 text-xs">Si (metros/kg)</span> : <span className="text-slate-600 text-xs">No</span>}
-                    </td>
-                    <td className="px-4 py-3">
-                      <button onClick={() => openForm(t.EvtCodigo)} className="text-xs text-blue-400 hover:text-blue-300 underline underline-offset-2">Ver reglas</button>
-                    </td>
-                    <td className="px-4 py-3 text-right space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button onClick={() => openForm(t.EvtCodigo)} className="p-1.5 bg-slate-50 hover:bg-blue-600 rounded text-slate-600 hover:text-slate-800 transition-colors"><Edit size={13} /></button>
-                      <button onClick={() => handleDelete(t.EvtCodigo)} className="p-1.5 bg-slate-50 hover:bg-red-600 rounded text-slate-600 hover:text-slate-800 transition-colors"><Trash2 size={13} /></button>
-                    </td>
+      <div className={`${CARD} overflow-hidden`}>
+        {loading ? (
+          <div className="py-12 flex flex-col items-center gap-2 text-sm text-zinc-400">
+            <Loader2 size={24} className="animate-spin text-brand-cyan" />
+            Cargando eventos...
+          </div>
+        ) : eventosMostrados.length === 0 ? (
+          <div className="py-12 px-4 flex flex-col items-center gap-2 text-center">
+            <BookOpen size={40} className="text-brand-cyan" />
+            <p className="text-sm font-bold text-zinc-700">Sin eventos configurados</p>
+          </div>
+        ) : conTabla ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm text-left">
+              <thead className="bg-zinc-50 border-b border-zinc-200">
+                <tr>
+                  <th className={TH}>Código</th>
+                  <th className={TH}>Nombre</th>
+                  <th className={TH}>Efecto saldo</th>
+                  <th className={TH}>Genera deuda</th>
+                  <th className={TH}>Usa recursos</th>
+                  <th className={TH}>Reglas asiento</th>
+                  <th className={`${TH} text-right`}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {eventosMostrados.map(t => (
+                  <tr key={t.EvtCodigo} className={`hover:bg-zinc-50 transition-colors ${!t.EvtActivo ? 'opacity-60' : ''}`}>
+                    <td className="px-4 py-3">{codigo(t)}</td>
+                    <td className="px-4 py-3">{nombre(t)}</td>
+                    <td className="px-4 py-3">{chipEfecto(t)}</td>
+                    <td className="px-4 py-3">{textoDeuda(t)}</td>
+                    <td className="px-4 py-3">{textoRecursos(t)}</td>
+                    <td className="px-4 py-3">{botonReglas(t)}</td>
+                    <td className="px-4 py-3 text-right">{acciones(t)}</td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <ul className="divide-y divide-zinc-100">
+            {eventosMostrados.map(t => (
+              <li key={t.EvtCodigo} className={`px-4 py-3 flex flex-col gap-2.5 ${!t.EvtActivo ? 'opacity-60' : ''}`}>
+                <div className="flex items-start gap-3">
+                  <div className="shrink-0 mt-0.5">{codigo(t)}</div>
+                  <div className="min-w-0 flex-1 text-sm">{nombre(t)}</div>
+                  {acciones(t)}
+                </div>
+                <dl className="grid grid-cols-2 gap-x-3 gap-y-2 rounded-xl bg-zinc-50 border border-zinc-100 px-3 py-2.5">
+                  <div className="min-w-0"><dt className={ETIQUETA}>Efecto saldo</dt><dd>{chipEfecto(t)}</dd></div>
+                  <div className="min-w-0"><dt className={ETIQUETA}>Reglas asiento</dt><dd>{botonReglas(t)}</dd></div>
+                  <div className="min-w-0"><dt className={ETIQUETA}>Genera deuda</dt><dd>{textoDeuda(t)}</dd></div>
+                  <div className="min-w-0"><dt className={ETIQUETA}>Usa recursos</dt><dd>{textoRecursos(t)}</dd></div>
+                </dl>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
-        <div className="mt-4 p-4 bg-blue-900/10 border border-blue-800/30 rounded-xl text-xs text-slate-500 flex gap-3">
-          <Info size={14} className="text-blue-400 flex-shrink-0 mt-0.5" />
-          <span>
-            <b className="text-blue-300">META_CLIENTE</b> en las reglas de asiento se resuelve automaticamente a la cuenta contable del cliente involucrado en la transaccion.
-            <b className="text-blue-300 ml-2">META_CAJA</b> se resuelve a la cuenta de caja activa en la sesion.
-          </span>
-        </div>
+      <div className="p-4 bg-brand-cyan/5 border border-brand-cyan/20 rounded-2xl text-xs text-zinc-600 flex gap-3">
+        <Info size={15} className="text-brand-cyan flex-shrink-0 mt-0.5" />
+        <span>
+          <b className="font-mono text-brand-cyan">META_CLIENTE</b> en las reglas de asiento se resuelve automáticamente a la cuenta contable del cliente involucrado en la transacción.
+          <b className="font-mono text-brand-cyan ml-2">META_CAJA</b> se resuelve a la cuenta de caja activa en la sesión.
+        </span>
       </div>
 
       {/* Modal */}
       {modalVisible && form && (
-        <div className="fixed inset-0 bg-black/70  z-50 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-2xl overflow-hidden">
+        <div className="fixed inset-0 bg-black/40 z-[6000] flex items-center justify-center p-3 sm:p-4">
+          <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-4xl max-h-[92vh] flex flex-col shadow-xl overflow-hidden">
             {/* Modal Header */}
-            <div className="px-6 py-4 border-b border-slate-100 flex justify-between items-center bg-white">
-              <div>
-                <h2 className="text-base font-semibold text-slate-800">Configuracion del Evento Contable</h2>
-                <p className="text-xs text-slate-400 mt-0.5">Codigo: <span className="font-mono text-blue-300">{form.EvtCodigo || '(nuevo)'}</span></p>
+            <div className="px-5 sm:px-6 py-4 border-b border-zinc-100 flex justify-between items-start gap-3">
+              <div className="flex items-start gap-3 min-w-0">
+                <BookOpen size={22} className="text-brand-cyan shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <h2 className="text-lg font-black text-zinc-900 leading-tight">Configuración del evento contable</h2>
+                  <p className="text-xs text-zinc-500 mt-0.5">Código: <span className="font-mono font-bold text-brand-cyan">{form.EvtCodigo || '(nuevo)'}</span></p>
+                </div>
               </div>
-              <button onClick={() => setModalVisible(false)} className="text-slate-500 hover:text-slate-800 p-1"><X size={18} /></button>
+              <button onClick={() => setModalVisible(false)} title="Cerrar" aria-label="Cerrar" className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"><X size={18} /></button>
             </div>
 
             {/* Tabs */}
-            <div className="flex border-b border-slate-100 bg-white">
-              {['comportamiento', 'asiento'].map(t => (
-                <button key={t} onClick={() => setTab(t)}
-                  className={`px-6 py-3 text-sm font-medium capitalize transition-colors border-b-2 ${tab === t ? 'border-blue-500 text-blue-400' : 'border-transparent text-slate-400 hover:text-slate-600'}`}>
-                  {t === 'comportamiento' ? 'Comportamiento en Submayor' : 'Reglas de Asiento (Libro Mayor)'}
-                </button>
-              ))}
+            <div className="px-5 sm:px-6 pt-3">
+              <div className="inline-flex flex-wrap rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+                {['comportamiento', 'asiento'].map(t => (
+                  <button key={t} onClick={() => setTab(t)}
+                    className={`px-3 py-1.5 rounded-lg text-xs sm:text-sm font-bold transition-colors ${tab === t ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+                    {t === 'comportamiento' ? 'Comportamiento en Submayor' : 'Reglas de asiento (Libro Mayor)'}
+                  </button>
+                ))}
+              </div>
             </div>
 
-            <div className="flex-1 overflow-auto p-6 bg-slate-50">
+            <div className="flex-1 overflow-auto p-5 sm:p-6">
               {/* Tab: Comportamiento */}
               {tab === 'comportamiento' && (
                 <div className="space-y-5">
-                  <div className="grid grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                     <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Codigo (ID unico) *</label>
+                      <label className={ETIQUETA}>Código (ID único) *</label>
                       <input type="text" value={form.EvtCodigo} readOnly={isExisting}
                         onChange={e => setField('EvtCodigo', e.target.value.toUpperCase())}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 font-mono focus:border-blue-500 focus:outline-none"
+                        className={`${CAMPO} font-mono ${isExisting ? 'bg-zinc-50 text-zinc-500' : ''}`}
                         placeholder="Ej: ORDEN" />
                     </div>
-                    <div className="col-span-2">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Nombre visible *</label>
+                    <div className="sm:col-span-2">
+                      <label className={ETIQUETA}>Nombre visible *</label>
                       <input type="text" value={form.EvtNombre} onChange={e => setField('EvtNombre', e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none" />
+                        className={CAMPO} />
                     </div>
-                    <div className="col-span-3">
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Descripcion</label>
+                    <div className="sm:col-span-3">
+                      <label className={ETIQUETA}>Descripción</label>
                       <input type="text" value={form.EvtDescripcion || ''} onChange={e => setField('EvtDescripcion', e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none" />
+                        className={CAMPO} />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Prefijo comprobante</label>
+                      <label className={ETIQUETA}>Prefijo comprobante</label>
                       <input type="text" maxLength={5} value={form.EvtPrefijo || ''} onChange={e => setField('EvtPrefijo', e.target.value.toUpperCase())}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 font-mono focus:border-blue-500 focus:outline-none"
+                        className={`${CAMPO} font-mono`}
                         placeholder="FC, TK, NC..." />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Subtipo / Secuencia</label>
+                      <label className={ETIQUETA}>Subtipo / secuencia</label>
                       <input type="text" value={form.EvtSubtipo || ''} onChange={e => setField('EvtSubtipo', e.target.value)}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 font-mono focus:border-blue-500 focus:outline-none"
+                        className={`${CAMPO} font-mono`}
                         placeholder="FACTURA_PLAN..." />
                     </div>
                     <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-1">Orden de aparicion</label>
+                      <label className={ETIQUETA}>Orden de aparición</label>
                       <input type="number" value={form.EvtOrden} onChange={e => setField('EvtOrden', parseInt(e.target.value))}
-                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm text-slate-800 focus:border-blue-500 focus:outline-none" />
+                        className={CAMPO} />
                     </div>
                   </div>
 
                   {/* Comportamiento */}
-                  <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4">
-                    <h3 className="text-sm font-semibold text-slate-800 mb-3">Comportamiento en Cuenta Corriente del Cliente (Submayor)</h3>
+                  <div className="border border-zinc-200 rounded-xl p-4 sm:p-5 space-y-4">
+                    <h3 className="text-sm font-black text-zinc-900">Comportamiento en la cuenta corriente del cliente (Submayor)</h3>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-500 mb-2">Efecto en saldo del cliente</label>
-                      <div className="flex gap-3">
-                        {[{ val: -1, label: '-1 RESTA (genera deuda)' }, { val: 0, label: '0 NEUTRO' }, { val: 1, label: '+1 SUMA (acredita)' }].map(op => (
-                          <label key={op.val} className={`flex items-center gap-2 px-4 py-2 rounded-lg border cursor-pointer transition-colors ${form.EvtAfectaSaldo === op.val ? 'border-blue-500 bg-blue-900/20 text-blue-300' : 'border-slate-200 text-slate-500 hover:border-slate-500'}`}>
-                            <input type="radio" name="efecto" value={op.val} checked={form.EvtAfectaSaldo === op.val} onChange={() => setField('EvtAfectaSaldo', op.val)} className="sr-only" />
-                            <span className="text-xs font-medium">{op.label}</span>
-                          </label>
+                      <span className={ETIQUETA}>Efecto en saldo del cliente</span>
+                      <div role="radiogroup" aria-label="Efecto en saldo del cliente" className="flex flex-wrap gap-2">
+                        {[{ val: -1, label: '-1 Resta (genera deuda)' }, { val: 0, label: '0 Neutro' }, { val: 1, label: '+1 Suma (acredita)' }].map(op => (
+                          <button key={op.val} type="button" role="radio" aria-checked={form.EvtAfectaSaldo === op.val}
+                            onClick={() => setField('EvtAfectaSaldo', op.val)}
+                            className={`px-3.5 py-2 rounded-xl border text-xs font-bold transition-colors ${form.EvtAfectaSaldo === op.val ? 'bg-zinc-900 border-zinc-900 text-white' : 'bg-white border-zinc-200 text-zinc-600 hover:border-zinc-400'}`}>
+                            {op.label}
+                          </button>
                         ))}
                       </div>
                     </div>
 
-                    <div className="grid grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                       {[
-                        { key: 'EvtGeneraDeuda', label: 'Genera documento de deuda a cobrar', desc: 'Aparecera en "Antiguedad de Deuda" y "Estados de Cuenta"' },
-                        { key: 'EvtAplicaRecurso', label: 'Aplica a recursos (metros/kg)', desc: 'Descuenta del plan fisico del cliente en vez de dinero' },
-                        { key: 'EvtUsaEntidad', label: 'Requiere Cliente/Proveedor', desc: 'El asiento necesita un ID de entidad asociada' },
-                        { key: 'EvtRequiereDoc', label: 'Requiere comprobante fiscal', desc: 'Se debe emitir E-Factura, Ticket o Nota de Credito' },
+                        { key: 'EvtGeneraDeuda', label: 'Genera documento de deuda a cobrar', desc: 'Aparecerá en «Antigüedad de deuda» y «Estados de cuenta»' },
+                        { key: 'EvtAplicaRecurso', label: 'Aplica a recursos (metros/kg)', desc: 'Descuenta del plan físico del cliente en vez de dinero' },
+                        { key: 'EvtUsaEntidad', label: 'Requiere cliente/proveedor', desc: 'El asiento necesita un ID de entidad asociada' },
+                        { key: 'EvtRequiereDoc', label: 'Requiere comprobante fiscal', desc: 'Se debe emitir e-Factura, e-Ticket o nota de crédito' },
                       ].map(opt => (
-                        <label key={opt.key} className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${form[opt.key] ? 'border-blue-500/40 bg-blue-900/10' : 'border-slate-200 hover:border-slate-500'}`}>
-                          <input type="checkbox" checked={!!form[opt.key]} onChange={e => setField(opt.key, e.target.checked)} className="mt-0.5 w-4 h-4 rounded text-blue-600 bg-gray-700 border-gray-600 flex-shrink-0" />
+                        <label key={opt.key} className={`flex items-start gap-3 p-3 rounded-xl border cursor-pointer transition-colors ${form[opt.key] ? 'border-brand-cyan/40 bg-brand-cyan/5' : 'border-zinc-200 hover:border-zinc-400'}`}>
+                          <input type="checkbox" checked={!!form[opt.key]} onChange={e => setField(opt.key, e.target.checked)} className="mt-0.5 w-4 h-4 accent-[#006E97] flex-shrink-0" />
                           <div>
-                            <div className="text-xs font-medium text-slate-700">{opt.label}</div>
-                            <div className="text-[10px] text-slate-400 mt-0.5">{opt.desc}</div>
+                            <div className="text-xs font-bold text-zinc-800">{opt.label}</div>
+                            <div className="text-[11px] text-zinc-500 mt-0.5">{opt.desc}</div>
                           </div>
                         </label>
                       ))}
@@ -299,33 +372,36 @@ export default function ContabilidadMotorReglasAdmin() {
               {/* Tab: Asiento */}
               {tab === 'asiento' && (
                 <div className="space-y-4">
-                  <div className="p-3 bg-white border border-slate-200 rounded-lg text-xs text-slate-500">
-                    Cada fila es una linea del asiento contable que se genera automaticamente.
-                    Use <span className="font-mono text-emerald-300">META_CLIENTE</span> para la cuenta del cliente o <span className="font-mono text-emerald-300">META_CAJA</span> para la caja activa.
+                  <div className="p-3 bg-brand-cyan/5 border border-brand-cyan/20 rounded-xl text-xs text-zinc-600">
+                    Cada fila es una línea del asiento contable que se genera automáticamente.
+                    Usá <span className="font-mono font-bold text-brand-cyan">META_CLIENTE</span> para la cuenta del cliente o <span className="font-mono font-bold text-brand-cyan">META_CAJA</span> para la caja activa.
                   </div>
 
                   <div className="space-y-2">
                     {form.lineas.map((lin, idx) => (
-                      <div key={idx} className="flex gap-2 bg-white border border-slate-200 p-3 rounded-lg items-center">
-                        <div className="w-10 text-center text-[10px] font-mono text-slate-400 bg-white rounded py-1.5 border border-slate-200">#{lin.RasOrden}</div>
-                        <select value={lin.RasNaturaleza} onChange={e => updateLinea(idx, 'RasNaturaleza', e.target.value)}
-                          className="flex-1 bg-white border border-slate-200 rounded px-2 py-2 text-sm text-slate-800 focus:outline-none cursor-pointer">
-                          <option value="DEBE">DEBE</option>
-                          <option value="HABER">HABER</option>
-                        </select>
+                      <div key={idx} className="flex flex-wrap sm:flex-nowrap gap-2 border border-zinc-200 p-3 rounded-xl items-center">
+                        <div className="w-12 text-center text-[11px] font-mono font-bold text-zinc-500 bg-zinc-50 rounded-lg py-2 border border-zinc-200 shrink-0">#{lin.RasOrden}</div>
+                        <div className="flex-1 min-w-[84px]">
+                          <Selector className="w-full" value={lin.RasNaturaleza} aria-label="Debe o haber" onChange={e => updateLinea(idx, 'RasNaturaleza', e.target.value)}>
+                            <option value="DEBE">DEBE</option>
+                            <option value="HABER">HABER</option>
+                          </Selector>
+                        </div>
                         <input type="text" placeholder="Cuenta (ej: 1.1.1.01 o META_CLIENTE)"
                           value={lin.CueCodigo} onChange={e => updateLinea(idx, 'CueCodigo', e.target.value)}
-                          className="flex-[2] bg-white border border-slate-200 rounded px-2 py-2 text-sm font-mono text-emerald-300 focus:outline-none" />
-                        <select value={lin.RasFormula} onChange={e => updateLinea(idx, 'RasFormula', e.target.value)}
-                          className="flex-1 bg-white border border-slate-200 rounded px-2 py-2 text-sm text-blue-200 focus:outline-none cursor-pointer">
-                          {FORMULAS.map(f => <option key={f} value={f}>{f}</option>)}
-                        </select>
-                        <button onClick={() => removeLinea(idx)} className="text-red-500/60 hover:text-red-400 p-1.5"><Trash2 size={14} /></button>
+                          className={`${CAMPO} font-mono basis-full sm:basis-auto sm:flex-[2] order-last sm:order-none`} />
+                        <div className="flex-1 min-w-[84px]">
+                          <Selector className="w-full" value={lin.RasFormula} aria-label="Fórmula" onChange={e => updateLinea(idx, 'RasFormula', e.target.value)}>
+                            {FORMULAS.map(f => <option key={f} value={f}>{f}</option>)}
+                          </Selector>
+                        </div>
+                        <button onClick={() => removeLinea(idx)} title="Quitar la línea" aria-label="Quitar la línea"
+                          className="p-2 rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 shrink-0"><Trash2 size={15} /></button>
                       </div>
                     ))}
                     <button onClick={addLinea}
-                      className="w-full py-3 border-2 border-dashed border-slate-200 hover:border-blue-500/50 hover:bg-white rounded-lg text-slate-400 text-sm flex justify-center items-center gap-2 transition-all">
-                      <PlusCircle size={14} /> Agregar linea de asiento
+                      className="w-full py-3 border-2 border-dashed border-zinc-200 hover:border-brand-cyan/50 hover:bg-brand-cyan/5 rounded-xl text-zinc-500 hover:text-brand-cyan text-sm font-bold flex justify-center items-center gap-2 transition-colors">
+                      <PlusCircle size={15} /> Agregar línea de asiento
                     </button>
                   </div>
                 </div>
@@ -333,23 +409,22 @@ export default function ContabilidadMotorReglasAdmin() {
             </div>
 
             {/* Footer */}
-            <div className="px-6 py-4 border-t border-slate-100 bg-white flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <label className="flex items-center gap-2 text-xs text-slate-500 cursor-pointer">
-                  <input type="checkbox" checked={!!form.EvtActivo} onChange={e => setField('EvtActivo', e.target.checked)} className="w-3.5 h-3.5 rounded" />
-                  Activo
-                </label>
-              </div>
-              <div className="flex gap-3">
-                <button onClick={() => setModalVisible(false)} className="px-4 py-2 border border-slate-200 text-slate-600 rounded-lg hover:bg-slate-50 text-sm font-medium">Cancelar</button>
-                <button onClick={handleSave} className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-slate-800 rounded-lg flex items-center gap-2 text-sm font-semibold">
-                  <Save size={14} /> Guardar
+            <div className="px-5 sm:px-6 py-4 border-t border-zinc-100 flex flex-wrap justify-between items-center gap-3">
+              <label className="flex items-center gap-2 text-sm font-bold text-zinc-700 cursor-pointer">
+                <input type="checkbox" checked={!!form.EvtActivo} onChange={e => setField('EvtActivo', e.target.checked)} className="w-4 h-4 accent-[#006E97]" />
+                Activo
+              </label>
+              <div className="flex gap-2 ml-auto">
+                <button onClick={() => setModalVisible(false)} className={BTN_SECUNDARIO}>Cancelar</button>
+                <button onClick={handleSave} className={BTN_PRINCIPAL}>
+                  <Save size={15} /> Guardar
                 </button>
               </div>
             </div>
           </div>
         </div>
       )}
+      {ventanaConfirmar}
     </div>
   );
 }

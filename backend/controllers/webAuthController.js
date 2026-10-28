@@ -211,6 +211,21 @@ exports.login = asyncHandler(async (req, res) => {
 // ===================================
 // REGISTER
 // ===================================
+// Largos de las columnas de dbo.Clientes (son char): un texto más largo hacía caer el INSERT/UPDATE con un 500
+// («String or binary data would be truncated»). Pasó el 26/10/2026 en el registro, con una dirección de más de 80
+// caracteres («…entre Alcides Maria y Isidoro de Maria, …»), y el cliente no quedaba registrado. Ahora se contesta
+// 400 con el campo y su largo; el formulario (ClientFormFields) ya no deja escribir de más.
+const LARGO_MAX = { direccion: 80, email: 40, telefono: 20, documento: 20, nombre: 150 };
+// campos: [[valor, 'La dirección', max], …] → el mensaje del primero que se pasa, o null
+function largoExcedido(campos) {
+    for (const [valor, etiqueta, max] of campos) {
+        const largo = valor == null ? 0 : String(valor).trim().length;
+        if (largo > max) return `${etiqueta} puede tener hasta ${max} caracteres (tiene ${largo}).`;
+    }
+    return null;
+}
+const recortado = (v) => (v == null ? v : String(v).trim());
+
 exports.register = asyncHandler(async (req, res) => {
     const {
         idcliente,
@@ -223,6 +238,18 @@ exports.register = asyncHandler(async (req, res) => {
     if (!idcliente || !password) {
         return res.status(400).json({ error: "Faltan datos obligatorios (ID Cliente, Contraseña)" });
     }
+
+    // name = nombre y apellido; company / fantasyName = razón social (RegisterPage)
+    const excedido = largoExcedido([
+        [address, 'La dirección', LARGO_MAX.direccion],
+        [email, 'El email', LARGO_MAX.email],
+        [phone, 'El teléfono', LARGO_MAX.telefono],
+        [ruc, 'La cédula o RUT', LARGO_MAX.documento],
+        [name, 'El nombre y apellido', LARGO_MAX.nombre],
+        [company, 'La razón social', LARGO_MAX.nombre],
+        [fantasyName, 'La razón social', LARGO_MAX.nombre],
+    ]);
+    if (excedido) return res.status(400).json({ success: false, error: excedido, message: excedido });
 
     const pool = await getPool();
 
@@ -299,12 +326,12 @@ exports.register = asyncHandler(async (req, res) => {
     const insertRes = await pool.request()
         .input('CC', sql.Int, codClienteInterno)
         .input('IDC', sql.NVarChar(50), idcliente)
-        .input('Nom', sql.NVarChar(200), company || name || 'Nuevo Cliente')
-        .input('Fant', sql.NVarChar(200), fantasyName || name || '')
-        .input('Email', sql.NVarChar(200), email)
-        .input('Tel', sql.NVarChar(50), phone || '')
-        .input('Dir', sql.NVarChar(500), address || '')
-        .input('Ruc', sql.NVarChar(50), ruc || '')
+        .input('Nom', sql.NVarChar(200), recortado(company) || recortado(name) || 'Nuevo Cliente')
+        .input('Fant', sql.NVarChar(200), recortado(fantasyName) || recortado(name) || '')
+        .input('Email', sql.NVarChar(200), recortado(email))
+        .input('Tel', sql.NVarChar(50), recortado(phone) || '')
+        .input('Dir', sql.NVarChar(500), recortado(address) || '')
+        .input('Ruc', sql.NVarChar(50), recortado(ruc) || '')
         .input('Pass', sql.NVarChar(255), await hashear(password))
         .input('DepID', sql.Int, departamentoId || null)
         .input('LocID', sql.Int, localidadId || null)
@@ -446,14 +473,24 @@ exports.updateProfile = asyncHandler(async (req, res) => {
         localidad, agencia, departamentoId, localidadId, agenciaId, formaEnvioId
     } = req.body;
 
+    // Acá name = razón social y company = nombre y apellido (ProfileEdit), al revés que en el registro
+    const excedido = largoExcedido([
+        [address, 'La dirección', LARGO_MAX.direccion],
+        [phone, 'El teléfono', LARGO_MAX.telefono],
+        [ruc, 'La cédula o RUT', LARGO_MAX.documento],
+        [name, 'La razón social', LARGO_MAX.nombre],
+        [company, 'El nombre y apellido', LARGO_MAX.nombre],
+    ]);
+    if (excedido) return res.status(400).json({ success: false, error: excedido, message: excedido });
+
     const pool = await getPool();
     await pool.request()
         .input('ID', sql.Int, userId)
-        .input('Nombre', sql.NVarChar, name || null)
-        .input('NombreFantasia', sql.NVarChar, company || null)
-        .input('Telefono', sql.NVarChar, phone || null)
-        .input('Direccion', sql.NVarChar, address || null)
-        .input('Ruc', sql.NVarChar, ruc || null)
+        .input('Nombre', sql.NVarChar, recortado(name) || null)
+        .input('NombreFantasia', sql.NVarChar, recortado(company) || null)
+        .input('Telefono', sql.NVarChar, recortado(phone) || null)
+        .input('Direccion', sql.NVarChar, recortado(address) || null)
+        .input('Ruc', sql.NVarChar, recortado(ruc) || null)
         .input('DepID', sql.Int, departamentoId || null)
         .input('LocID', sql.Int, localidadId || null)
         .input('AgeID', sql.Int, agenciaId || null)

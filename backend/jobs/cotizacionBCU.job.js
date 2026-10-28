@@ -3,7 +3,7 @@ const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
 
 // ── BCU SOAP API (Banco Central del Uruguay) ──────────────────────────────────
-// Moneda 2222 = Dólar USA | Grupo 0 = Todos
+// Moneda 2222 = Dólar USA | 9800 = Unidad Indexada | Grupo 0 = Todos
 // WSDL: https://cotizaciones.bcu.gub.uy/wscotizaciones/servlet/awsbcucotizaciones?wsdl
 //
 // BCU devuelve cotización INTERBANCARIA. Para llevarla a precio BANCARIO (BROU)
@@ -12,16 +12,18 @@ const logger = require('../utils/logger');
 //   Venta  = BCU × 1.0242  (+2.42%)
 const BCU_SOAP_URL = 'https://cotizaciones.bcu.gub.uy/wscotizaciones/servlet/awsbcucotizaciones';
 const BCU_SOAP_ACTION = 'Cotizaaction/AWSBCUCOTIZACIONES.Execute';
+const MONEDA_DOLAR = 2222;
+const MONEDA_UI = 9800;
 const SPREAD_COMPRA = 0.9945;
 const SPREAD_VENTA = 1.0150;
 
-function buildBCUSoapRequest(fechaDesde, fechaHasta) {
+function buildBCUSoapRequest(fechaDesde, fechaHasta, moneda = MONEDA_DOLAR) {
     return '<?xml version="1.0" encoding="utf-8"?>' +
         '<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/" xmlns:cot="Cotiza">' +
         '<soap:Body>' +
         '<cot:wsbcucotizaciones.Execute>' +
         '<cot:Entrada>' +
-        '<cot:Moneda><cot:item>2222</cot:item></cot:Moneda>' +
+        '<cot:Moneda><cot:item>' + moneda + '</cot:item></cot:Moneda>' +
         '<cot:FechaDesde>' + fechaDesde + '</cot:FechaDesde>' +
         '<cot:FechaHasta>' + fechaHasta + '</cot:FechaHasta>' +
         '<cot:Grupo>0</cot:Grupo>' +
@@ -82,6 +84,26 @@ async function fetchCotizacionBCU() {
     return { interbancario: r, compra: r, venta: r };
 }
 
+// Valor de la Unidad Indexada de una fecha (AAAA-MM-DD). El BCU tiene la UI de todos los días,
+// fines de semana y feriados incluidos (el INE la calcula por adelantado), así que no hace falta
+// ir para atrás como con el dólar. Sin fallback: si el BCU no contesta, se lanza el error.
+async function fetchUnidadIndexadaBCU(fecha) {
+    const { data } = await axios.post(BCU_SOAP_URL, buildBCUSoapRequest(fecha, fecha, MONEDA_UI), {
+        timeout: 15000,
+        headers: {
+            'Content-Type': 'text/xml; charset=utf-8',
+            'SOAPAction': BCU_SOAP_ACTION
+        }
+    });
+    const xml = String(data);
+    const valor = parseFloat(xml.match(/<TCV>([\d.]+)<\/TCV>/)?.[1] || '0');
+    if (!(isFinite(valor) && valor > 1)) {
+        const mensaje = xml.match(/<mensaje>([^<]*)<\/mensaje>/)?.[1];
+        throw new Error(`el BCU no devolvió la UI del ${fecha}${mensaje ? ` (${mensaje})` : ''}`);
+    }
+    return valor;
+}
+
 async function runCotizacionJob() {
     try {
         const pool = await getPool();
@@ -129,4 +151,4 @@ function startCotizacionJob() {
     logger.info('⏱️ [CRON] Cotización BCU: Activado (09:10 y 13:30, Lun-Vie).');
 }
 
-module.exports = { startCotizacionJob, runCotizacionJob, fetchCotizacionBCU };
+module.exports = { startCotizacionJob, runCotizacionJob, fetchCotizacionBCU, fetchUnidadIndexadaBCU };

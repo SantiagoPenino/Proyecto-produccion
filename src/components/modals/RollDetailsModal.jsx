@@ -11,6 +11,7 @@ import { socket } from '../../services/socketService';
 import { DragDropContext, Droppable, Draggable } from '@hello-pangea/dnd';
 import Swal from 'sweetalert2';
 import { unidadesLote, AREAS_MARCADO_LIBRE } from '../../utils/ordenLote';
+import useConfirmar from '../ui/useConfirmar';
 
 // --- SUB-COMPONENT: MODAL DE SELECCIÓN DE BOBINA ---
 const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaCode = 'ECOUV' }) => {
@@ -18,6 +19,7 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
     const [bobinas, setBobinas] = useState([]);
     const [loading, setLoading] = useState(false);
     const searchInputRef = useRef(null);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     // Auto-focus al abrir
     useEffect(() => {
@@ -70,12 +72,16 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
         return String(b.BobinaID) === s || (b.CodigoEtiqueta || '') === s;
     });
 
-    const handleSelect = (bobina) => {
+    const handleSelect = async (bobina) => {
         // Validación de Metros
         if (bobina.MetrosRestantes < currentMetros) {
-            if (!window.confirm(`⚠️ ADVERTENCIA DE CAPACIDAD\n\nEl rollo requiere: ${currentMetros.toFixed(2)}m\nLa bobina tiene: ${bobina.MetrosRestantes.toFixed(2)}m\n\n¿Estás seguro de asignarla? Se acabará durante la impresión.`)) {
-                return;
-            }
+            const asignar = await confirmar({
+                titulo: 'La bobina no alcanza',
+                texto: `El rollo requiere ${currentMetros.toFixed(2)} m y la bobina tiene ${bobina.MetrosRestantes.toFixed(2)} m: se va a acabar durante la impresión. ¿La asignás igual?`,
+                confirmar: 'Asignar igual',
+                peligro: true,
+            });
+            if (!asignar) return;
         }
         onSelect(bobina.BobinaID);
         onClose();
@@ -161,6 +167,7 @@ const BobinaAssignmentModal = ({ isOpen, onClose, onSelect, currentMetros, areaC
                     )}
                 </div>
             </div>
+            {ventanaConfirmar}
         </div>
     );
 };
@@ -352,6 +359,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     // Estado local para datos frescos
     const [freshRoll, setFreshRoll] = React.useState(roll);
     const [loading, setLoading] = React.useState(false);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     // Obtener el area code real: del roll, del detalle fresco (el Historial NO pasa área en el roll,
     // la trae getDetails), o de la URL como último recurso.
@@ -1081,14 +1089,21 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const handleUnassignMultiple = async () => {
         if (readOnly || !selectedOrderIds.length) return;
 
+        const n = selectedOrderIds.length;
         const marcadas = orders.filter(o => selectedOrderIds.includes(o.id) && pierdeMarcaAlSacar(o)).length;
         const avisoMarcas = marcadas === 0 ? ''
             : marcadas === 1
-                ? '\n\nUna está marcada como impresa: se le borra la marca y va a tener que imprimirse de nuevo.'
-                : `\n\n${marcadas} están marcadas como impresas: se les borra la marca y van a tener que imprimirse de nuevo.`;
-        if (!window.confirm(`¿Estás seguro de desasignar ${selectedOrderIds.length} órdenes seleccionadas del rollo?${avisoMarcas}`)) {
-            return;
-        }
+                ? ' Una está marcada como impresa: se le borra la marca y va a tener que imprimirse de nuevo.'
+                : ` ${marcadas} están marcadas como impresas: se les borra la marca y van a tener que imprimirse de nuevo.`;
+        // Mismo aviso que al sacar la última orden de a una (handleUnassign)
+        const quedaVacio = n >= orders.length ? ' El lote queda vacío y se cancela (cierra) automáticamente.' : '';
+        const sacar = await confirmar({
+            titulo: n === 1 ? '¿Sacar la orden seleccionada del lote?' : `¿Sacar las ${n} órdenes seleccionadas del lote?`,
+            texto: `${n === 1 ? 'Vuelve' : 'Vuelven'} a Pendientes.${quedaVacio}${avisoMarcas}`,
+            confirmar: 'Sacar',
+            peligro: !!(quedaVacio || avisoMarcas),
+        });
+        if (!sacar) return;
 
         try {
             setLoading(true);
@@ -1109,6 +1124,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         }
     };
 
+    // SIN USO (27/10): ningún botón llama a handleServerProcess («Descargar y medir»). Se deja por si se vuelve a usar.
     const handleServerProcess = async () => {
         if (!selectedOrderIds.length) return;
 
@@ -1119,13 +1135,20 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
             dirHandle = await getBaseDirectory();
             if (!dirHandle) return; // Usuario canceló
         } else {
-            const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
-            const message = `⚠️ FUNCIÓN DE CARPETA AUTOMÁTICA NO DISPONIBLE\n\n` +
-                `¿Deseas descargar un ZIP tradicional y enviar la orden de medir al servidor?`;
-            if (!window.confirm(message)) return;
+            const zip = await confirmar({
+                titulo: 'Carpeta automática no disponible',
+                texto: '¿Descargás un ZIP con los archivos y mandás la orden de medir al servidor?',
+                confirmar: 'Descargar ZIP',
+            });
+            if (!zip) return;
         }
 
-        if (!window.confirm(`¿Descargar y medir ${selectedOrderIds.length} órdenes seleccionadas?\nEsto descargará sus archivos en tu PC (creando una subcarpeta para el Rollo) y luego actualizará sus medidas.`)) return;
+        const medir = await confirmar({
+            titulo: selectedOrderIds.length === 1 ? '¿Descargar y medir la orden seleccionada?' : `¿Descargar y medir las ${selectedOrderIds.length} órdenes seleccionadas?`,
+            texto: 'Se bajan sus archivos a tu PC, en una subcarpeta del lote, y después se actualizan sus medidas.',
+            confirmar: 'Descargar y medir',
+        });
+        if (!medir) return;
 
         const abortCtrl = new AbortController(); // botón "Cancelar" del panel flotante
         try {
@@ -1228,12 +1251,18 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
         } else {
             // Fallback para navegadores antiguos o Inseguros (HTTP)
             const isChrome = /Chrome/.test(navigator.userAgent) && /Google Inc/.test(navigator.vendor);
-            const message = `⚠️ FUNCIÓN DE CARPETA AUTOMÁTICA NO DISPONIBLE\n\n` +
-                `El navegador bloquea la "Escritura en Carpeta" porque no estás en una conexión segura (HTTPS) ni en Localhost.\n\n` +
-                (isChrome ? `TIP: Puedes habilitarla en "chrome://flags/#unsafely-treat-insecure-origin-as-secure" agregando esta IP.\n\n` : ``) +
-                `¿Deseas descargar un ZIP tradicional con los archivos?`;
-
-            if (!window.confirm(message)) return;
+            const zip = await confirmar({
+                titulo: 'Carpeta automática no disponible',
+                texto: (
+                    <>
+                        El navegador no deja guardar directo en una carpeta: hace falta Chrome o Edge, con HTTPS o en localhost.
+                        {isChrome && <> Se puede habilitar en <code className="break-all text-xs">chrome://flags/#unsafely-treat-insecure-origin-as-secure</code> agregando esta IP.</>}
+                        {' '}¿Descargás un ZIP con los archivos?
+                    </>
+                ),
+                confirmar: 'Descargar ZIP',
+            });
+            if (!zip) return;
         }
 
         const abortCtrl = new AbortController(); // botón "Cancelar" del panel flotante
@@ -1281,6 +1310,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
 
                 let fileCount = 0;
                 const writeErrors = [];
+                const fallidos = [];   // nombres, para decirle al operario cuáles faltan en la carpeta
                 for (const [idx, arch] of archivos.entries()) {
                     if (abortCtrl.signal.aborted) break; // "Cancelar" del panel: no arrancar más archivos
                     const nombre = (arch.fileName || `archivo_${arch.archivoId}`).replace(/[<>:"/\\|?*]/g, '_');
@@ -1310,6 +1340,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                         // Un archivo caído no corta la descarga del resto.
                         console.error("❌ Error con archivo:", nombre, fileErr);
                         writeErrors.push(`${nombre}: ${fileErr.message}`);
+                        fallidos.push(nombre);
                     }
                 }
 
@@ -1324,8 +1355,15 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 }
 
                 downloadManager.finish();
-                if (writeErrors.length > 0) {
-                    toast.warning(`${fileCount} de ${archivos.length} archivos descargados en "${safeFolderName}" (${writeErrors.length} fallaron).`);
+                if (fallidos.length > 0) {
+                    // (27/10/2026) Antes solo decía cuántos fallaron y el nombre quedaba en la consola. Queda
+                    // fijo hasta que lo cierran: es lo que falta en la carpeta antes de imprimir.
+                    const nombres = fallidos.slice(0, 5).join(', ') + (fallidos.length > 5 ? ` y ${fallidos.length - 5} más` : '');
+                    toast.warning(
+                        `${fileCount} de ${archivos.length} archivos descargados en "${safeFolderName}". `
+                        + `${fallidos.length === 1 ? 'No se pudo bajar' : `No se pudieron bajar (${fallidos.length})`}: ${nombres}. Volvé a descargar el lote para completarlo.`,
+                        { autoClose: false }
+                    );
                 } else {
                     toast.success(`${fileCount} archivos descargados en "${safeFolderName}"`);
                 }
@@ -1378,7 +1416,12 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
     const handleGenerateLabels = async () => {
         const hasLabels = freshRoll.labelsCount > 0;
         if (!hasLabels) {
-            if (!window.confirm(`¿Generar etiquetas de bulto para TODAS las órdenes del rollo?\n\nEl sistema calculará las etiquetas necesarias según los metros (aprox 1 por c/50m).`)) return;
+            const generar = await confirmar({
+                titulo: '¿Generar etiquetas de bulto para todas las órdenes del lote?',
+                texto: 'El sistema calcula las necesarias según los metros (aprox. 1 cada 50 m).',
+                confirmar: 'Generar',
+            });
+            if (!generar) return;
         }
         try {
             setLoading(true);
@@ -1386,7 +1429,7 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                 const res = await rollsService.generateLabels(freshRoll.id);
                 toast.success(res.message);
             }
-            if (hasLabels || window.confirm("Etiquetas Listas. ¿Desea imprimirlas ahora?")) {
+            if (hasLabels || await confirmar({ titulo: 'Etiquetas listas', texto: '¿Las imprimís ahora?', confirmar: 'Imprimir', cancelar: 'Más tarde' })) {
                 const allLabels = await rollsService.getLabels(freshRoll.id);
                 if (allLabels && allLabels.length > 0) {
                     printLabelsHelper(allLabels, null);
@@ -2401,6 +2444,8 @@ const RollDetailsModal = ({ roll, onClose, onViewOrder, onUpdate = () => { }, lo
                     </div>
                 </div>
             )}
+
+            {ventanaConfirmar}
         </>,
         document.body
     );

@@ -187,9 +187,11 @@ exports.getMyRetirosPendientes = async (req, res) => {
                 r.CodCliente,
                 r.OReFechaAlta AS Fecha,
                 r.FormaRetiro,
+                o.OrdIdOrden,
                 o.OrdCodigoOrden,
                 o.OrdNombreTrabajo,
                 o.OrdCostoFinal,
+                o.MonIdMoneda AS OrdMoneda,
                 m.MonSimbolo
             FROM OrdenesRetiro r WITH(NOLOCK)
             LEFT JOIN OrdenesDeposito o WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
@@ -215,7 +217,9 @@ exports.getMyRetirosPendientes = async (req, res) => {
                     CodCliente: row.CodCliente,
                     Fecha: row.Fecha,
                     FormaRetiro: row.FormaRetiro,
-                    BultosJSON: '[]'
+                    BultosJSON: '[]',
+                    ordIds: [],
+                    monedas: new Set(),
                 };
             }
             if (row.OrdCodigoOrden) {
@@ -227,7 +231,26 @@ exports.getMyRetirosPendientes = async (req, res) => {
                     currency: row.MonSimbolo || '$'
                 });
                 retirosMap[row.OrdIdRetiro].BultosJSON = JSON.stringify(bultos);
+                retirosMap[row.OrdIdRetiro].ordIds.push(row.OrdIdOrden);
+                retirosMap[row.OrdIdRetiro].monedas.add(Number(row.OrdMoneda) === 2 ? 'USD' : 'UYU');
             }
+        }
+
+        // Retiros con pesos y dólares: el total que se va a cobrar es el de «Pagar» (pesos, con los
+        // dólares a la cotización del día), no el guardado, que en los de antes del 27/10 suma sin convertir.
+        const { cotizarSeleccion } = require('../services/retiroService');
+        for (const r of Object.values(retirosMap)) {
+            if (r.monedas.size > 1 && r.ordIds.length) {
+                try {
+                    const sel = await cotizarSeleccion(pool, r.ordIds.map(id => ({ ordId: id })));
+                    Object.assign(r, { Monto: sel.total, Moneda: sel.moneda });
+                    if (sel.mezcla) Object.assign(r, { Cotizacion: sel.cotizacion, Dolares: sel.dolares, DolaresEnPesos: sel.dolaresEnPesos });
+                } catch (eSel) {
+                    logger.warn(`[PAGOS PENDIENTES] No se pudo calcular el total convertido de ${r.OrdIdRetiro}: ${eSel.message}`);
+                }
+            }
+            delete r.ordIds;
+            delete r.monedas;
         }
 
         res.json(Object.values(retirosMap));
@@ -242,116 +265,67 @@ exports.getMyRetirosPendientes = async (req, res) => {
  */
 exports.createHandyPaymentLinkForRetiro = async (req, res) => {
     try {
-        const { ordenRetiro, totalAmount, activeCurrency, bultosJSON } = req.body;
+        const { ordenRetiro } = req.body;
 
         if (!ordenRetiro) {
             return res.status(400).json({ error: "No se proporcionó orden de retiro." });
         }
 
-        // Por defecto tomamos lo que diga el frontend
-        let currencyCode = activeCurrency === 'USD' ? 840 : 858;
-
-        // --- INICIO FIX DE MONEDA ---
-        // Verificar la moneda real en la base de datos para no cobrar en pesos lo que es en dólares.
-        // Fuente 1: OrdenesRetiro.MonIdMoneda
-        // Fuente 2 (fallback): OrdenesDeposito hijas — más confiable porque usan FK entero a Monedas
-        try {
-            const pool = await getPool();
-            const numMatch = String(ordenRetiro).match(/(\d+)$/);
-            const OReIdOrdenRetiro = numMatch ? parseInt(numMatch[1], 10) : NaN;
-            
-            if (!isNaN(OReIdOrdenRetiro)) {
-                // --- Fuente 1: cabecera del retiro ---
-                const resMon = await pool.request()
-                    .input('ID', sql.Int, OReIdOrdenRetiro)
-                    .query('SELECT MonIdMoneda FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID');
-                
-                if (resMon.recordset.length > 0) {
-                    const dbMoneda = resMon.recordset[0].MonIdMoneda;
-                    // Mapeo defensivo: 2 o 840 suele ser USD; 1 o 858 suele ser UYU
-                    if (dbMoneda === 2 || dbMoneda === 840 || dbMoneda === 'USD') {
-                        currencyCode = 840; // USD para Handy
-                    } else if (dbMoneda === 1 || dbMoneda === 858 || dbMoneda === 'UYU') {
-                        currencyCode = 858; // UYU para Handy
-                    }
-                }
-
-                // --- Fuente 2: órdenes hijas (override si alguna es USD) ---
-                // Si la cabecera dice UYU pero las órdenes hijas tienen MonIdMoneda=2 (USD),
-                // la cabecera quedó mal guardada → forzar USD.
-                if (currencyCode !== 840) {
-                    const resOrdenes = await pool.request()
-                        .input('ID', sql.Int, OReIdOrdenRetiro)
-                        .query(`
-                            SELECT COUNT(*) AS totalUSD
-                            FROM OrdenesDeposito WITH(NOLOCK)
-                            WHERE OReIdOrdenRetiro = @ID AND MonIdMoneda = 2
-                        `);
-                    const totalUSD = resOrdenes.recordset[0]?.totalUSD || 0;
-                    if (totalUSD > 0) {
-                        logger.warn(`[HANDY RETIRO] Cabecera decía UYU pero ${totalUSD} orden(es) hija(s) son USD → forzando currencyCode=840 para ${ordenRetiro}`);
-                        currencyCode = 840; // USD
-                    }
-                }
-            }
-        } catch (dbErr) {
-            logger.warn("[HANDY RETIRO] No se pudo verificar la moneda en BD, usando activeCurrency:", dbErr.message);
+        // Moneda, importes y total los calcula el servidor al momento de pagar con el pendiente
+        // de cada orden del retiro (cotizarSeleccion, INF-SIS-2026-07). Antes se cobraba el total
+        // que mandaba la pantalla, en dólares si alguna orden era en dólares: un retiro del tótem
+        // con pesos y dólares sumados sin convertir generó links por US$ 1.847,95 (RT-28206:
+        // $ 1.764 + US$ 83,95) y US$ 311 (RT-24240: $ 300 + US$ 11).
+        const pool = await getPool();
+        const OReId = parseInt(String(ordenRetiro).replace(/^[A-Za-z]+-0*/, ''), 10);
+        if (isNaN(OReId)) return res.status(400).json({ error: 'Número de retiro inválido.' });
+        const codCliente = parseInt(req.user?.codCliente || req.user?.id, 10);
+        const ret = (await pool.request()
+            .input('ID', sql.Int, OReId)
+            .query('SELECT OReEstadoActual, CodCliente FROM OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID')).recordset[0];
+        // Mismo filtro que la lista «Pagos pendientes» (getMyRetirosPendientes)
+        if (!ret || ret.CodCliente !== codCliente || ![1, 7].includes(ret.OReEstadoActual)) {
+            return res.status(404).json({ error: 'Ese retiro no está pendiente de pago.' });
         }
-        // --- FIN FIX DE MONEDA ---
+        const hijas = (await pool.request()
+            .input('ID', sql.Int, OReId)
+            .query('SELECT OrdIdOrden, OrdNombreTrabajo FROM OrdenesDeposito WITH(NOLOCK) WHERE OReIdOrdenRetiro = @ID')).recordset;
+        if (!hijas.length) return res.status(400).json({ error: 'El retiro no tiene órdenes.' });
 
-        // Determinar description
-        let products = [];
-        try {
-            const parsedBultos = JSON.parse(bultosJSON || "[]");
-            products = parsedBultos.map(b => ({
-                name: (b.orderNumber || b.id || 'Pedido').substring(0, 50),
-                quantity: 1,
-                amount: b.amount ? Number(Number(b.amount).toFixed(2)) : 0,
-                taxedAmount: 0
-            }));
-        } catch (e) {
-            products = [{
-                name: "Orden " + ordenRetiro,
-                quantity: 1,
-                amount: Number(Number(totalAmount).toFixed(2)),
-                taxedAmount: 0
-            }];
-        }
-
-        // Si el parsing dio un total de 0
-        if (products.reduce((acc, p) => acc + p.amount, 0) === 0) {
-            products = [{
-                name: "Orden " + ordenRetiro,
-                quantity: 1,
-                amount: Number(Number(totalAmount).toFixed(2)),
-                taxedAmount: 0
-            }];
-        }
+        const { cotizarSeleccion } = require('../services/retiroService');
+        const sel = await cotizarSeleccion(pool, hijas.map(h => ({ ordId: h.OrdIdOrden })));
+        const nombre = new Map(hijas.map(h => [h.OrdIdOrden, h.OrdNombreTrabajo]));
+        const ordenes = sel.items.map(i => ({
+            id: i.codigo,
+            desc: nombre.get(i.ordId) || i.codigo,
+            amount: i.importeRetiro,
+            amountOriginal: i.importe,
+            currency: i.moneda,
+        }));
+        const aCobrar = ordenes.filter(o => o.amount > 0);
+        if (!aCobrar.length) return res.status(400).json({ error: 'Este retiro no tiene nada pendiente de pago.' });
+        const currencyCode = sel.moneda === 'USD' ? 840 : 858;
 
         const { createPaymentLink } = require('../services/handyService');
 
-        // Construir ordersData para guardar en HandyTransactions
-        let parsedBultos = [];
-        try { parsedBultos = JSON.parse(bultosJSON || '[]'); } catch (e) { }
-
         const result = await createPaymentLink({
-            products: products.map(p => ({
-                Name: (p.name || 'Pedido').substring(0, 50),
-                Quantity: p.quantity || 1,
-                Amount: p.amount || 0,
-                TaxedAmount: p.taxedAmount || 0
+            products: aCobrar.map(o => ({
+                Name: (o.id || 'Pedido').substring(0, 50),
+                Quantity: 1,
+                Amount: o.amount,
+                TaxedAmount: 0
             })),
-            totalAmount,
+            totalAmount: sel.total,
             currencyCode,
             commerceName: 'USER - Retiros',
             ordersData: {
-                orders: parsedBultos.map(b => ({
-                    id: b.orderNumber || b.id || ordenRetiro,
-                    desc: b.desc || b.orderNumber || 'Pedido',
-                    amount: b.amount || 0
-                })),
+                orders: ordenes,
                 ordenRetiro: ordenRetiro,
-                reactOrderNumbers: parsedBultos.map(b => b.orderId || b.id).filter(Boolean)
+                reactOrderNumbers: ordenes.map(o => o.id),
+                moneda: sel.moneda,
+                totalCost: sel.total,
+                // El webhook se la pasa a la caja: la deuda en dólares se descuenta con esta
+                cotizacion: sel.cotizacion,
             },
             codCliente: req.user?.codCliente || 0,
             logPrefix: '[HANDY RETIRO]'
@@ -361,14 +335,20 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
             return res.status(500).json({ error: result.error });
         }
 
-        // Actualizar la ReferenciaPagoOnline en OrdenesRetiro
+        // Actualizar la ReferenciaPagoOnline en OrdenesRetiro. Si mezcla monedas, también el
+        // total y la moneda con los de este link (los retiros mezclados de antes quedaron en
+        // dólares con el total sumado sin convertir).
         try {
-            const pool = await getPool();
-            const OReId = parseInt(String(ordenRetiro).replace(/^[A-Za-z]+-0*/, ''), 10);
             await pool.request()
                 .input('OReId', sql.Int, OReId)
                 .input('Ref', sql.VarChar(200), result.transactionId)
-                .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref WHERE OReIdOrdenRetiro = @OReId`);
+                .input('Mezcla', sql.Bit, sel.mezcla ? 1 : 0)
+                .input('Total', sql.Decimal(18, 2), sel.total)
+                .input('Moneda', sql.VarChar(10), sel.moneda)
+                .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref,
+                            OReCostoTotalOrden = CASE WHEN @Mezcla = 1 THEN @Total ELSE OReCostoTotalOrden END,
+                            MonIdMoneda        = CASE WHEN @Mezcla = 1 THEN @Moneda ELSE MonIdMoneda END
+                        WHERE OReIdOrdenRetiro = @OReId`);
         } catch (dbErr) {
             logger.warn("[HANDY RETIRO] No se pudo actualizar ReferenciaPagoOnline:", dbErr.message);
         }

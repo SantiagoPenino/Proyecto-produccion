@@ -2257,11 +2257,12 @@ async function getTransaccion(tcaIdTransaccion) {
         WHERE td.TcaIdTransaccion = @TcaId 
         ORDER BY td.TdeIdDetalle
       `),
-    // Pagos
+    // Pagos. MetodosPagos no tiene MPaCodigo: pedirlo hacía fallar toda la consulta con 500 y
+    // «Ver OP» del Libro Mayor no abría nunca (28/10).
     pool.request()
       .input('TcaId', sql.Int, tcaIdTransaccion)
       .query(`
-        SELECT p.*, mp.MPaDescripcionMetodo, mp.MPaCodigo,
+        SELECT p.*, mp.MPaDescripcionMetodo,
                mon.MonSimbolo
         FROM dbo.Pagos p WITH(NOLOCK)
         JOIN dbo.MetodosPagos mp WITH(NOLOCK) ON mp.MPaIdMetodoPago = p.MPaIdMetodoPago

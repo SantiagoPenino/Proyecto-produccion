@@ -123,6 +123,10 @@ exports.getEstadoCuenta = async (req, res) => {
         const { tela } = req.query;
         if (tela) { request.input('Tela', sql.NVarChar(200), `%${tela}%`); filtros += ' AND (ib.DescripcionTela LIKE @Tela OR ins.Nombre LIKE @Tela)'; }
 
+        // La última solicitud de devolución/descarte de cada bulto: el portal muestra «Devolución pedida»
+        // en vez del botón (antes dejaba pedir otra y el servicio la rechazaba), o el motivo si se rechazó.
+        await devolucionSvc.ensureSchema(pool);
+
         const result = await request.query(`
             SELECT
                 mi.MovimientoID,
@@ -150,13 +154,24 @@ exports.getEstadoCuenta = async (req, res) => {
                 ins.InsumoID,
                 r.Codigo                                                    AS CodigoRecepcion,
                 r.FechaRecepcion                                            AS FechaRecepcion,
-                u.Nombre                                                    AS Operario
+                u.Nombre                                                    AS Operario,
+                sol.SolicitudTevID, sol.SolicitudAccion, sol.SolicitudFecha, sol.SolicitudEstado,
+                CASE WHEN sol.SolicitudEstado = 'RECHAZADA' THEN sol.SolicitudMotivo END    AS SolicitudMotivo
             FROM MovimientosInsumos mi
             JOIN InventarioBobinas ib   ON mi.BobinaID  = ib.BobinaID
             JOIN Insumos ins            ON mi.InsumoID  = ins.InsumoID
             LEFT JOIN Recepciones r     ON ib.Referencia LIKE r.Codigo + '%'
             LEFT JOIN Usuarios u        ON mi.UsuarioID = u.IdUsuario
             LEFT JOIN Ordenes o         ON mi.OrdenID   = o.OrdenID
+            -- La última solicitud del bulto, en el estado que esté: abierta (PENDIENTE/APROBADA) el portal
+            -- muestra «Devolución pedida»; RECHAZADA, el motivo (al cliente se lo avisa también por push).
+            OUTER APPLY (
+                SELECT TOP 1 e.TevID AS SolicitudTevID, e.Accion AS SolicitudAccion, e.FechaCreacion AS SolicitudFecha,
+                       e.Estado AS SolicitudEstado, e.Observaciones AS SolicitudMotivo
+                FROM dbo.TelaClienteEventos e WITH(NOLOCK)
+                WHERE e.BobinaID = ib.BobinaID AND e.Tipo = 'SOLICITUD_CLIENTE'
+                ORDER BY e.TevID DESC
+            ) sol
             WHERE ib.ClienteID = @ClienteID
             ${filtros}
             ORDER BY mi.FechaMovimiento DESC
@@ -217,8 +232,13 @@ exports.solicitarDevolucion = async (req, res) => {
         });
         res.status(201).json({ success: true, tevId });
     } catch (err) {
+        // Los controles del servicio (solicitud repetida, bobina agotada...) traen su código: son avisos.
+        if (err.statusCode) {
+            logger.warn(`[TELA-CLIENTE] Solicitud de devolución rechazada (bobina ${bobinaId}, cliente ${clienteId}, usuario ${usuarioId ?? '-'}): ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message });
+        }
         logger.error('[TELA-CLIENTE] Error solicitarDevolucion:', err);
-        res.status(400).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
 };
 
@@ -265,8 +285,30 @@ exports.rechazarEvento = async (req, res) => {
         const r = await devolucionSvc.rechazarSolicitud(pool, { tevId: req.params.tevId, usuarioId: req.user?.id, motivo: req.body?.motivo });
         res.json({ success: true, ...r });
     } catch (err) {
+        if (err.statusCode) {
+            logger.warn(`[TELA-CLIENTE] Rechazo de la solicitud #${req.params.tevId} no aplicado: ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message });
+        }
         logger.error('[TELA-CLIENTE] Error rechazarEvento:', err);
-        res.status(400).json({ error: err.message });
+        res.status(500).json({ error: err.message });
+    }
+};
+
+// POST /api/tela-cliente/bandeja/:tevId/entregada — la tela se le dio en mano al cliente
+// Body: { nota? }
+exports.marcarEntregada = async (req, res) => {
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.marcarEntregada(pool, { tevId: req.params.tevId, usuarioId: req.user?.id, nota: req.body?.nota });
+        logger.info(`[TELA-CLIENTE] Solicitud #${req.params.tevId} marcada como entregada en mano por el usuario ${req.user?.id ?? '-'}${r.bobinaCerrada ? ' (bobina cerrada)' : ''}.`);
+        res.json({ success: true, ...r });
+    } catch (err) {
+        if (err.statusCode) {
+            logger.warn(`[TELA-CLIENTE] «Ya se entregó» no aplicado a la solicitud #${req.params.tevId}: ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message });
+        }
+        logger.error('[TELA-CLIENTE] Error marcarEntregada:', err);
+        res.status(500).json({ error: err.message });
     }
 };
 

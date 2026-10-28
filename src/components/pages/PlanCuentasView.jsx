@@ -1,14 +1,50 @@
 import React, { useState, useEffect } from 'react';
 import api from '../../services/apiClient';
-import { Network, FolderTree, AlertCircle, FileText, CheckCircle, Plus, X, Edit, Trash2 } from 'lucide-react';
+import { Network, FolderTree, FileText, CheckCircle, Plus, X, Edit, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import Selector from '../ui/Selector';
+
+// Estética nueva (28/10/2026): encabezado con ícono brand-cyan sin fondo, árbol en una tarjeta blanca (en el celular,
+// una lista con la sangría del nivel en vez de la tabla de 6 columnas), índigo → brand-cyan, la moneda como «$» /
+// «US$» / «Ambas», selects con el Selector propio y la ventana en z-[6000].
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full bg-white border border-zinc-200 rounded-xl px-3 py-2.5 text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const TH = 'px-4 py-3 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+
+// Naturaleza de la cuenta: activo verde, pasivo magenta, ganancia brand-cyan (antes índigo), pérdida ámbar
+const COLOR_TIPO = {
+  ACTIVO: 'bg-emerald-50 border-emerald-200 text-emerald-700',
+  PASIVO: 'bg-brand-magenta/10 border-brand-magenta/20 text-brand-magenta',
+  GANANCIA: 'bg-brand-cyan/10 border-brand-cyan/20 text-brand-cyan',
+  PERDIDA: 'bg-amber-50 border-amber-200 text-amber-700',
+};
+// En pantalla, «$» y «US$» (la base guarda UYU / USD / AMBAS)
+const MONEDA = { UYU: '$', USD: 'US$', AMBAS: 'Ambas' };
+
+// Tabla en pantallas anchas; en el celular, lista. Se dibuja una sola de las dos vistas.
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+  const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MQ_TABLA);
+    const cambio = () => setConTabla(mq.matches);
+    mq.addEventListener('change', cambio);
+    return () => mq.removeEventListener('change', cambio);
+  }, []);
+  return conTabla;
+}
 
 export default function PlanCuentasView() {
   const [cuentas, setCuentas] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  
+  const conTabla = useConTabla();
+
   const [form, setForm] = useState({
     codigo: '', nombre: '', nivel: 1, tipoBase: 'ACTIVO', moneda: 'AMBAS', imputable: false, activa: true
   });
@@ -59,69 +95,103 @@ export default function PlanCuentasView() {
     }
   };
 
+  // Piezas de cada cuenta, para la tabla y para la lista del celular
+  const nombreCuenta = (c) => {
+    const isParent = !c.CueImputable;
+    return (
+      <span className="inline-flex items-center gap-2.5 min-w-0">
+        {isParent ? <FolderTree size={17} className="text-brand-cyan shrink-0" /> : <FileText size={17} className="text-zinc-300 shrink-0" />}
+        <span className={`${isParent ? 'font-black text-zinc-900' : 'font-semibold text-zinc-700'} text-sm truncate`}>{c.CueNombre}</span>
+        {!c.CueActiva && <span className={`${CHIP} bg-zinc-100 border-zinc-200 text-zinc-500`}>Inactiva</span>}
+      </span>
+    );
+  };
+  const chipTipo = (c) => (
+    <span className={`${CHIP} ${COLOR_TIPO[c.CueTipoBase] || 'bg-zinc-50 border-zinc-200 text-zinc-600'}`}>{c.CueTipoBase}</span>
+  );
+  const moneda = (c) => <span className="text-xs font-bold text-zinc-500">{MONEDA[c.CueMoneda] ?? c.CueMoneda}</span>;
+  const botonEditar = (c) => (
+    <button onClick={() => openForm(c)} title="Editar la cuenta" aria-label="Editar la cuenta"
+      className="p-2 rounded-lg border border-zinc-200 bg-white text-zinc-400 hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5 transition-colors"><Edit size={15}/></button>
+  );
+
   return (
-    <div className="h-full bg-[#f1f5f9] p-8 overflow-y-auto font-sans">
-      <div className="max-w-6xl mx-auto flex flex-col gap-8">
-        <div className="flex justify-between items-center bg-white p-8 rounded-[2rem] shadow-sm border border-slate-200">
-          <div>
-            <h1 className="text-3xl font-black text-slate-800 flex items-center gap-3 tracking-tight">
-              <Network className="text-indigo-600" size={32} /> Plan de Cuentas Bimonetario
-            </h1>
-            <p className="text-slate-500 font-bold text-xs mt-2 uppercase tracking-widest">Estructura jerárquica del motor ERP.</p>
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <Network size={30} className="text-brand-cyan shrink-0" />
+          <div className="min-w-[220px] flex-1">
+            <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Plan de Cuentas Bimonetario</h1>
+            <p className="text-sm text-zinc-500 mt-1">Estructura jerárquica del motor ERP.</p>
           </div>
-          <button 
+          <button
             onClick={() => openForm()}
-            className="bg-indigo-600 hover:bg-black text-white px-6 py-3 rounded-2xl font-black flex items-center gap-2 transition-all shadow-lg active:scale-95"
+            className={`${BTN_PRINCIPAL} w-full sm:w-auto sm:ml-auto`}
           >
-            <Plus size={20} /> NUEVA CUENTA
+            <Plus size={16} /> Nueva cuenta
           </button>
         </div>
 
-        {loading ? <div className="animate-pulse flex flex-col items-center justify-center gap-4 py-20 bg-white rounded-[2.5rem] border border-slate-200"><AlertCircle className="text-indigo-400" size={48}/> <span className="text-slate-400 font-bold uppercase tracking-widest text-sm">Cargando estructura...</span></div> : (
-          <div className="bg-white border border-slate-200 rounded-[2.5rem] shadow-xl overflow-hidden pb-4">
-            <table className="w-full text-left text-sm whitespace-nowrap">
-              <thead className="bg-slate-50 text-slate-400 font-black uppercase text-[10px] tracking-[0.15em] border-b border-slate-100">
-                <tr>
-                  <th className="px-6 py-4">Código</th>
-                  <th className="px-6 py-4 w-full">Nombre de la Cuenta</th>
-                  <th className="px-6 py-4">Tipo Base</th>
-                  <th className="px-6 py-4 text-center">Imputable</th>
-                  <th className="px-6 py-4">Moneda</th>
-                  <th className="px-6 py-4 text-right">Acciones</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-50">
-                {cuentas.map(c => {
-                  const padding = (c.CueNivel - 1) * 24;
-                  const isParent = !c.CueImputable;
-                  return (
-                    <tr key={c.CueId} className={`hover:bg-slate-50 transition-colors ${!c.CueActiva ? 'opacity-40 grayscale' : ''}`}>
-                      <td className="px-6 py-3 font-black text-slate-400 text-xs">{c.CueCodigo}</td>
-                      <td className="px-6 py-3 flex items-center gap-3" style={{ paddingLeft: `${padding + 24}px` }}>
-                        {isParent ? <FolderTree size={18} className="text-indigo-500/80" /> : <FileText size={18} className="text-slate-300" />}
-                        <span className={`${isParent ? 'font-black text-slate-800' : 'font-bold text-slate-600'} text-sm`}>
-                           {c.CueNombre} {!c.CueActiva && <span className="text-[10px] uppercase font-black text-rose-500 ml-2 tracking-widest">(Inactiva)</span>}
-                        </span>
-                      </td>
-                      <td className="px-6 py-3">
-                         <span className={`px-3 py-1 rounded-lg text-[10px] font-black tracking-wider uppercase border ${c.CueTipoBase==='ACTIVO'?'bg-emerald-50 border-emerald-200 text-emerald-600':c.CueTipoBase==='PASIVO'?'bg-rose-50 border-rose-200 text-rose-600':c.CueTipoBase==='GANANCIA'?'bg-indigo-50 border-indigo-200 text-indigo-600':c.CueTipoBase==='PERDIDA'?'bg-amber-50 border-amber-200 text-amber-600':'bg-slate-100 border-slate-200 text-slate-600'}`}>
-                           {c.CueTipoBase}
-                         </span>
-                      </td>
-                      <td className="px-6 py-3 text-center">{c.CueImputable ? <CheckCircle size={18} className="mx-auto text-emerald-500"/> : <span className="text-slate-300 font-bold">-</span>}</td>
-                      <td className="px-6 py-3 text-xs font-black text-slate-400 uppercase tracking-widest">{c.CueMoneda}</td>
-                      <td className="px-6 py-3 text-right">
-                        <button onClick={() => openForm(c)} className="p-2 bg-slate-50 hover:bg-indigo-50 text-slate-400 hover:text-indigo-600 transition-colors rounded-xl border border-slate-200 hover:border-indigo-200 shadow-sm"><Edit size={16}/></button>
-                      </td>
+        {loading ? (
+          <div className={`${CARD} flex flex-col items-center justify-center gap-3 py-16`}>
+            <Loader2 className="animate-spin text-brand-cyan" size={30}/>
+            <span className="text-sm text-zinc-400">Cargando la estructura...</span>
+          </div>
+        ) : (
+          <div className={`${CARD} overflow-hidden`}>
+            {cuentas.length > 0 && (conTabla ? (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-sm whitespace-nowrap">
+                  <thead className="bg-zinc-50 border-b border-zinc-200">
+                    <tr>
+                      <th className={TH}>Código</th>
+                      <th className={`${TH} w-full`}>Nombre de la cuenta</th>
+                      <th className={TH}>Tipo base</th>
+                      <th className={`${TH} text-center`}>Imputable</th>
+                      <th className={TH}>Moneda</th>
+                      <th className={`${TH} text-right`}>Acciones</th>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-            
+                  </thead>
+                  <tbody className="divide-y divide-zinc-100">
+                    {cuentas.map(c => {
+                      const padding = (c.CueNivel - 1) * 24;
+                      return (
+                        <tr key={c.CueId} className={`hover:bg-zinc-50 transition-colors ${!c.CueActiva ? 'opacity-50' : ''}`}>
+                          <td className="px-4 py-2.5 font-mono font-bold text-zinc-400 text-xs">{c.CueCodigo}</td>
+                          <td className="px-4 py-2.5" style={{ paddingLeft: `${padding + 16}px` }}>{nombreCuenta(c)}</td>
+                          <td className="px-4 py-2.5">{chipTipo(c)}</td>
+                          <td className="px-4 py-2.5 text-center">{c.CueImputable ? <CheckCircle size={17} className="mx-auto text-emerald-500"/> : <span className="text-zinc-300 font-bold">-</span>}</td>
+                          <td className="px-4 py-2.5">{moneda(c)}</td>
+                          <td className="px-4 py-2.5 text-right">{botonEditar(c)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <ul className="divide-y divide-zinc-100">
+                {cuentas.map(c => (
+                  <li key={c.CueId} className={`py-2.5 pr-3 flex items-center gap-2 ${!c.CueActiva ? 'opacity-50' : ''}`}
+                    style={{ paddingLeft: `${(c.CueNivel - 1) * 14 + 12}px` }}>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0">{nombreCuenta(c)}</div>
+                      <div className="flex items-center gap-2 mt-1 flex-wrap pl-[27px]">
+                        <span className="font-mono text-[11px] font-bold text-zinc-400">{c.CueCodigo}</span>
+                        {chipTipo(c)}
+                        {moneda(c)}
+                        {c.CueImputable && <span className="inline-flex items-center gap-1 text-[11px] font-bold text-emerald-700"><CheckCircle size={12}/> Imputable</span>}
+                      </div>
+                    </div>
+                    {botonEditar(c)}
+                  </li>
+                ))}
+              </ul>
+            ))}
+
             {cuentas.length === 0 && (
-                <div className="p-16 text-center">
-                    <p className="text-slate-400 font-bold uppercase tracking-widest text-sm">No hay cuentas contables registradas.</p>
+                <div className="p-14 text-center flex flex-col items-center gap-2">
+                    <Network size={40} className="text-brand-cyan" />
+                    <p className="text-sm font-bold text-zinc-700">No hay cuentas contables registradas.</p>
                 </div>
             )}
           </div>
@@ -129,74 +199,76 @@ export default function PlanCuentasView() {
 
         {/* MODAL MANTENIMIENTO CUENTAS */}
         {modalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60  p-4 animate-in fade-in duration-200">
-            <div className="bg-white border border-slate-200 rounded-[2.5rem] w-full max-w-xl shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
-              <div className="flex justify-between items-center p-8 border-b border-slate-100 bg-slate-50/50">
-                <h2 className="text-2xl font-black text-slate-800 tracking-tight">{editingId ? 'Editar Cuenta' : 'Nueva Cuenta Contable'}</h2>
-                <button onClick={() => setModalOpen(false)} className="text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 p-2 rounded-xl transition-all border border-slate-200 shadow-sm"><X size={20}/></button>
+          <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/40 p-3 sm:p-4">
+            <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-xl max-h-[92vh] shadow-xl flex flex-col overflow-hidden">
+              <div className="flex justify-between items-center gap-3 px-5 sm:px-6 py-4 border-b border-zinc-100">
+                <h2 className="text-lg font-black text-zinc-900 flex items-center gap-2.5">
+                  <Network size={22} className="text-brand-cyan shrink-0" />
+                  {editingId ? 'Editar cuenta' : 'Nueva cuenta contable'}
+                </h2>
+                <button onClick={() => setModalOpen(false)} title="Cerrar" aria-label="Cerrar" className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 transition-colors"><X size={20}/></button>
               </div>
-              <form onSubmit={handleSave} className="p-8 flex flex-col gap-6">
-                
-                <div className="grid grid-cols-2 gap-6">
+              <form onSubmit={handleSave} className="p-5 sm:p-6 flex flex-col gap-4 overflow-y-auto">
+
+                <div className="grid grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Código Contable</label>
-                    <input autoFocus required type="text" value={form.codigo} onChange={e=>setForm({...form, codigo: e.target.value})} placeholder="Ej: 1.1.1" className="w-full bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500 transition-all shadow-inner" />
+                    <label className={ETIQUETA}>Código contable</label>
+                    <input autoFocus required type="text" value={form.codigo} onChange={e=>setForm({...form, codigo: e.target.value})} placeholder="Ej: 1.1.1" className={`${CAMPO} font-mono`} />
                   </div>
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Nivel en Árbol</label>
-                    <input required type="number" min="1" value={form.nivel} onChange={e=>setForm({...form, nivel: Number(e.target.value)})} className="w-full bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500 transition-all shadow-inner" />
+                    <label className={ETIQUETA}>Nivel en el árbol</label>
+                    <input required type="number" min="1" value={form.nivel} onChange={e=>setForm({...form, nivel: Number(e.target.value)})} className={CAMPO} />
                   </div>
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Nombre de Cuenta</label>
-                  <input required type="text" value={form.nombre} onChange={e=>setForm({...form, nombre: e.target.value})} placeholder="Ej: Caja Moneda Nacional" className="w-full bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500 transition-all shadow-inner" />
+                  <label className={ETIQUETA}>Nombre de la cuenta</label>
+                  <input required type="text" value={form.nombre} onChange={e=>setForm({...form, nombre: e.target.value})} placeholder="Ej: Caja Moneda Nacional" className={CAMPO} />
                 </div>
 
-                <div className="grid grid-cols-2 gap-6">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Naturaleza (Base)</label>
-                    <select value={form.tipoBase} onChange={e=>setForm({...form, tipoBase: e.target.value})} className="w-full bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500 transition-all cursor-pointer shadow-inner">
+                    <span className={ETIQUETA}>Naturaleza (base)</span>
+                    <Selector className="w-full" value={form.tipoBase} aria-label="Naturaleza" onChange={e=>setForm({...form, tipoBase: e.target.value})}>
                       <option value="ACTIVO">ACTIVO</option>
                       <option value="PASIVO">PASIVO</option>
                       <option value="PATRIMONIO">PATRIMONIO NETO</option>
                       <option value="GANANCIA">INGRESOS / GANANCIAS</option>
-                      <option value="PERDIDA">EGRESOS / PERDIDAS</option>
-                    </select>
+                      <option value="PERDIDA">EGRESOS / PÉRDIDAS</option>
+                    </Selector>
                   </div>
                   <div>
-                    <label className="block text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 px-1">Moneda Base</label>
-                    <select value={form.moneda} onChange={e=>setForm({...form, moneda: e.target.value})} className="w-full bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 text-slate-800 font-bold outline-none focus:border-indigo-500 transition-all cursor-pointer shadow-inner">
-                      <option value="UYU">Pesos Uruguayos (UYU)</option>
-                      <option value="USD">Dólares (USD)</option>
-                      <option value="AMBAS">Bimonetaria (AMBAS)</option>
-                    </select>
+                    <span className={ETIQUETA}>Moneda base</span>
+                    <Selector className="w-full" value={form.moneda} aria-label="Moneda base" onChange={e=>setForm({...form, moneda: e.target.value})}>
+                      <option value="UYU">Pesos uruguayos ($)</option>
+                      <option value="USD">Dólares (US$)</option>
+                      <option value="AMBAS">Bimonetaria (ambas)</option>
+                    </Selector>
                   </div>
                 </div>
 
-                <div className="flex gap-8 mt-4 bg-slate-50 py-4 px-6 rounded-2xl border border-slate-100 shadow-inner">
-                  <label className="flex items-center gap-3 cursor-pointer">
-                    <input type="checkbox" checked={form.imputable} onChange={e=>setForm({...form, imputable: e.target.checked})} className="w-5 h-5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-600" />
-                    <span className="text-xs font-black text-slate-600 tracking-tight">CUENTA IMPUTABLE</span>
+                <div className="flex flex-wrap gap-x-8 gap-y-3 bg-zinc-50 py-3.5 px-4 rounded-xl border border-zinc-100">
+                  <label className="flex items-center gap-2.5 cursor-pointer">
+                    <input type="checkbox" checked={form.imputable} onChange={e=>setForm({...form, imputable: e.target.checked})} className="w-4 h-4 accent-[#006E97]" />
+                    <span className="text-sm font-bold text-zinc-700">Cuenta imputable</span>
                   </label>
-                  
+
                   {editingId && (
-                    <label className="flex items-center gap-3 cursor-pointer">
-                        <input type="checkbox" checked={form.activa} onChange={e=>setForm({...form, activa: e.target.checked})} className="w-5 h-5 rounded border-slate-300 text-indigo-600" />
-                        <span className="text-xs font-black text-slate-600 tracking-tight">ACTIVA</span>
+                    <label className="flex items-center gap-2.5 cursor-pointer">
+                        <input type="checkbox" checked={form.activa} onChange={e=>setForm({...form, activa: e.target.checked})} className="w-4 h-4 accent-[#006E97]" />
+                        <span className="text-sm font-bold text-zinc-700">Activa</span>
                     </label>
                   )}
                 </div>
 
-                <div className="flex justify-end gap-4 mt-6">
-                  <button type="button" onClick={() => setModalOpen(false)} className="px-6 py-4 rounded-[1.5rem] font-black text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors uppercase tracking-widest text-xs">Cancelar</button>
-                  <button type="submit" className="bg-indigo-600 hover:bg-black text-white px-8 py-4 rounded-[1.5rem] font-black transition-all shadow-xl hover:shadow-2xl hover:-translate-y-1 active:scale-95 uppercase tracking-widest text-xs">Guardar Cuenta</button>
+                <div className="flex justify-end gap-2 pt-1">
+                  <button type="button" onClick={() => setModalOpen(false)} className={BTN_SECUNDARIO}>Cancelar</button>
+                  <button type="submit" className={BTN_PRINCIPAL}>Guardar cuenta</button>
                 </div>
               </form>
             </div>
           </div>
         )}
-      </div>
     </div>
   );
 }

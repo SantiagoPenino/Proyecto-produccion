@@ -596,7 +596,7 @@ export default function CajaPanelPago({
                 const esSaldoCuenta = /saldo de cuenta/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '');
                 return (
                   <div key={p.id} className="flex flex-col gap-1.5 bg-zinc-50 border border-zinc-200 p-2.5 rounded-2xl shadow-sm transition-all hover:border-zinc-300">
-                  <div className="flex gap-2 items-center">
+                  <div className="flex flex-wrap sm:flex-nowrap gap-2 items-center">
                     
                     {/* Medio select */}
                     <div className="w-36 shrink-0">
@@ -624,42 +624,6 @@ export default function CajaPanelPago({
                       </Selector>
                     </div>
                     
-                    {/* Comprobante inline: se muestra cuando el padre lo maneje (pasa
-                        onComprobanteFile) Y esta línea de pago es una transferencia — que es
-                        la que deja respaldo del banco. Antes exigía locked=true, y al habilitar
-                        la elección de tipo de documento (locked=false) desaparecía el adjunto. */}
-                    {onComprobanteFile
-                      && /transfer/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '')
-                      && (
-                      comprobanteFile ? (
-                        <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-300 rounded-xl px-2.5 py-1.5 min-w-0 flex-1">
-                          <CheckCircle size={13} className="text-emerald-500 shrink-0" />
-                          <span className="text-[10px] font-black text-emerald-700 truncate flex-1">{comprobanteFile.name}</span>
-                          <button
-                            type="button"
-                            onClick={() => { onComprobanteFile(null); if (comprobanteRef?.current) comprobanteRef.current.value = ''; }}
-                            className="text-emerald-400 hover:text-red-500 shrink-0 transition-colors"
-                          >
-                            <X size={12} />
-                          </button>
-                        </div>
-                      ) : (
-                        <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer text-[10px] font-black uppercase tracking-wide whitespace-nowrap transition-colors flex-1 justify-center
-                          ${comprobanteError ? 'border-red-400 bg-red-50 text-red-600 hover:bg-red-100' : 'border-dashed border-zinc-300 bg-zinc-50 text-zinc-500 hover:border-zinc-400 hover:bg-zinc-100'}`}>
-                          <Receipt size={12} />
-                          Adjuntar comprobante
-                          <input
-                            ref={comprobanteRef}
-                            type="file"
-                            accept="image/*,application/pdf"
-                            capture="environment"
-                            className="hidden"
-                            onChange={e => onComprobanteFile(e.target.files[0] || null)}
-                          />
-                        </label>
-                      )
-                    )}
-
                     {/* Toggles de moneda sin tipo de cambio arriba (User Request #5) */}
                     {!lockMoneda && (
                       <div className="flex bg-zinc-200 rounded-lg p-0.5 border border-zinc-300 select-none shrink-0 text-[10px] shadow-sm">
@@ -710,7 +674,7 @@ export default function CajaPanelPago({
                       placeholder="0.00"
                       value={p.monto}
                       onChange={(e) => updatePago(p.id, 'monto', e.target.value)}
-                      className="w-36 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-sm font-black text-zinc-800 text-right outline-none focus:border-brand-cyan shadow-inner"
+                      className="w-full sm:w-36 bg-white border border-zinc-200 rounded-xl px-3 py-2 text-sm font-black text-zinc-800 text-right outline-none focus:border-brand-cyan shadow-inner"
                     />
 
                     {isCheque && (
@@ -733,6 +697,43 @@ export default function CajaPanelPago({
                       </button>
                     )}
                   </div>
+
+                    {/* Comprobante (28/10: en una línea propia debajo del medio; en la fila no entraba y aparecía una barra de
+                        scroll que cortaba el monto). Comprobante inline: se muestra cuando el padre lo maneje (pasa
+                        onComprobanteFile) Y esta línea de pago es una transferencia — que es
+                        la que deja respaldo del banco. Antes exigía locked=true, y al habilitar
+                        la elección de tipo de documento (locked=false) desaparecía el adjunto. */}
+                    {onComprobanteFile
+                      && /transfer/i.test(metodosPago.find(m => m.MPaIdMetodoPago === parseInt(p.metodoPagoId))?.MPaDescripcionMetodo || '')
+                      && (
+                      comprobanteFile ? (
+                        <div className="flex items-center gap-1.5 bg-emerald-50 border border-emerald-300 rounded-xl px-2.5 py-1.5 min-w-0 w-full">
+                          <CheckCircle size={13} className="text-emerald-500 shrink-0" />
+                          <span className="text-[10px] font-black text-emerald-700 truncate flex-1">{comprobanteFile.name}</span>
+                          <button
+                            type="button"
+                            onClick={() => { onComprobanteFile(null); if (comprobanteRef?.current) comprobanteRef.current.value = ''; }}
+                            className="text-emerald-400 hover:text-brand-magenta shrink-0 transition-colors"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      ) : (
+                        <label className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl border cursor-pointer text-[10px] font-black uppercase tracking-wide whitespace-nowrap transition-colors w-full justify-center
+                          ${comprobanteError ? 'border-brand-magenta/40 bg-brand-magenta/10 text-brand-magenta hover:bg-brand-magenta/15' : 'border-dashed border-zinc-300 bg-zinc-50 text-zinc-500 hover:border-zinc-400 hover:bg-zinc-100'}`}>
+                          <Receipt size={12} />
+                          Adjuntar comprobante
+                          <input
+                            ref={comprobanteRef}
+                            type="file"
+                            accept="image/*,application/pdf"
+                            capture="environment"
+                            className="hidden"
+                            onChange={e => onComprobanteFile(e.target.files[0] || null)}
+                          />
+                        </label>
+                      )
+                    )}
 
                   {/* BILLETERA: medio "Saldo de cuenta" → elegir de qué cuenta del cliente sale la plata */}
                   {esSaldoCuenta && (

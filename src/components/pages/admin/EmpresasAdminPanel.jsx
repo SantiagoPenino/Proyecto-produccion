@@ -87,31 +87,41 @@ const Field = ({ label, name, value, onChange, type = 'text', placeholder, requi
 );
 
 // ─── Parámetros DGI globales (umbral e-Ticket: tope en UI × valor de la UI) ───
+// El tope se edita acá; el valor de la UI lo trae solo el backend del BCU (la del 31/12 del año
+// anterior, la que usa SISNET) y acá solo se muestra, con un botón para traerlo en el momento.
+const fechaUIcorta = (iso) => (iso ? iso.slice(0, 10).split('-').reverse().join('/') : '');
+
 const ParametrosDGI = () => {
-    const [conf, setConf] = useState({ limiteUI: '', valorUI: '' });
+    const [conf, setConf] = useState({ limiteUI: '', valorUI: null, fechaUI: null, actualizadoUI: null });
     const [cargando, setCargando] = useState(true);
     const [guardando, setGuardando] = useState(false);
+    const [trayendoUI, setTrayendoUI] = useState(false);
+
+    const aplicar = (data) => setConf({
+        limiteUI: String(data.limiteUI),
+        valorUI: Number(data.valorUI) || null,
+        fechaUI: data.fechaUI || null,
+        actualizadoUI: data.actualizadoUI || null,
+    });
 
     useEffect(() => {
         api.get('/contabilidad/cfe/config-dgi')
-            .then(({ data }) => {
-                if (data?.success) setConf({ limiteUI: String(data.limiteUI), valorUI: String(data.valorUI) });
-            })
-            .catch(() => {})
+            .then(({ data }) => { if (data?.success) aplicar(data); })
+            .catch(err => toast.error('No se pudieron leer los parámetros DGI: ' + (err.response?.data?.error || err.message)))
             .finally(() => setCargando(false));
     }, []);
 
     const guardar = async () => {
         const limiteUI = parseFloat(String(conf.limiteUI).replace(',', '.'));
-        const valorUI = parseFloat(String(conf.valorUI).replace(',', '.'));
-        if (!(limiteUI > 0) || !(valorUI > 0)) {
-            toast.error('Valores inválidos: el tope (en UI) y el valor de la UI deben ser números mayores a 0. Solución: revisá los campos (ej: 10000 y 6.5321).');
+        if (!(limiteUI > 0)) {
+            toast.error('Tope inválido: tiene que ser un número de UI mayor a 0. Solución: revisá el campo (ej: 5000).');
             return;
         }
         setGuardando(true);
         try {
-            await api.put('/contabilidad/cfe/config-dgi', { limiteUI, valorUI });
-            toast.success(`Parámetros DGI guardados. Nuevo umbral: $ ${(limiteUI * valorUI).toLocaleString('es-UY', { maximumFractionDigits: 2 })} UYU (${limiteUI.toLocaleString('es-UY')} UI × $${valorUI}).`);
+            const { data } = await api.put('/contabilidad/cfe/config-dgi', { limiteUI });
+            aplicar(data);
+            toast.success(`Parámetros DGI guardados. Nuevo umbral: $ ${Number(data.umbralUYU).toLocaleString('es-UY', { maximumFractionDigits: 2 })} UYU (${limiteUI.toLocaleString('es-UY')} UI × $${data.valorUI}).`);
         } catch (err) {
             toast.error('No se pudieron guardar los parámetros DGI: ' + (err.response?.data?.error || err.message));
         } finally {
@@ -119,14 +129,27 @@ const ParametrosDGI = () => {
         }
     };
 
-    const umbral = (parseFloat(String(conf.limiteUI).replace(',', '.')) || 0) * (parseFloat(String(conf.valorUI).replace(',', '.')) || 0);
+    const traerUI = async () => {
+        setTrayendoUI(true);
+        try {
+            const { data } = await api.post('/contabilidad/cfe/config-dgi/actualizar-ui');
+            aplicar(data);
+            toast.success(`UI del ${fechaUIcorta(data.fechaUI)} según el BCU: $ ${data.valorUI}.`);
+        } catch (err) {
+            toast.error(err.response?.data?.error || 'No se pudo traer la UI del BCU: ' + err.message);
+        } finally {
+            setTrayendoUI(false);
+        }
+    };
+
+    const umbral = (parseFloat(String(conf.limiteUI).replace(',', '.')) || 0) * (conf.valorUI || 0);
 
     return (
         <div className="bg-zinc-900 rounded-2xl p-4 border border-zinc-800 flex flex-col gap-3">
             <div>
                 <p className="text-[10px] font-bold text-zinc-500 uppercase tracking-wider">Parámetros DGI (globales)</p>
                 <p className="text-[10px] text-zinc-500 mt-0.5 leading-snug">
-                    Tope en Unidades Indexadas y valor vigente de la UI. Sobre este umbral, los e-Tickets exigen CI/RUT del comprador. Aplica a todas las empresas.
+                    Tope en Unidades Indexadas. El valor de la UI se trae solo del BCU: la del 31/12 del año anterior, la que usa SISNET. Sobre este umbral, los e-Tickets exigen CI/RUT del comprador. Aplica a todas las empresas.
                 </p>
             </div>
             {cargando ? (
@@ -144,15 +167,28 @@ const ParametrosDGI = () => {
                             />
                         </div>
                         <div className="flex flex-col gap-1">
-                            <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Valor UI ($)</label>
-                            <input
-                                value={conf.valorUI}
-                                onChange={e => setConf(p => ({ ...p, valorUI: e.target.value }))}
-                                placeholder="6.5321"
-                                className="bg-zinc-800 border border-zinc-700 text-white rounded-lg px-3 py-2 text-sm w-full"
-                            />
+                            <div className="flex items-center justify-between gap-1">
+                                <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Valor UI ($)</label>
+                                <button
+                                    type="button"
+                                    onClick={traerUI}
+                                    disabled={trayendoUI}
+                                    title="Traer ahora del BCU"
+                                    className="text-cyan-400 hover:text-cyan-300 disabled:opacity-50"
+                                >
+                                    <RefreshCw size={12} className={trayendoUI ? 'animate-spin' : ''} />
+                                </button>
+                            </div>
+                            <div className="bg-zinc-800/60 border border-zinc-700 text-white rounded-lg px-3 py-2 text-sm w-full">
+                                {conf.valorUI ? conf.valorUI.toLocaleString('es-UY', { maximumFractionDigits: 4 }) : '—'}
+                            </div>
                         </div>
                     </div>
+                    <p className="text-[10px] text-zinc-500 leading-snug -mt-1">
+                        {conf.fechaUI
+                            ? `UI del ${fechaUIcorta(conf.fechaUI)} según el BCU${conf.actualizadoUI ? ` · traída el ${new Date(conf.actualizadoUI).toLocaleString('es-UY', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' })}` : ''}.`
+                            : 'Todavía no se trajo del BCU: este es el valor que estaba cargado. Tocá ↻ para traerla.'}
+                    </p>
                     <div className="flex items-center justify-between gap-2">
                         <span className="text-[11px] text-cyan-400 font-bold">
                             Umbral: {umbral > 0 ? `$ ${umbral.toLocaleString('es-UY', { maximumFractionDigits: 2 })} UYU` : '—'}

@@ -28,6 +28,9 @@ export const PickupView = () => {
         } catch { return []; }
     });
     const [readyOrders, setReadyOrders] = useState([]);
+    // Cotización con la que el servidor pasa a pesos los dólares si se mezclan monedas (viene con la lista)
+    const [cotizacionDolar, setCotizacionDolar] = useState(null);
+    const [cotizacionDia, setCotizacionDia] = useState(null);
     const [pickupCode, setPickupCode] = useState(() => {
         return sessionStorage.getItem('pickup_code') || null;
     });
@@ -96,6 +99,8 @@ export const PickupView = () => {
                 const res = await apiClient.get('/web-orders/pickup-orders');
                 if (res.success) {
                     setReadyOrders(res.data);
+                    setCotizacionDolar(Number(res.cotizacion) > 0 ? Number(res.cotizacion) : null);
+                    setCotizacionDia(res.cotizacionDia || null);
                     // Limpiar seleccionadas que ya no existen
                     const validIds = new Set(res.data.map(o => o.id));
                     setSelectedOrders(prev => {
@@ -163,18 +168,15 @@ export const PickupView = () => {
     };
 
     const handleToggleOrder = (orderId) => {
-        const orderToAdd = readyOrders.find(o => o.id === orderId);
-        const monedaGrupo = orderToAdd?.currency;
         const grupo = readyOrders.filter(o => baseDe(o.id) === baseDe(orderId)).map(o => o.id);
         const todasSel = grupo.every(g => selectedOrders.includes(g));
-        // Retiro obligatorio DENTRO de la misma moneda: como no se pueden mezclar monedas en un retiro,
-        // solo se fuerzan las viejas de la MISMA moneda que la orden tocada. Las viejas de otra moneda
-        // van en su propio retiro, donde a su vez serán obligatorias.
-        const idsViejas = readyOrders.filter(o => esOrdenVieja(o) && o.currency === monedaGrupo).map(o => o.id);
+        // Retiro obligatorio en cualquier moneda: desde el 27/10 un retiro puede mezclar pesos y
+        // dólares (los dólares pasan a pesos), así que se fuerzan todas las viejas.
+        const idsViejas = readyOrders.filter(o => esOrdenVieja(o)).map(o => o.id);
         const grupoEsViejo = grupo.some(id => idsViejas.includes(id));
 
         if (todasSel) {
-            // DESMARCAR. Si es un pedido de +5 días (obligatorio en su moneda), se cae toda la selección.
+            // DESMARCAR. Si es un pedido de +5 días (obligatorio), se cae toda la selección.
             if (grupoEsViejo) {
                 setSelectedOrders([]);
                 Swal.fire({ icon: 'info', title: 'Retiro obligatorio', text: 'Los pedidos con más de 5 días tenés que retirarlos sí o sí. Si no los querés llevar, tampoco podés retirar los demás — se limpió la selección.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
@@ -184,37 +186,76 @@ export const PickupView = () => {
             return;
         }
 
-        // MARCAR. Verificar que no se mezclen monedas (contra lo ya seleccionado de otros pedidos)
-        const yaSeleccionadas = selectedOrders.filter(id => !grupo.includes(id));
-        if (orderToAdd && yaSeleccionadas.length > 0) {
-            const firstSelected = readyOrders.find(o => o.id === yaSeleccionadas[0]);
-            if (firstSelected && orderToAdd.currency !== firstSelected.currency) {
-                Swal.fire({ icon: 'warning', title: 'Monedas diferentes', text: 'No es posible mezclar pagos en Dólares y Pesos Uruguayos en una misma transacción. Seleccioná únicamente órdenes que compartan la misma moneda.', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
-                return; // Bloquea la selección mixta
-            }
-        }
-
-        // Al seleccionar, se suman las órdenes de +5 días de la MISMA moneda (retiro obligatorio).
+        // MARCAR. Se pueden mezclar pesos y dólares: el total los pasa a pesos (ver abajo).
+        // Al seleccionar, se suman las órdenes de +5 días (retiro obligatorio).
         const viejasNuevas = idsViejas.filter(id => !selectedOrders.includes(id) && !grupo.includes(id));
         setSelectedOrders([...new Set([...selectedOrders, ...grupo, ...idsViejas])]);
         if (viejasNuevas.length > 0) {
-            Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: `Se sumaron ${viejasNuevas.length} pedido(s) de +5 días en ${monedaGrupo} (retiro obligatorio)`, showConfirmButton: false, timer: 3500, timerProgressBar: true, background: '#212121', color: '#e4e4e7' });
+            Swal.fire({ toast: true, position: 'top-end', icon: 'info', title: `Se sumaron ${viejasNuevas.length} pedido(s) de +5 días (retiro obligatorio)`, showConfirmButton: false, timer: 3500, timerProgressBar: true, background: '#212121', color: '#e4e4e7' });
         }
     };
 
-    const totalAmount = readyOrders
-        .filter(o => selectedOrders.includes(o.id))
-        .reduce((sum, o) => sum + (o.isPaid ? 0 : o.amount), 0);
+    // Moneda y total del retiro, con la misma regla que el servidor (cotizarSeleccion): si todo lo
+    // que hay que pagar es en dólares, el retiro va en dólares; si no, en pesos, con los dólares
+    // pasados a pesos a la cotización del día. Cada orden se sigue mostrando en su moneda.
+    const r2 = (n) => Math.round(Number(n) * 100) / 100;
+    const monedaDe = (c) => (c === 'USD' ? 'USD' : 'UYU');
+    const seleccionadas = readyOrders.filter(o => selectedOrders.includes(o.id));
+    const aCobrarSel = seleccionadas.filter(o => !o.isPaid && Number(o.amount) > 0.004);
+    const monedasACobrar = new Set(aCobrarSel.map(o => monedaDe(o.currency)));
+    const hayMezcla = monedasACobrar.size > 1;
+    const soloDolares = monedasACobrar.size
+        ? (monedasACobrar.size === 1 && monedasACobrar.has('USD'))
+        : (seleccionadas.length > 0 && seleccionadas.every(o => monedaDe(o.currency) === 'USD'));
+    const activeCurrency = soloDolares ? 'USD' : 'UYU';
+    // Cada orden en dólares se convierte y redondea por separado, igual que en el servidor
+    const enPesos = (o) => r2(r2(o.amount) * (cotizacionDolar || 0));
+    const dolaresSel = aCobrarSel.filter(o => monedaDe(o.currency) === 'USD');
+    const dolaresConvertidos = hayMezcla ? r2(dolaresSel.reduce((s, o) => s + r2(o.amount), 0)) : 0;
+    const dolaresEnPesos = hayMezcla ? r2(dolaresSel.reduce((s, o) => s + enPesos(o), 0)) : 0;
+    const totalAmount = r2(aCobrarSel.reduce((s, o) => s + (hayMezcla && monedaDe(o.currency) === 'USD' ? enPesos(o) : r2(o.amount)), 0));
+    const fmt2 = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    const lineaConversion = hayMezcla
+        ? (cotizacionDolar
+            ? `Incluye US$ ${fmt2(dolaresConvertidos)} convertidos a $ ${fmt2(dolaresEnPesos)} (dólar a $ ${fmt2(cotizacionDolar)}${cotizacionDia ? `, del ${cotizacionDia}` : ''})`
+            : 'Incluye órdenes en dólares: se pasan a pesos con la cotización del día.')
+        : null;
 
-    const activeCurrency = selectedOrders.length > 0
-        ? readyOrders.find(o => o.id === selectedOrders[0])?.currency || '$'
-        : '$';
+    // El servidor recalcula el total al pagar; si la cotización cambió con la pantalla abierta
+    // contesta 409 con el total nuevo. Se muestra, y si el cliente confirma se reintenta con ese.
+    const confirmarTotalNuevo = async (err) => {
+        if (err?.status !== 409 || !err?.data?.total) return null;
+        const d = err.data;
+        if (Number(d.cotizacion) > 0) { setCotizacionDolar(Number(d.cotizacion)); setCotizacionDia(d.cotizacionDia || null); }
+        const conf = await Swal.fire({
+            icon: 'info', title: 'Cambió la cotización del dólar',
+            html: `${d.error || ''}<br/><br/>¿Seguís con el pago por <b>${d.moneda === 'USD' ? 'US$' : '$'} ${fmt2(d.total)}</b>?`,
+            showCancelButton: true, confirmButtonText: 'Sí, seguir', cancelButtonText: 'Cancelar',
+            background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97',
+            customClass: { popup: 'rounded-xl border border-zinc-700' },
+        });
+        return conf.isConfirmed ? Number(d.total) : null;
+    };
+    // POST de pago con ese control: devuelve la respuesta, o null si el cliente no siguió
+    const postConTotalAlDia = async (url, payload) => {
+        try {
+            return await apiClient.post(url, payload);
+        } catch (e) {
+            const nuevo = await confirmarTotalNuevo(e);
+            if (nuevo === null) {
+                if (e?.status === 409) return null;
+                throw e;
+            }
+            payload.totalAmount = nuevo;
+            return apiClient.post(url, payload);
+        }
+    };
 
     const downloadReceipt = async (code) => {
         try {
             const token = localStorage.getItem('auth_token');
             const ordersToPrint = readyOrders.filter(o => selectedOrders.includes(o.id));
-            const total = ordersToPrint.reduce((sum, o) => sum + o.amount, 0).toFixed(2);
+            const total = totalAmount.toFixed(2);
 
             const API_URL = (import.meta.env.VITE_API_URL || '/api').replace(/\/$/, '');
 
@@ -228,7 +269,10 @@ export const PickupView = () => {
                     receiptId: code || pickupCode,
                     orders: ordersToPrint,
                     clientName: user?.name,
-                    total: total
+                    total: total,
+                    moneda: activeCurrency,
+                    // Retiro con pesos y dólares: la línea de conversión del comprobante
+                    ...(hayMezcla && cotizacionDolar ? { cotizacion: cotizacionDolar, dolares: dolaresConvertidos, dolaresEnPesos } : {})
                 })
             });
 
@@ -398,7 +442,8 @@ export const PickupView = () => {
                 customAgencia: esEncomienda && selectedAgencia === -1 ? customAgencia : null,
                 receptorNombre: esEncomienda ? (receiverFirstName.trim() + ' ' + receiverLastName.trim()) : null
             };
-            const res = await apiClient.post('/web-orders/pickup-orders/mp-payment', payload);
+            const res = await postConTotalAlDia('/web-orders/pickup-orders/mp-payment', payload);
+            if (!res) return; // cambió la cotización y el cliente no siguió
             if (res.success && res.url) {
                 // MercadoPago no necesita ventana separada — redireccion directa
                 window.location.href = res.url;
@@ -517,7 +562,7 @@ export const PickupView = () => {
         if (!puedePagarConSaldo) return;
         const sim = activeCurrency === 'USD' ? 'US$' : '$';
         const simDe = (m) => (m === 'USD' ? 'US$' : '$');
-        const total = totalCarrito;
+        let total = totalCarrito;
         setLoading(true);
         try {
             const formaEnvioId = selectedFormaEnvio || shippingData?.defaultFormaEnvioID || 5;
@@ -546,8 +591,13 @@ export const PickupView = () => {
             };
 
             // 1) Vista previa: el backend decide de qué cuenta(s) sale la plata y a qué cotización
-            const prev = await apiClient.post('/web-orders/pickup-orders/pagar-con-saldo', { ...payloadBase, preview: true });
+            const payloadPrev = { ...payloadBase, preview: true };
+            const prev = await postConTotalAlDia('/web-orders/pickup-orders/pagar-con-saldo', payloadPrev);
+            if (!prev) return; // cambió la cotización y el cliente no siguió
             if (!prev?.success) throw new Error(prev?.error || 'No se pudo calcular el pago con saldo.');
+            // El total con que sigue: el del servidor (puede haber cambiado la cotización)
+            total = Number(prev.total) || payloadPrev.totalAmount;
+            payloadBase.totalAmount = total;
             setLoading(false);
             const lineasHtml = (prev.plan || []).map(p => p.cruzada
                 ? `• <b>"${p.nombre}"</b>: ${simDe(p.moneda)} ${Number(p.monto).toFixed(2)} <span style="opacity:.7">(@ $${Number(prev.cotizacion).toFixed(2)} = ${sim} ${Number(p.aporte).toFixed(2)})</span>`
@@ -555,7 +605,7 @@ export const PickupView = () => {
             ).join('<br/>');
             const conf = await Swal.fire({
                 icon: 'question', title: 'Pagar con mi saldo',
-                html: `El retiro es <b>${sim} ${total.toFixed(2)}</b> y sale de tu billetera así:<br/><br/>`
+                html: `El retiro es <b>${sim} ${total.toFixed(2)}</b>${lineaConversion ? `<br/><span style="font-size:12px;opacity:.75">${lineaConversion}</span>` : ''}<br/>y sale de tu billetera así:<br/><br/>`
                     + `<div style="text-align:left;display:inline-block">${lineasHtml}</div><br/><br/>`
                     + `${(prev.plan || []).some(p => p.cruzada) ? `<span style="font-size:12px;opacity:.75">La conversión usa la cotización del día ($${Number(prev.cotizacion).toFixed(2)}).</span><br/>` : ''}`
                     + `<span style="font-size:12px;opacity:.75">El retiro queda pago al instante, sin tarjeta.</span>`,
@@ -617,7 +667,11 @@ export const PickupView = () => {
                 customAgencia: esEncomienda && selectedAgencia === -1 ? customAgencia : null,
                 receptorNombre: esEncomienda ? (receiverFirstName.trim() + ' ' + receiverLastName.trim()) : null
             };
-            const res = await apiClient.post('/web-orders/pickup-orders/init-payment', payload);
+            const res = await postConTotalAlDia('/web-orders/pickup-orders/init-payment', payload);
+            if (!res) { // cambió la cotización y el cliente no siguió
+                if (payWindow) payWindow.close();
+                return;
+            }
 
             if (res.success && res.url) {
                 // Navegar URL popup a Handy
@@ -936,6 +990,9 @@ export const PickupView = () => {
                             <span className="text-xs text-zinc-500 mr-1">{activeCurrency === 'USD' ? 'US$' : '$'}</span>{(totalAmount || 0).toFixed(2)}
                         </p>
                     </div>
+                    {lineaConversion && (
+                        <p className="px-4 pb-4 -mt-2 text-xs text-zinc-500 text-right">{lineaConversion}</p>
+                    )}
                 </div>
 
                 {/* Forma de envío */}
@@ -1552,13 +1609,8 @@ export const PickupView = () => {
                                                     if (selectedOrders.length === readyOrders.length) {
                                                         setSelectedOrders([]);
                                                     } else {
-                                                        const firstCurrency = readyOrders[0]?.currency;
-                                                        const allSameCurrency = readyOrders.every(o => o.currency === firstCurrency);
-                                                        if (allSameCurrency) {
-                                                            setSelectedOrders(readyOrders.map(o => o.id));
-                                                        } else {
-                                                            Swal.fire({ toast: true, position: 'top', icon: 'warning', title: 'Hay órdenes en distintas monedas. Seleccionalas manualmente.', showConfirmButton: false, timer: 3000, background: '#212121', color: '#e4e4e7', customClass: { popup: 'rounded-xl border border-zinc-700' } });
-                                                        }
+                                                        // Pesos y dólares juntos: el total pasa los dólares a pesos
+                                                        setSelectedOrders(readyOrders.map(o => o.id));
                                                     }
                                                 }}
                                             >
@@ -1668,6 +1720,9 @@ export const PickupView = () => {
                                     <span className="text-xs text-zinc-500 mr-1">{activeCurrency === 'USD' ? 'US$' : '$'}</span>
                                     {(totalAmount || 0).toFixed(2)}
                                 </p>
+                                {lineaConversion && (
+                                    <p className="text-xs text-zinc-500 mt-0.5">{lineaConversion}</p>
+                                )}
                             </div>
 
                             <CustomButton

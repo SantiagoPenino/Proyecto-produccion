@@ -28,6 +28,7 @@ const { resolverLineasDesdeMotor, generarAsientoCompleto, crearDocumentoContable
 const { validarDocumentoUY } = require('../utils/documentoUY');
 const sisnetService = require('../services/sisnetService');
 const contabilidadService = require('../services/contabilidadService');
+const { actualizarValorUI, leerValorUI } = require('../services/valorUIService');
 const { sincronizarPagosDeTransaccion } = require('../services/pagosTransaccionService');
 const envioEmailLog = require('../services/envioEmailLog');
 
@@ -368,8 +369,10 @@ async function asegurarClaveConfigGlobal(pool, clave, valorPorDefecto) {
 
 /**
  * GET /contabilidad/cfe/config-dgi
- * Umbral DGI para identificar al receptor en e-Tickets (10.000 UI) y valor de la UI.
- * Configurable en dbo.ConfiguracionGlobal (claves DGI_LIMITE_UI / DGI_VALOR_UI) sin rebuild.
+ * Umbral DGI para identificar al receptor en e-Tickets: tope en UI × valor de la UI.
+ * Claves de dbo.ConfiguracionGlobal: DGI_LIMITE_UI (se edita en Configuración › Empresas) y
+ * DGI_VALOR_UI, que la trae sola del BCU el job valorUI (services/valorUIService); fechaUI dice
+ * de qué día es y actualizadoUI cuándo se trajo.
  */
 exports.getConfigDGI = async (req, res) => {
     try {
@@ -381,46 +384,63 @@ exports.getConfigDGI = async (req, res) => {
         } catch (seedErr) {
             logger.warn('[CFE] No se pudieron sembrar las claves DGI en ConfiguracionGlobal: ' + seedErr.message);
         }
-        const r = await pool.request()
-            .query(`SELECT Clave, Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave IN ('DGI_LIMITE_UI','DGI_VALOR_UI')`);
-        const map = {};
-        r.recordset.forEach(x => { map[x.Clave] = x.Valor; });
-        const limiteUI = parseFloat(map.DGI_LIMITE_UI) || 10000;
-        const valorUI = parseFloat(map.DGI_VALOR_UI) || 6.5321;
-        res.json({ success: true, limiteUI, valorUI, umbralUYU: Math.round(limiteUI * valorUI * 100) / 100 });
+        res.json({ success: true, ...(await leerConfigDGI(pool)) });
     } catch (error) {
         logger.error('Error obteniendo config DGI:', error);
         res.status(500).json({ error: error.message });
     }
 };
 
+async function leerConfigDGI(pool) {
+    const r = await pool.request()
+        .query(`SELECT Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = 'DGI_LIMITE_UI'`);
+    const limiteUI = parseFloat(r.recordset[0]?.Valor) || 10000;
+    const ui = await leerValorUI(pool);
+    const valorUI = ui.valorUI || 6.5321;
+    return {
+        limiteUI, valorUI, fechaUI: ui.fechaUI, actualizadoUI: ui.actualizadoUI,
+        umbralUYU: Math.round(limiteUI * valorUI * 100) / 100,
+    };
+}
+
 /**
  * PUT /contabilidad/cfe/config-dgi
- * Actualiza el tope (en UI) y el valor de la UI desde la pantalla de administración.
+ * Actualiza el tope (en UI) desde la pantalla de administración. El valor de la UI ya no se
+ * carga a mano: viene del BCU (POST /config-dgi/actualizar-ui para traerlo en el momento).
  */
 exports.updateConfigDGI = async (req, res) => {
     try {
         const limiteUI = parseFloat(req.body?.limiteUI);
-        const valorUI = parseFloat(req.body?.valorUI);
-        if (!(limiteUI > 0) || !(valorUI > 0)) {
-            return res.status(400).json({ error: 'Parámetros inválidos: el tope (UI) y el valor de la UI deben ser números mayores a 0. Solución: revisá los campos (ej: 10000 y 6.5321).' });
+        if (!(limiteUI > 0)) {
+            return res.status(400).json({ error: 'Tope inválido: tiene que ser un número de UI mayor a 0. Solución: revisá el campo (ej: 5000).' });
         }
         const pool = await getPool();
-        // Asegurar que existan (con la estructura real de la tabla) y luego actualizar
+        // Asegurar que exista (con la estructura real de la tabla) y luego actualizar
         await asegurarClaveConfigGlobal(pool, 'DGI_LIMITE_UI', String(limiteUI));
-        await asegurarClaveConfigGlobal(pool, 'DGI_VALOR_UI', String(valorUI));
         await pool.request()
             .input('lim', sql.VarChar(50), String(limiteUI))
-            .input('val', sql.VarChar(50), String(valorUI))
-            .query(`
-                UPDATE dbo.ConfiguracionGlobal SET Valor = @lim WHERE Clave = 'DGI_LIMITE_UI';
-                UPDATE dbo.ConfiguracionGlobal SET Valor = @val WHERE Clave = 'DGI_VALOR_UI';
-            `);
-        logger.info(`[CFE] Parámetros DGI actualizados: limiteUI=${limiteUI}, valorUI=${valorUI}`);
-        res.json({ success: true, limiteUI, valorUI, umbralUYU: Math.round(limiteUI * valorUI * 100) / 100 });
+            .query(`UPDATE dbo.ConfiguracionGlobal SET Valor = @lim WHERE Clave = 'DGI_LIMITE_UI'`);
+        logger.info(`[CFE] Parámetros DGI actualizados: limiteUI=${limiteUI}`);
+        res.json({ success: true, ...(await leerConfigDGI(pool)) });
     } catch (error) {
         logger.error('Error actualizando config DGI:', error);
         res.status(500).json({ error: error.message });
+    }
+};
+
+/**
+ * POST /contabilidad/cfe/config-dgi/actualizar-ui
+ * Trae en el momento del BCU la UI de referencia (la del 31/12 del año anterior) aunque ya esté
+ * guardada. El job lo hace solo; esto es para no esperarlo.
+ */
+exports.actualizarValorUIDesdeBCU = async (req, res) => {
+    try {
+        await actualizarValorUI({ forzar: true });
+        const pool = await getPool();
+        res.json({ success: true, ...(await leerConfigDGI(pool)) });
+    } catch (error) {
+        logger.warn(`[CFE] No se pudo traer la UI del BCU: ${error.message}`);
+        res.status(502).json({ error: `No se pudo traer la UI del BCU (${error.message}). Solución: probá de nuevo en un rato; mientras, sigue el valor anterior.` });
     }
 };
 

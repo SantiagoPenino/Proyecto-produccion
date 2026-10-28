@@ -1,9 +1,62 @@
 import React, { useState, useEffect } from "react";
-import { CheckCircle2, XCircle, PackageCheck, RefreshCw, Send, Printer, AlertTriangle, Loader2, Inbox, Bell, Undo2, Clock } from "lucide-react";
+import { createPortal } from "react-dom";
+import { CheckCircle2, XCircle, PackageCheck, RefreshCw, Send, Printer, AlertTriangle, Loader2, Inbox, Bell, Undo2, Clock, HandHelping } from "lucide-react";
 import Selector from "../ui/Selector";
+import useConfirmar from "../ui/useConfirmar";
 import { toast } from "sonner";
 import { telaClienteService } from "../../services/modules/telaClienteService";
 import { printLabels } from "../../utils/labelPrinter";
+
+// Motivos de rechazo: el cliente los lee tal cual en el aviso del portal, por eso hay fijos y uno libre.
+const MOTIVOS_RECHAZO = [
+    "No quedó tela para devolver: se terminó en producción.",
+    "Lo que quedaba era un retazo que no se puede usar.",
+];
+
+// Rechazo con motivo (antes rechazaba sin motivo y sin avisarle al cliente). Ventana propia, no la del navegador.
+const RechazoModal = ({ ev, onCerrar, onConfirmar }) => {
+    const [elegido, setElegido] = useState(MOTIVOS_RECHAZO[0]);
+    const [otro, setOtro] = useState("");
+    const [enviando, setEnviando] = useState(false);
+    const motivo = (elegido === "OTRO" ? otro : elegido).trim();
+    const confirmar = async () => {
+        setEnviando(true);
+        try { await onConfirmar(motivo); } finally { setEnviando(false); }
+    };
+    return createPortal(
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/40" role="dialog" aria-modal="true">
+            <div className="w-full max-w-md bg-white rounded-2xl border border-zinc-200 shadow-xl overflow-hidden">
+                <div className="px-5 pt-5 pb-3">
+                    <h3 className="text-base font-black text-zinc-800">Rechazar la solicitud #{ev.TevID}</h3>
+                    <p className="text-sm text-zinc-500 mt-1">{ev.NombreCliente} · {ev.CodigoEtiqueta}. El cliente recibe este motivo en el portal.</p>
+                </div>
+                <div className="px-5 pb-4 space-y-2">
+                    {[...MOTIVOS_RECHAZO, "OTRO"].map(m => (
+                        <label key={m} className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-sm cursor-pointer transition-colors ${elegido === m ? "border-zinc-900 bg-zinc-50" : "border-zinc-200 hover:border-zinc-400"}`}>
+                            <input type="radio" name="motivo-rechazo" className="mt-1 accent-zinc-900" checked={elegido === m} onChange={() => setElegido(m)} />
+                            <span className="text-zinc-700">{m === "OTRO" ? "Otro motivo" : m}</span>
+                        </label>
+                    ))}
+                    {elegido === "OTRO" && (
+                        <textarea
+                            autoFocus rows={3} value={otro} onChange={e => setOtro(e.target.value)} maxLength={300}
+                            placeholder="Escribí el motivo como lo va a leer el cliente"
+                            className="w-full rounded-xl border border-zinc-200 px-3 py-2 text-sm text-zinc-800 outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
+                        />
+                    )}
+                </div>
+                <div className="px-5 py-3 bg-zinc-50 border-t border-zinc-100 flex justify-end gap-2">
+                    <button type="button" onClick={onCerrar} className={BTN_SECUNDARIO}>Cancelar</button>
+                    <button type="button" disabled={enviando || motivo.length < 3} onClick={confirmar}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-rose-600 text-white text-xs font-bold hover:bg-rose-700 transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+                        {enviando ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <XCircle className="w-3.5 h-3.5" />} Rechazar y avisar
+                    </button>
+                </div>
+            </div>
+        </div>,
+        document.body,
+    );
+};
 
 // Estética nueva (22/10/2026, como el Inventario de tela): tarjetas blancas con borde en grilla, el filtro en un
 // selector (Santiago: antes eran 10 pestañas), íconos Lucide y sin emojis. Estados: pendiente en ámbar, en curso en brand-cyan,
@@ -71,6 +124,8 @@ const BandejaDevolucionesTelaPanel = () => {
     const [loading, setLoading] = useState(false);
     const [busyId, setBusyId] = useState(null);
     const [filtro, setFiltro] = useState("ABIERTOS");
+    const [rechazando, setRechazando] = useState(null); // evento que se está rechazando (abre el modal del motivo)
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     const cargar = async () => {
         setLoading(true);
@@ -120,6 +175,32 @@ const BandejaDevolucionesTelaPanel = () => {
         } finally {
             setBusyId(null);
         }
+    };
+
+    const rechazar = async (motivo) => {
+        const ev = rechazando;
+        try {
+            const res = await telaClienteService.rechazarEvento(ev.TevID, motivo);
+            // «avisado» = se intentó el aviso: le llega solo si tiene los avisos del portal activados
+            toast.success(res.avisado
+                ? "Rechazada. Se le mandó el aviso al portal (le llega si tiene los avisos activados); el motivo queda en «Mis telas»."
+                : "Rechazada. No se pudo mandar el aviso: el cliente ve el motivo en «Mis telas».", { duration: 8000 });
+            setRechazando(null);
+            cargar();
+        } catch (e) {
+            toast.error(e?.response?.data?.error || "Error al rechazar");
+        }
+    };
+
+    // La tela se le dio en mano (por fuera de la bandeja): cierra la solicitud y la bobina si sigue abierta.
+    const marcarEntregada = async (ev) => {
+        const ok = await confirmar({
+            titulo: `¿La tela de ${ev.CodigoEtiqueta} ya se le entregó al cliente?`,
+            texto: "La solicitud queda resuelta y, si la bobina sigue abierta, se cierra con un movimiento de devolución. No se arma bulto ni orden.",
+            confirmar: "Ya se entregó",
+        });
+        if (!ok) return;
+        await accionar((id) => telaClienteService.marcarEntregada(id), ev.TevID, "Marcada como entregada.");
     };
 
     // Empaquetar SOLO genera la orden + el bulto y lo imprime — igual que
@@ -189,6 +270,10 @@ const BandejaDevolucionesTelaPanel = () => {
                 {eventos.map(ev => {
                     const est = ESTADO_LABEL[ev.Estado] || { label: ev.Estado, cls: "bg-zinc-100 text-zinc-600 border-zinc-200" };
                     const busy = busyId === ev.TevID;
+                    const abierta = ev.Tipo === "SOLICITUD_CLIENTE" && ["PENDIENTE", "APROBADA"].includes(ev.Estado);
+                    // La bobina se cerró o se agotó con el pedido abierto: ya no se puede empaquetar y el cliente
+                    // sigue esperando respuesta (así quedaron las 6 del portal, INF-SIS-2026-11).
+                    const bobinaTerminada = ["Agotado", "Cerrado"].includes(ev.EstadoBobina);
                     return (
                         <div key={ev.TevID} className={`${CARD} p-4 flex flex-col gap-3`}>
                             {/* Tipo (y qué pidió) a la izquierda, estado a la derecha */}
@@ -222,6 +307,16 @@ const BandejaDevolucionesTelaPanel = () => {
                                 )}
                             </dl>
 
+                            {abierta && bobinaTerminada && (
+                                <div className="flex items-start gap-2 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">
+                                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                                    <span>
+                                        La bobina ya está {ev.EstadoBobina === "Cerrado" ? "cerrada" : "agotada"} y el cliente sigue esperando respuesta.
+                                        {ev.Accion === "DEVOLVER" ? " Si se la diste en mano, «Ya se entregó»; si no quedó tela, rechazala con el motivo." : " Rechazala con el motivo o aprobala."}
+                                    </span>
+                                </div>
+                            )}
+
                             {ev.Escalado && (
                                 <div className="flex items-center gap-2 rounded-xl bg-rose-50 border border-rose-200 px-3 py-2 text-xs font-bold text-rose-700">
                                     <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
@@ -235,17 +330,24 @@ const BandejaDevolucionesTelaPanel = () => {
                                     <Clock className="w-3 h-3" /> {haceCuanto(ev.FechaCreacion)}
                                 </span>
                                 <div className="flex gap-2 flex-wrap justify-end">
-                                {ev.Tipo === "SOLICITUD_CLIENTE" && ev.Estado === "PENDIENTE" && (
-                                    <>
-                                        <button type="button" disabled={busy} onClick={() => accionar(telaClienteService.aprobarEvento, ev.TevID, "Aprobada.")}
-                                            className={BTN_PRINCIPAL}>
-                                            <CheckCircle2 className="w-3.5 h-3.5" /> Aprobar
-                                        </button>
-                                        <button type="button" disabled={busy} onClick={() => accionar((id) => telaClienteService.rechazarEvento(id), ev.TevID, "Rechazada.")}
-                                            className={`${BTN_SECUNDARIO} hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50`}>
-                                            <XCircle className="w-3.5 h-3.5" /> Rechazar
-                                        </button>
-                                    </>
+                                {/* Aprobar una devolución de una bobina terminada la deja trabada (no se puede empaquetar) */}
+                                {ev.Tipo === "SOLICITUD_CLIENTE" && ev.Estado === "PENDIENTE" && !(ev.Accion === "DEVOLVER" && bobinaTerminada) && (
+                                    <button type="button" disabled={busy} onClick={() => accionar(telaClienteService.aprobarEvento, ev.TevID, "Aprobada.")}
+                                        className={BTN_PRINCIPAL}>
+                                        <CheckCircle2 className="w-3.5 h-3.5" /> Aprobar
+                                    </button>
+                                )}
+                                {abierta && ev.Accion === "DEVOLVER" && (
+                                    <button type="button" disabled={busy} onClick={() => marcarEntregada(ev)} className={BTN_SECUNDARIO}
+                                        title="La tela se le dio en mano al cliente, por fuera de la bandeja">
+                                        <HandHelping className="w-3.5 h-3.5 text-brand-cyan" /> Ya se entregó
+                                    </button>
+                                )}
+                                {abierta && (
+                                    <button type="button" disabled={busy} onClick={() => setRechazando(ev)}
+                                        className={`${BTN_SECUNDARIO} hover:text-rose-600 hover:border-rose-200 hover:bg-rose-50`}>
+                                        <XCircle className="w-3.5 h-3.5" /> Rechazar
+                                    </button>
                                 )}
                                 {ev.Tipo === "SOLICITUD_CLIENTE" && ev.Accion === "DEVOLVER" && ev.Estado === "APROBADA" && (
                                     <button
@@ -275,6 +377,9 @@ const BandejaDevolucionesTelaPanel = () => {
                     );
                 })}
             </div>
+
+            {rechazando && <RechazoModal ev={rechazando} onCerrar={() => setRechazando(null)} onConfirmar={rechazar} />}
+            {ventanaConfirmar}
         </div>
     );
 };

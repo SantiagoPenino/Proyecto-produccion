@@ -3,16 +3,42 @@
 // Ruta /beneficios/predefinidos (menú Ventas). Una plantilla nueva o editada pasa
 // una vez por aprobación (Administración la publica directo); después cada cliente
 // la activa solo, cargando el saldo. No cambia ningún precio por sí sola.
+// Estética nueva (28/10/2026): encabezado, tabla clara (en el celular, una tarjeta por plantilla), ventanas claras en
+// z-[6000], radios → opciones/pastillas, fechas y selects del sistema, y las confirmaciones con la ventana del sistema
+// (antes window.confirm / window.prompt). EditorReglasBeneficio y EstadoBadge son compartidos: no se tocaron.
 // ─────────────────────────────────────────────────────────────────────────────
 import React, { useCallback, useEffect, useState } from 'react';
-import { BadgePercent, Plus, RefreshCw, Power, AlertTriangle, X, ShieldCheck } from 'lucide-react';
+import { BadgePercent, Plus, RefreshCw, Power, AlertTriangle, X, ShieldCheck, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import EditorReglasBeneficio from '../beneficios/EditorReglasBeneficio';
 import { benApi, sym, fmtN, vigenciaTexto, EstadoBadge, Cargando } from '../beneficios/beneficiosUi';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
+import useConfirmar from '../ui/useConfirmar';
 
 const formVacio = () => ({ id: null, nombre: '', descripcion: '', publico: false, monedaId: 1, carga: '', cargaEsMinimo: false, vigenciaModo: 'DIAS', vigenciaDias: 90, vigenciaHasta: '', reglas: [] });
-const inputCls = 'w-full border border-zinc-200 rounded-lg px-3 py-2 text-sm font-bold text-zinc-800 outline-none focus:border-cyan-500 bg-white';
-const lbl = 'text-[10px] font-black text-zinc-400 uppercase tracking-widest';
+const inputCls = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm font-semibold text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const lbl = 'block text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1.5';
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const TH = 'px-4 py-3 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const ACCION = 'px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 transition-colors whitespace-nowrap';
+const ACCION_PRINCIPAL = 'px-2.5 py-1.5 rounded-lg bg-brand-cyan text-white text-xs font-bold hover:bg-brand-cyan/90 transition-colors whitespace-nowrap';
+const CHECK = 'w-4 h-4 rounded border-zinc-300 accent-[#006E97] cursor-pointer';
+
+// En el celular, tarjetas en vez de la tabla de 8 columnas (una vista sola: no se dibujan las dos ocultando una)
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+  const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MQ_TABLA);
+    const cambio = () => setConTabla(mq.matches);
+    mq.addEventListener('change', cambio);
+    return () => mq.removeEventListener('change', cambio);
+  }, []);
+  return conTabla;
+}
 
 export default function BeneficiosPredefinidos() {
   const [lista, setLista] = useState([]);
@@ -38,6 +64,9 @@ export default function BeneficiosPredefinidos() {
   const [aprobBusy, setAprobBusy] = useState(false);
   const [aplicandoLote, setAplicandoLote] = useState(false);
   const f = (patch) => setForm(x => ({ ...x, ...patch }));
+  const [confirmar, ventanaConfirmar] = useConfirmar();
+  const conTabla = useConTabla();
+  const [rechazo, setRechazo] = useState(null); // { p, motivo }: rechazar una plantilla pide el motivo
 
   const cargar = useCallback(async () => {
     setLoading(true);
@@ -66,7 +95,7 @@ export default function BeneficiosPredefinidos() {
     const msg = accLote === 'desactivar'
       ? `Desactivar (pausar) ${candidatas.length} beneficio${candidatas.length !== 1 ? 's' : ''}: dejan de ofrecerse para activaciones nuevas. Los clientes que ya los activaron siguen igual, hasta agotar el saldo o vencer. ¿Confirmás?`
       : `Activar (reanudar) ${candidatas.length} beneficio${candidatas.length !== 1 ? 's' : ''}: vuelven a estar disponibles para activarse. ¿Confirmás?`;
-    if (!window.confirm(msg)) return;
+    if (!(await confirmar({ titulo: accLote === 'desactivar' ? 'Desactivar los marcados' : 'Activar los marcados', texto: msg, confirmar: accLote === 'desactivar' ? 'Desactivar' : 'Activar' }))) return;
     setAplicandoLote(true);
     let ok = 0, fallidos = [];
     for (const p of candidatas) {
@@ -111,9 +140,17 @@ export default function BeneficiosPredefinidos() {
       enviar: `Enviar "${p.nombre}" a aprobación. ¿Confirmás?`,
     };
     let body = {};
-    if (acc === 'rechazar') { const m = window.prompt(`${textos.rechazar}\n\nMotivo (obligatorio):`); if (m == null) return; if (!m.trim()) return toast.error('El motivo es obligatorio.'); body = { motivo: m }; }
-    else if (!window.confirm(textos[acc])) return;
+    if (acc === 'rechazar') { setRechazo({ p, motivo: '' }); return; }
+    const titulos = { aprobar: 'Aprobar y publicar', pausar: 'Pausar', reanudar: 'Volver a publicar', enviar: 'Enviar a aprobación' };
+    if (!(await confirmar({ titulo: titulos[acc], texto: textos[acc], confirmar: titulos[acc] }))) return;
     try { const r = await benApi.post(`/plantillas/${p.BenIdBeneficio}/${acc}`, body); toast.success(r.message || 'Listo'); cargar(); }
+    catch (e) { toast.error(e.message, { duration: 8000 }); }
+  };
+  // Rechazar: el motivo se pide en una ventana propia (antes, window.prompt). Mismo pedido a la API.
+  const confirmarRechazo = async () => {
+    const { p, motivo: m } = rechazo;
+    if (!m.trim()) return toast.error('El motivo es obligatorio.');
+    try { const r = await benApi.post(`/plantillas/${p.BenIdBeneficio}/rechazar`, { motivo: m }); toast.success(r.message || 'Listo'); setRechazo(null); cargar(); }
     catch (e) { toast.error(e.message, { duration: 8000 }); }
   };
 
@@ -121,7 +158,7 @@ export default function BeneficiosPredefinidos() {
     const msg = meta.activo
       ? 'APAGAR los beneficios en todo el sistema: ningún precio pactado aplica, no se consumen bolsas y no se activan beneficios. Los pactos y plantillas quedan como están. ¿Confirmás?'
       : 'ENCENDER los beneficios en todo el sistema: los precios pactados de los beneficios activos empiezan a aplicar y las bolsas se consumen. ¿Confirmás?';
-    if (!window.confirm(msg)) return;
+    if (!(await confirmar({ titulo: meta.activo ? 'Apagar los beneficios' : 'Encender los beneficios', texto: msg, confirmar: meta.activo ? 'Apagar' : 'Encender', peligro: meta.activo }))) return;
     try { const r = await benApi.post('/config', { activo: !meta.activo }); toast.success(r.message, { duration: 8000 }); cargar(); }
     catch (e) { toast.error(e.message); }
   };
@@ -139,205 +176,342 @@ export default function BeneficiosPredefinidos() {
     finally { setAprobBusy(false); }
   };
   const quitarAprob = async (a) => {
-    if (!window.confirm(`Quitar a ${a.nombre} de la lista de aprobadores autorizados. ${a.rol && ['admin', 'administracion'].includes(String(a.rol).toLowerCase()) ? `Igual va a poder seguir aprobando por su rol (${a.rol}).` : 'Deja de poder aprobar, salvo que tenga rol Admin o Administracion.'} ¿Confirmás?`)) return;
+    if (!(await confirmar({ titulo: 'Quitar aprobador', texto: `Quitar a ${a.nombre} de la lista de aprobadores autorizados. ${a.rol && ['admin', 'administracion'].includes(String(a.rol).toLowerCase()) ? `Igual va a poder seguir aprobando por su rol (${a.rol}).` : 'Deja de poder aprobar, salvo que tenga rol Admin o Administracion.'} ¿Confirmás?`, confirmar: 'Quitar', peligro: true }))) return;
     setAprobBusy(true);
     try { await benApi.post(`/aprobadores/${a.idUsuario}/quitar`, {}); toast.success(`${a.nombre} ya no está en la lista.`); await cargarAprobadores(); }
     catch (e) { toast.error(e.message, { duration: 8000 }); }
     finally { setAprobBusy(false); }
   };
 
+
+  // ── Piezas del render ───────────────────────────────────────────────────────
+  const chipQuien = (p) => (
+    <>
+      <span title={p.publico ? 'El cliente lo activa solo, desde el portal, sin aprobación.' : 'El cliente NO lo puede activar solo desde el portal. Caja/Administración sí puede activarlo directo para cualquier cliente, con o sin pacto de por medio.'}
+        className={`inline-flex px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wide border cursor-help whitespace-nowrap ${p.publico ? 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20' : 'bg-zinc-50 text-zinc-600 border-zinc-200'}`}>{p.publico ? 'Todos · portal' : 'Solo por pacto'}</span>
+      <span className="block text-[11px] text-zinc-400 mt-1">{p.activaciones ? `${p.activaciones} activación${p.activaciones !== 1 ? 'es' : ''} (${p.activacionesVivas} viva${p.activacionesVivas !== 1 ? 's' : ''})` : 'sin activaciones'}</span>
+    </>
+  );
+  const estadoCelda = (p) => (
+    <>
+      <EstadoBadge estado={p.estado} />
+      {p.estado === 'BORRADOR' && p.motivoRechazo && <span className="block text-[11px] text-brand-magenta mt-1">Rechazada: {p.motivoRechazo}</span>}
+    </>
+  );
+  const acciones = (p, alinear = 'justify-center') => (
+    <div className={`flex flex-wrap gap-1.5 ${alinear}`}>
+      <button type="button" onClick={() => editar(p)} className={ACCION}>Editar</button>
+      {p.estado === 'BORRADOR' && <button type="button" onClick={() => accion(p, 'enviar')} className={ACCION_PRINCIPAL}>Enviar a aprobación</button>}
+      {p.estado === 'PENDIENTE' && meta.puedeAprobar && <>
+        <button type="button" onClick={() => accion(p, 'aprobar')} className={ACCION_PRINCIPAL}>Aprobar y publicar</button>
+        <button type="button" onClick={() => accion(p, 'rechazar')} className={`${ACCION} hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`}>Rechazar</button>
+      </>}
+      {p.estado === 'PUBLICADA' && <button type="button" onClick={() => accion(p, 'pausar')} className={`${ACCION} hover:text-amber-700 hover:border-amber-300 hover:bg-amber-50`}>Pausar</button>}
+      {p.estado === 'PAUSADA' && <button type="button" onClick={() => accion(p, 'reanudar')} className={`${ACCION} hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50`}>Reanudar</button>}
+    </div>
+  );
+  const checkFila = (p) => marcable(p) && (
+    <input type="checkbox" checked={marcados.has(p.BenIdBeneficio)} onChange={() => toggleMarca(p.BenIdBeneficio)}
+      aria-label={`Marcar ${p.nombre}`}
+      title={p.estado === 'PUBLICADA' ? 'Marcar para desactivar (pausar) en lote' : 'Marcar para activar (reanudar) en lote'}
+      className={CHECK} />
+  );
+  // Opción elegible (reemplaza a los radios del navegador): llama al mismo f(...) que antes
+  const Opcion = ({ elegida, onElegir, children, className = '' }) => (
+    <button type="button" role="radio" aria-checked={elegida} onClick={onElegir}
+      className={`flex items-start gap-2.5 text-left rounded-xl border px-3 py-2.5 transition-colors ${elegida ? 'border-brand-cyan/50 bg-brand-cyan/5' : 'border-zinc-200 bg-white hover:bg-zinc-50'} ${className}`}>
+      <span className={`mt-0.5 w-4 h-4 rounded-full border-2 shrink-0 flex items-center justify-center ${elegida ? 'border-brand-cyan' : 'border-zinc-300'}`}>
+        {elegida && <span className="w-2 h-2 rounded-full bg-brand-cyan" />}
+      </span>
+      <span className="min-w-0 flex-1">{children}</span>
+    </button>
+  );
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100">
-      <div className="max-w-7xl mx-auto px-4 py-8">
-        <p className="text-[11px] text-zinc-500 mb-2">Vista 360 · Vendedores › pestaña Beneficios › <strong className="text-zinc-800">Beneficios predefinidos</strong></p>
-        <div className="flex items-center justify-between mb-6 gap-4 flex-wrap">
-          <div className="flex items-center gap-3">
-            <div className="w-10 h-10 bg-cyan-700 rounded-xl flex items-center justify-center shadow-lg"><BadgePercent size={20} className="text-white" /></div>
-            <div>
-              <h1 className="text-xl font-black text-zinc-900">Beneficios predefinidos</h1>
-              <p className="text-xs text-zinc-500">Plantillas de la empresa. Una plantilla nueva pasa una vez por aprobación; después cada cliente la activa solo, cargando el saldo. No cambia ningún precio por sí sola.</p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {meta.puedeAprobar && (
-              <button type="button" onClick={toggleInterruptor} title="Interruptor general de beneficios (ConfiguracionGlobal.BENEFICIOS_ACTIVOS)"
-                className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border shadow-sm ${meta.activo ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
-                <Power size={13} /> Beneficios {meta.activo ? 'ENCENDIDOS' : 'APAGADOS'} · {meta.activo ? 'apagar' : 'encender'}
-              </button>
-            )}
-            {meta.puedeAprobar && (
-              <button type="button" onClick={abrirAprobPanel} title="Quién más, además de Admin y Administración, puede aprobar"
-                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold border shadow-sm bg-white border-zinc-200 text-zinc-700 hover:bg-zinc-50">
-                <ShieldCheck size={13} /> Quién aprueba
-              </button>
-            )}
-            <button type="button" onClick={cargar} className="inline-flex items-center gap-2 bg-white border border-zinc-200 hover:bg-zinc-50 text-zinc-700 font-bold text-xs px-4 py-2 rounded-xl shadow-sm"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /> Actualizar</button>
-            <button type="button" onClick={() => setForm(formVacio())} className="inline-flex items-center gap-2 bg-cyan-700 hover:bg-cyan-800 text-white font-black text-sm px-5 py-2 rounded-xl shadow-md"><Plus size={16} /> Nuevo beneficio predefinido</button>
-          </div>
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
+      <p className="text-[11px] text-zinc-400 -mb-2">Vista 360 · Vendedores › pestaña Beneficios › <strong className="text-zinc-700">Beneficios predefinidos</strong></p>
+
+      {/* Encabezado */}
+      <div className="flex flex-wrap items-center gap-3">
+        <BadgePercent size={30} className="text-brand-cyan shrink-0" />
+        <div className="min-w-[240px] flex-1">
+          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Beneficios predefinidos</h1>
+          <p className="text-sm text-zinc-500 mt-1">Plantillas de la empresa. Una plantilla nueva pasa una vez por aprobación; después cada cliente la activa solo, cargando el saldo. No cambia ningún precio por sí sola.</p>
         </div>
-        {!meta.activo && !loading && (
-          <div className="mb-4 flex items-center gap-2 text-[12px] text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2"><AlertTriangle size={14} /> Beneficios apagados: se pueden crear y aprobar plantillas, pero ningún cliente puede activarlas hasta que Administración encienda el interruptor.</div>
-        )}
+        <div className="flex flex-wrap items-center gap-2 w-full lg:w-auto lg:ml-auto">
+          {meta.puedeAprobar && (
+            <button type="button" onClick={toggleInterruptor} title="Interruptor general de beneficios (ConfiguracionGlobal.BENEFICIOS_ACTIVOS)"
+              className={`inline-flex items-center gap-2 px-3 py-2 rounded-xl text-sm font-bold border transition-colors ${meta.activo ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100' : 'bg-amber-50 border-amber-200 text-amber-800 hover:bg-amber-100'}`}>
+              <Power size={15} /> Beneficios {meta.activo ? 'ENCENDIDOS' : 'APAGADOS'} · {meta.activo ? 'apagar' : 'encender'}
+            </button>
+          )}
+          {meta.puedeAprobar && (
+            <button type="button" onClick={abrirAprobPanel} title="Quién más, además de Admin y Administración, puede aprobar" className={BTN_SECUNDARIO}>
+              <ShieldCheck size={15} className="text-brand-cyan" /> Quién aprueba
+            </button>
+          )}
+          <button type="button" onClick={cargar} className={BTN_SECUNDARIO}><RefreshCw size={15} className={`text-brand-cyan ${loading ? 'animate-spin' : ''}`} /> Actualizar</button>
+          <button type="button" onClick={() => setForm(formVacio())} className={BTN_PRINCIPAL}><Plus size={16} /> Nuevo beneficio predefinido</button>
+        </div>
+      </div>
 
-        {marcados.size > 0 && (
-          <div className="mb-3 flex items-center gap-3 flex-wrap bg-cyan-50 border border-cyan-200 rounded-xl px-4 py-2.5">
-            <span className="text-xs font-black text-cyan-900">{marcados.size} marcado{marcados.size !== 1 ? 's' : ''}</span>
-            <button type="button" disabled={aplicandoLote} onClick={() => accionLote('desactivar')}
-              className="px-3 py-1.5 text-[11px] font-bold text-amber-800 bg-white border border-amber-200 rounded-lg disabled:opacity-50">Desactivar (pausar) los marcados</button>
-            <button type="button" disabled={aplicandoLote} onClick={() => accionLote('activar')}
-              className="px-3 py-1.5 text-[11px] font-bold text-emerald-700 bg-white border border-emerald-200 rounded-lg disabled:opacity-50">Activar (reanudar) los marcados</button>
-            <button type="button" disabled={aplicandoLote} onClick={limpiarMarcas} className="ml-auto text-[11px] font-bold text-cyan-700 underline">Quitar marca a todos</button>
-          </div>
-        )}
-        <div className="grid grid-cols-1 gap-5 items-start">
-          <div className="bg-white border border-zinc-200 rounded-2xl shadow-sm overflow-hidden">
-            {loading ? <Cargando /> : (
-              <div className="overflow-x-auto"><table className="w-full text-sm">
-                <thead><tr className="bg-zinc-50 border-b border-zinc-200 text-[10px] font-black text-zinc-400 uppercase tracking-widest">
-                  <th className="px-4 py-3 text-center w-10">
-                    <input type="checkbox" title="Marcar todos los publicados/pausados de esta lista" disabled={marcablesVisibles.length === 0}
-                      checked={marcablesVisibles.length > 0 && marcados.size === marcablesVisibles.length}
-                      onChange={toggleMarcaTodas} className="w-3.5 h-3.5 accent-cyan-700" />
-                  </th>
-                  <th className="px-4 py-3 text-left">Beneficio y alcance</th><th className="px-4 py-3 text-left">Precio pactado</th><th className="px-4 py-3 text-left">Carga que lo activa</th><th className="px-4 py-3 text-left">Vigencia</th><th className="px-4 py-3 text-left">Quién lo activa</th><th className="px-4 py-3 text-left">Estado</th><th className="px-4 py-3 text-center">Acciones</th>
-                </tr></thead>
-                <tbody>
-                  {lista.map(p => (
-                    <tr key={p.BenIdBeneficio} className={`border-b border-zinc-100 ${form?.id === p.BenIdBeneficio ? 'bg-cyan-50/60' : ''} ${marcados.has(p.BenIdBeneficio) ? 'bg-cyan-50/40' : ''}`}>
-                      <td className="px-4 py-3 align-top text-center">
-                        {marcable(p) && <input type="checkbox" checked={marcados.has(p.BenIdBeneficio)} onChange={() => toggleMarca(p.BenIdBeneficio)}
-                          title={p.estado === 'PUBLICADA' ? 'Marcar para desactivar (pausar) en lote' : 'Marcar para activar (reanudar) en lote'}
-                          className="w-3.5 h-3.5 accent-cyan-700" />}
-                      </td>
-                      <td className="px-4 py-3 align-top"><span className="font-black text-zinc-900">{p.nombre}</span>{p.descripcion && <span className="block text-[11px] text-zinc-500">{p.descripcion}</span>}</td>
-                      <td className="px-4 py-3 align-top text-xs text-zinc-700">{(p.reglasTexto || []).map((t, i) => <span key={i} className="block">{t}</span>)}</td>
-                      <td className="px-4 py-3 align-top"><span className="font-bold">{sym(p.monedaId)} {fmtN(p.carga)}</span><span className="block text-[11px] text-zinc-500">{p.cargaEsMinimo ? 'monto mínimo' : 'monto fijo'}</span></td>
-                      <td className="px-4 py-3 align-top text-xs">{vigenciaTexto(p)}</td>
-                      <td className="px-4 py-3 align-top">
-                        <span title={p.publico ? 'El cliente lo activa solo, desde el portal, sin aprobación.' : 'El cliente NO lo puede activar solo desde el portal. Caja/Administración sí puede activarlo directo para cualquier cliente, con o sin pacto de por medio.'}
-                          className={`inline-flex px-2 py-0.5 rounded-full text-[10px] font-black uppercase tracking-wider border cursor-help ${p.publico ? 'bg-sky-50 text-sky-700 border-sky-200' : 'bg-violet-50 text-violet-700 border-violet-200'}`}>{p.publico ? 'Todos · portal' : 'Solo por pacto'}</span>
-                        <span className="block text-[11px] text-zinc-500 mt-1">{p.activaciones ? `${p.activaciones} activación${p.activaciones !== 1 ? 'es' : ''} (${p.activacionesVivas} viva${p.activacionesVivas !== 1 ? 's' : ''})` : 'sin activaciones'}</span>
-                      </td>
-                      <td className="px-4 py-3 align-top"><EstadoBadge estado={p.estado} />{p.estado === 'BORRADOR' && p.motivoRechazo && <span className="block text-[11px] text-rose-600 mt-1">Rechazada: {p.motivoRechazo}</span>}</td>
-                      <td className="px-4 py-3 align-top">
-                        <div className="flex flex-wrap gap-1.5 justify-center">
-                          <button type="button" onClick={() => editar(p)} className="px-2.5 py-1 text-[11px] font-bold text-zinc-700 bg-white border border-zinc-200 rounded-lg">Editar</button>
-                          {p.estado === 'BORRADOR' && <button type="button" onClick={() => accion(p, 'enviar')} className="px-2.5 py-1 text-[11px] font-bold text-white bg-cyan-700 rounded-lg">Enviar a aprobación</button>}
-                          {p.estado === 'PENDIENTE' && meta.puedeAprobar && <><button type="button" onClick={() => accion(p, 'aprobar')} className="px-2.5 py-1 text-[11px] font-bold text-white bg-emerald-600 rounded-lg">Aprobar y publicar</button><button type="button" onClick={() => accion(p, 'rechazar')} className="px-2.5 py-1 text-[11px] font-bold text-rose-700 bg-white border border-rose-200 rounded-lg">Rechazar</button></>}
-                          {p.estado === 'PUBLICADA' && <button type="button" onClick={() => accion(p, 'pausar')} className="px-2.5 py-1 text-[11px] font-bold text-amber-800 bg-white border border-amber-200 rounded-lg">Pausar</button>}
-                          {p.estado === 'PAUSADA' && <button type="button" onClick={() => accion(p, 'reanudar')} className="px-2.5 py-1 text-[11px] font-bold text-emerald-700 bg-white border border-emerald-200 rounded-lg">Reanudar</button>}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                  {lista.length === 0 && <tr><td colSpan={8} className="px-4 py-10 text-center text-zinc-400">Todavía no hay beneficios predefinidos. Creá el primero con el botón de arriba.</td></tr>}
-                </tbody>
-              </table></div>
-            )}
-            <div className="px-4 py-2.5 text-[11px] text-zinc-500 bg-zinc-50 border-t border-zinc-200">Pausar una plantilla no toca los beneficios ya activados: esos siguen hasta agotarse o vencer. Marcá varias con el tilde de la izquierda para activarlas o desactivarlas juntas.</div>
-          </div>
+      {!meta.activo && !loading && (
+        <div className="flex items-start gap-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-4 py-2.5"><AlertTriangle size={15} className="shrink-0 mt-px" /> Beneficios apagados: se pueden crear y aprobar plantillas, pero ningún cliente puede activarlas hasta que Administración encienda el interruptor.</div>
+      )}
 
-          {form && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setForm(null)}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl mx-4 overflow-hidden max-h-[90vh] flex flex-col">
-              <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-cyan-700 to-cyan-900 text-white shrink-0">
-                <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest opacity-80">{form.id ? 'Editar beneficio predefinido' : 'Nuevo beneficio predefinido'}</p>
-                  <h2 className="text-lg font-black mt-0.5">{form.nombre || 'Sin nombre'}</h2>
+      {marcados.size > 0 && (
+        <div className="flex items-center gap-2 flex-wrap bg-brand-cyan/5 border border-brand-cyan/20 rounded-xl px-4 py-2.5">
+          <span className="text-xs font-black text-brand-cyan mr-1">{marcados.size} marcado{marcados.size !== 1 ? 's' : ''}</span>
+          <button type="button" disabled={aplicandoLote} onClick={() => accionLote('desactivar')}
+            className={`${ACCION} hover:text-amber-700 hover:border-amber-300 hover:bg-amber-50 disabled:opacity-50`}>Desactivar (pausar) los marcados</button>
+          <button type="button" disabled={aplicandoLote} onClick={() => accionLote('activar')}
+            className={`${ACCION} hover:text-emerald-700 hover:border-emerald-300 hover:bg-emerald-50 disabled:opacity-50`}>Activar (reanudar) los marcados</button>
+          <button type="button" disabled={aplicandoLote} onClick={limpiarMarcas} className="ml-auto text-xs font-bold text-brand-cyan hover:underline">Quitar marca a todos</button>
+        </div>
+      )}
+
+      {!conTabla ? (
+        <div className="flex flex-col gap-2.5">
+          {loading ? <div className={CARD}><Cargando /></div> : lista.length === 0 ? (
+            <div className={`${CARD} px-4 py-12 flex flex-col items-center text-center`}>
+              <BadgePercent size={40} className="mb-3 text-brand-cyan" />
+              <span className="text-sm font-bold text-zinc-700">Todavía no hay beneficios predefinidos.</span>
+              <span className="text-xs text-zinc-400 mt-1">Creá el primero con el botón de arriba.</span>
+            </div>
+          ) : lista.map(p => (
+            <div key={p.BenIdBeneficio} className={`${CARD} p-3.5 flex flex-col gap-2.5 ${marcados.has(p.BenIdBeneficio) ? 'ring-2 ring-brand-cyan/20' : ''}`}>
+              <div className="flex items-start gap-2.5">
+                {checkFila(p) && <div className="pt-0.5">{checkFila(p)}</div>}
+                <div className="min-w-0 flex-1">
+                  <div className="font-black text-zinc-900">{p.nombre}</div>
+                  {p.descripcion && <div className="text-[11px] text-zinc-500">{p.descripcion}</div>}
                 </div>
-                <button type="button" onClick={() => setForm(null)} className="p-1.5 hover:bg-white/20 rounded-lg shrink-0"><X size={18} /></button>
+                <div className="shrink-0">{estadoCelda(p)}</div>
               </div>
-              <div className="px-6 py-5 space-y-4 overflow-y-auto">
+              <div className="text-xs text-zinc-700 bg-zinc-50 rounded-xl px-3 py-2">{(p.reglasTexto || []).map((t, i) => <span key={i} className="block">{t}</span>)}</div>
+              <div className="grid grid-cols-2 gap-2 text-xs">
+                <div><span className="block text-[10px] font-black uppercase tracking-widest text-zinc-400">Carga</span><span className="font-bold tabular-nums">{sym(p.monedaId)} {fmtN(p.carga)}</span> <span className="text-zinc-400">{p.cargaEsMinimo ? 'mínimo' : 'fijo'}</span></div>
+                <div><span className="block text-[10px] font-black uppercase tracking-widest text-zinc-400">Vigencia</span>{vigenciaTexto(p)}</div>
+              </div>
+              <div>{chipQuien(p)}</div>
+              <div className="pt-2.5 border-t border-zinc-100">{acciones(p, 'justify-start')}</div>
+            </div>
+          ))}
+          <p className="text-[11px] text-zinc-400 px-1">Pausar una plantilla no toca los beneficios ya activados: esos siguen hasta agotarse o vencer. Marcá varias con el tilde para activarlas o desactivarlas juntas.</p>
+        </div>
+      ) : (
+        <div className={`${CARD} overflow-hidden`}>
+          {loading ? <Cargando /> : (
+            <div className="overflow-x-auto"><table className="w-full text-sm text-left">
+              <thead className="bg-zinc-50 border-b border-zinc-200"><tr>
+                <th className={`${TH} text-center w-10`}>
+                  <input type="checkbox" title="Marcar todos los publicados/pausados de esta lista" aria-label="Marcar todos" disabled={marcablesVisibles.length === 0}
+                    checked={marcablesVisibles.length > 0 && marcados.size === marcablesVisibles.length}
+                    onChange={toggleMarcaTodas} className={CHECK} />
+                </th>
+                <th className={TH}>Beneficio y alcance</th><th className={TH}>Precio pactado</th><th className={TH}>Carga que lo activa</th><th className={TH}>Vigencia</th><th className={TH}>Quién lo activa</th><th className={TH}>Estado</th><th className={`${TH} text-center`}>Acciones</th>
+              </tr></thead>
+              <tbody className="divide-y divide-zinc-100">
+                {lista.map(p => (
+                  <tr key={p.BenIdBeneficio} className={`transition-colors ${form?.id === p.BenIdBeneficio || marcados.has(p.BenIdBeneficio) ? 'bg-brand-cyan/5' : 'hover:bg-zinc-50'}`}>
+                    <td className="px-4 py-3 align-top text-center">{checkFila(p)}</td>
+                    <td className="px-4 py-3 align-top"><span className="font-black text-zinc-900">{p.nombre}</span>{p.descripcion && <span className="block text-[11px] text-zinc-500">{p.descripcion}</span>}</td>
+                    <td className="px-4 py-3 align-top text-xs text-zinc-700">{(p.reglasTexto || []).map((t, i) => <span key={i} className="block">{t}</span>)}</td>
+                    <td className="px-4 py-3 align-top whitespace-nowrap"><span className="font-bold text-zinc-900 tabular-nums">{sym(p.monedaId)} {fmtN(p.carga)}</span><span className="block text-[11px] text-zinc-400">{p.cargaEsMinimo ? 'monto mínimo' : 'monto fijo'}</span></td>
+                    <td className="px-4 py-3 align-top text-xs">{vigenciaTexto(p)}</td>
+                    <td className="px-4 py-3 align-top">{chipQuien(p)}</td>
+                    <td className="px-4 py-3 align-top">{estadoCelda(p)}</td>
+                    <td className="px-4 py-3 align-top">{acciones(p)}</td>
+                  </tr>
+                ))}
+                {lista.length === 0 && (
+                  <tr><td colSpan={8} className="px-4 py-14">
+                    <div className="flex flex-col items-center text-center">
+                      <BadgePercent size={40} className="mb-3 text-brand-cyan" />
+                      <span className="text-sm font-bold text-zinc-700">Todavía no hay beneficios predefinidos.</span>
+                      <span className="text-xs text-zinc-400 mt-1">Creá el primero con el botón de arriba.</span>
+                    </div>
+                  </td></tr>
+                )}
+              </tbody>
+            </table></div>
+          )}
+          <div className="px-4 py-2.5 text-[11px] text-zinc-400 border-t border-zinc-100">Pausar una plantilla no toca los beneficios ya activados: esos siguen hasta agotarse o vencer. Marcá varias con el tilde de la izquierda para activarlas o desactivarlas juntas.</div>
+        </div>
+      )}
+
+      {/* Nuevo / editar beneficio predefinido */}
+      {form && (
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setForm(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl overflow-hidden max-h-[92vh] flex flex-col">
+            <div className="px-6 py-4 flex items-start justify-between gap-3 border-b border-zinc-100 shrink-0">
+              <div className="flex items-start gap-3 min-w-0">
+                <BadgePercent size={24} className="text-brand-cyan shrink-0 mt-0.5" />
+                <div className="min-w-0">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">{form.id ? 'Editar beneficio predefinido' : 'Nuevo beneficio predefinido'}</p>
+                  <h2 className="text-lg font-black text-zinc-900 truncate">{form.nombre || 'Sin nombre'}</h2>
+                </div>
+              </div>
+              <button type="button" onClick={() => setForm(null)} aria-label="Cerrar"
+                className="shrink-0 text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors"><X size={18} /></button>
+            </div>
+            <div className="px-6 py-5 space-y-5 overflow-y-auto">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div><label className={lbl}>Nombre (así lo ve el cliente)</label><input value={form.nombre} onChange={e => f({ nombre: e.target.value })} className={inputCls} /></div>
                 <div><label className={lbl}>Descripción corta (opcional)</label><input value={form.descripcion} onChange={e => f({ descripcion: e.target.value })} className={inputCls} /></div>
               </div>
               <div>
                 <label className={lbl}>¿Quién puede activarlo?</label>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
-                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${form.publico ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white'}`}><input type="radio" checked={form.publico} onChange={() => f({ publico: true })} className="mt-1" /><span><span className="block text-sm font-bold text-slate-800">Todos los clientes, desde el portal</span><span className="block text-[11px] text-slate-500">Aparece en «Beneficios para vos» y cada activación no pasa por aprobación.</span></span></label>
-                  <label className={`flex items-start gap-3 rounded-xl border px-3 py-2.5 cursor-pointer ${!form.publico ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white'}`}><input type="radio" checked={!form.publico} onChange={() => f({ publico: false })} className="mt-1" /><span><span className="block text-sm font-bold text-slate-800">Solo por pacto</span><span className="block text-[11px] text-slate-500">El cliente no lo puede activar solo desde el portal: el vendedor lo usa de base para pactarlo y eso pasa por aprobación. Caja/Administración sí puede activarlo directo para cualquier cliente sin pactarlo, desde Venta de saldo.</span></span></label>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2" role="radiogroup">
+                  <Opcion elegida={form.publico} onElegir={() => f({ publico: true })}>
+                    <span className="block text-sm font-bold text-zinc-800">Todos los clientes, desde el portal</span>
+                    <span className="block text-[11px] text-zinc-500">Aparece en «Beneficios para vos» y cada activación no pasa por aprobación.</span>
+                  </Opcion>
+                  <Opcion elegida={!form.publico} onElegir={() => f({ publico: false })}>
+                    <span className="block text-sm font-bold text-zinc-800">Solo por pacto</span>
+                    <span className="block text-[11px] text-zinc-500">El cliente no lo puede activar solo desde el portal: el vendedor lo usa de base para pactarlo y eso pasa por aprobación. Caja/Administración sí puede activarlo directo para cualquier cliente sin pactarlo, desde Venta de saldo.</span>
+                  </Opcion>
                 </div>
               </div>
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                <div><label className={lbl}>Moneda</label><div className="grid grid-cols-2 gap-2 mt-1">{[{ v: 1, l: '$ pesos' }, { v: 2, l: 'US$ dólares' }].map(m => <button type="button" key={m.v} onClick={() => f({ monedaId: m.v })} className={`px-3 py-2 rounded-lg text-xs font-semibold border ${form.monedaId === m.v ? 'bg-cyan-700 text-white border-cyan-700' : 'bg-white text-slate-600 border-slate-200'}`}>{m.l}</button>)}</div></div>
-                <div><label className={lbl}>Carga que lo activa ({sym(form.monedaId)})</label><input type="number" step="0.01" min="0" value={form.carga} onChange={e => f({ carga: e.target.value })} className={`${inputCls} font-mono`} /></div>
+                <div>
+                  <label className={lbl}>Moneda</label>
+                  <div className="grid grid-cols-2 rounded-xl border border-zinc-200 bg-white p-1 gap-1" role="radiogroup">
+                    {[{ v: 1, l: '$ pesos' }, { v: 2, l: 'US$ dólares' }].map(m => (
+                      <button type="button" key={m.v} role="radio" aria-checked={form.monedaId === m.v} onClick={() => f({ monedaId: m.v })}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${form.monedaId === m.v ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>{m.l}</button>
+                    ))}
+                  </div>
+                </div>
+                <div><label className={lbl}>Carga que lo activa ({sym(form.monedaId)})</label><input type="number" step="0.01" min="0" value={form.carga} onChange={e => f({ carga: e.target.value })} className={`${inputCls} tabular-nums`} /></div>
                 <div>
                   <label className={lbl}>Tipo de carga</label>
-                  <div className="flex flex-col gap-1.5 mt-2 text-xs text-slate-600">
-                    <label className="flex items-center gap-1.5"><input type="radio" checked={!form.cargaEsMinimo} onChange={() => f({ cargaEsMinimo: false })} /> Monto fijo</label>
-                    <label className="flex items-center gap-1.5"><input type="radio" checked={form.cargaEsMinimo} onChange={() => f({ cargaEsMinimo: true })} /> Monto mínimo (puede cargar más)</label>
+                  <div className="grid grid-cols-2 rounded-xl border border-zinc-200 bg-white p-1 gap-1" role="radiogroup">
+                    {[{ v: false, l: 'Monto fijo' }, { v: true, l: 'Monto mínimo' }].map(o => (
+                      <button type="button" key={String(o.v)} role="radio" aria-checked={form.cargaEsMinimo === o.v} onClick={() => f({ cargaEsMinimo: o.v })}
+                        title={o.v ? 'Puede cargar más' : ''}
+                        className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${form.cargaEsMinimo === o.v ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>{o.l}</button>
+                    ))}
                   </div>
+                  {form.cargaEsMinimo && <p className="text-[11px] text-zinc-400 mt-1">El cliente puede cargar más.</p>}
                 </div>
               </div>
               <div>
                 <label className={lbl}>Vigencia</label>
-                <div className="flex flex-wrap gap-2 mt-1">
-                  <label className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold ${form.vigenciaModo === 'DIAS' ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white text-slate-600'}`}><input type="radio" checked={form.vigenciaModo === 'DIAS'} onChange={() => f({ vigenciaModo: 'DIAS' })} /> Días desde la activación <input type="number" min="1" value={form.vigenciaDias} onChange={e => f({ vigenciaDias: e.target.value, vigenciaModo: 'DIAS' })} className="w-14 border border-slate-200 rounded px-1 py-0.5 text-center" /></label>
-                  <label className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold ${form.vigenciaModo === 'FECHA' ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white text-slate-600'}`}><input type="radio" checked={form.vigenciaModo === 'FECHA'} onChange={() => f({ vigenciaModo: 'FECHA' })} /> Hasta una fecha <input type="date" value={form.vigenciaHasta} onChange={e => f({ vigenciaHasta: e.target.value, vigenciaModo: 'FECHA' })} className="border border-slate-200 rounded px-1 py-0.5" /></label>
-                  <label className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-xs font-bold ${form.vigenciaModo === 'AGOTAR' ? 'border-cyan-400 bg-cyan-50' : 'border-slate-200 bg-white text-slate-600'}`}><input type="radio" checked={form.vigenciaModo === 'AGOTAR'} onChange={() => f({ vigenciaModo: 'AGOTAR' })} /> Hasta agotar el saldo</label>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2" role="radiogroup">
+                  <Opcion elegida={form.vigenciaModo === 'DIAS'} onElegir={() => f({ vigenciaModo: 'DIAS' })}>
+                    <span className="block text-sm font-bold text-zinc-800">Días desde la activación</span>
+                  </Opcion>
+                  <Opcion elegida={form.vigenciaModo === 'FECHA'} onElegir={() => f({ vigenciaModo: 'FECHA' })}>
+                    <span className="block text-sm font-bold text-zinc-800">Hasta una fecha</span>
+                  </Opcion>
+                  <Opcion elegida={form.vigenciaModo === 'AGOTAR'} onElegir={() => f({ vigenciaModo: 'AGOTAR' })}>
+                    <span className="block text-sm font-bold text-zinc-800">Hasta agotar el saldo</span>
+                  </Opcion>
                 </div>
+                {form.vigenciaModo === 'DIAS' && (
+                  <div className="mt-2 flex items-center gap-2 text-sm text-zinc-600">
+                    <input type="number" min="1" value={form.vigenciaDias} onChange={e => f({ vigenciaDias: e.target.value, vigenciaModo: 'DIAS' })} aria-label="Días de vigencia" className={`${inputCls.replace('w-full ', '')} w-24 text-center tabular-nums`} /> días desde que el cliente lo activa
+                  </div>
+                )}
+                {form.vigenciaModo === 'FECHA' && (
+                  <div className="mt-2 w-56">
+                    <SelectorFecha className="w-full" value={form.vigenciaHasta} onChange={e => f({ vigenciaHasta: e.target.value, vigenciaModo: 'FECHA' })} aria-label="Vigente hasta" />
+                  </div>
+                )}
               </div>
               <div>
                 <label className={lbl}>Alcance y precio pactado</label>
-                <div className="mt-1"><EditorReglasBeneficio value={form.reglas} onChange={reglas => f({ reglas })} monedaId={form.monedaId} /></div>
-                <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mt-2">Mientras el beneficio esté vigente y tenga saldo, estos precios pisan la tarifa del cliente, común o especial. Al agotarse o vencer, el cliente vuelve solo a su tarifa.</p>
-              </div>
-              <div className="flex gap-2 pt-1">
-                <button type="button" onClick={() => setForm(null)} className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-slate-100 text-slate-600 rounded-lg">Cancelar</button>
-                <button type="button" onClick={guardar} disabled={saving} className="flex-1 px-4 py-2.5 text-xs font-bold uppercase tracking-widest bg-cyan-700 text-white rounded-lg disabled:opacity-50">{saving ? 'Guardando…' : meta.puedeAprobar ? 'Guardar y publicar' : 'Guardar y enviar a aprobación'}</button>
-              </div>
+                <div><EditorReglasBeneficio value={form.reglas} onChange={reglas => f({ reglas })} monedaId={form.monedaId} /></div>
+                <p className="text-[11px] text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2 mt-2">Mientras el beneficio esté vigente y tenga saldo, estos precios pisan la tarifa del cliente, común o especial. Al agotarse o vencer, el cliente vuelve solo a su tarifa.</p>
               </div>
             </div>
+            <div className="px-6 py-3 border-t border-zinc-100 flex justify-end gap-2 shrink-0">
+              <button type="button" onClick={() => setForm(null)} className={BTN_SECUNDARIO}>Cancelar</button>
+              <button type="button" onClick={guardar} disabled={saving} className={BTN_PRINCIPAL}>
+                {saving ? <><Loader2 size={15} className="animate-spin" /> Guardando…</> : meta.puedeAprobar ? 'Guardar y publicar' : 'Guardar y enviar a aprobación'}
+              </button>
+            </div>
           </div>
-          )}
         </div>
+      )}
 
-        {aprobPanel && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setAprobPanel(false)}>
-            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 overflow-hidden max-h-[85vh] flex flex-col">
-              <div className="px-6 py-4 flex items-center justify-between bg-gradient-to-r from-cyan-700 to-cyan-900 text-white shrink-0">
+      {/* Rechazar una plantilla: pide el motivo (antes, la ventana del navegador) */}
+      {rechazo && (
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setRechazo(null)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden">
+            <div className="px-6 py-4 border-b border-zinc-100">
+              <h2 className="text-lg font-black text-zinc-900">Rechazar «{rechazo.p.nombre}»</h2>
+              <p className="text-sm text-zinc-500 mt-0.5">La plantilla vuelve a borrador.</p>
+            </div>
+            <div className="px-6 py-5">
+              <label htmlFor="motivo-rechazo" className={lbl}>Motivo (obligatorio)</label>
+              <textarea id="motivo-rechazo" autoFocus rows={3} value={rechazo.motivo} onChange={e => setRechazo(r => ({ ...r, motivo: e.target.value }))}
+                className={`${inputCls} resize-none`} />
+            </div>
+            <div className="px-6 py-3 border-t border-zinc-100 flex justify-end gap-2">
+              <button type="button" onClick={() => setRechazo(null)} className={BTN_SECUNDARIO}>Cancelar</button>
+              <button type="button" onClick={confirmarRechazo}
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-magenta text-white text-sm font-bold hover:bg-brand-magenta/90 transition-colors">Rechazar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Quién más puede aprobar */}
+      {aprobPanel && (
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setAprobPanel(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden max-h-[88vh] flex flex-col">
+            <div className="px-6 py-4 flex items-start justify-between gap-3 border-b border-zinc-100 shrink-0">
+              <div className="flex items-start gap-3">
+                <ShieldCheck size={22} className="text-brand-cyan shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Además de Admin y Administración</p>
-                  <h2 className="text-lg font-black mt-0.5">Quién más puede aprobar</h2>
+                  <p className="text-[10px] font-black uppercase tracking-widest text-zinc-400">Además de Admin y Administración</p>
+                  <h2 className="text-lg font-black text-zinc-900">Quién más puede aprobar</h2>
                 </div>
-                <button type="button" onClick={() => setAprobPanel(false)} className="p-1.5 hover:bg-white/20 rounded-lg shrink-0"><X size={18} /></button>
               </div>
-              <div className="px-6 py-5 space-y-4 overflow-y-auto">
-                <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                  Los roles <strong>Admin</strong> y <strong>Administracion</strong> siempre pueden aprobar/rechazar pactos y plantillas, pausar, cerrar bolsas y prender o apagar el interruptor general. Acá agregás, uno por uno, a cualquier otra persona puntual que también deba poder hacerlo, sin cambiarle el rol.
-                </p>
-                <div>
-                  <label className={lbl}>Agregar a alguien</label>
-                  <div className="flex gap-2 mt-1">
-                    <select value={candidatoSel} onChange={e => setCandidatoSel(e.target.value)} className="flex-1 border border-zinc-200 rounded-lg px-2 py-2 text-sm bg-white">
+              <button type="button" onClick={() => setAprobPanel(false)} aria-label="Cerrar"
+                className="shrink-0 text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors"><X size={18} /></button>
+            </div>
+            <div className="px-6 py-5 space-y-4 overflow-y-auto">
+              <p className="text-[11px] text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2">
+                Los roles <strong>Admin</strong> y <strong>Administracion</strong> siempre pueden aprobar/rechazar pactos y plantillas, pausar, cerrar bolsas y prender o apagar el interruptor general. Acá agregás, uno por uno, a cualquier otra persona puntual que también deba poder hacerlo, sin cambiarle el rol.
+              </p>
+              <div>
+                <label className={lbl}>Agregar a alguien</label>
+                <div className="flex gap-2">
+                  <div className="flex-1 min-w-0">
+                    <Selector className="w-full" value={String(candidatoSel)} onChange={e => setCandidatoSel(e.target.value)} aria-label="Persona" anchoLista={280}>
                       <option value="">— Elegir una persona —</option>
-                      {candidatos.map(c => <option key={c.idUsuario} value={c.idUsuario}>{c.nombre}{c.rol ? ` (${c.rol})` : ''}</option>)}
-                    </select>
-                    <button type="button" onClick={agregarAprob} disabled={!candidatoSel || aprobBusy} className="px-4 py-2 text-xs font-bold text-white bg-cyan-700 rounded-lg disabled:opacity-50 shrink-0">Agregar</button>
+                      {candidatos.map(c => <option key={c.idUsuario} value={String(c.idUsuario)}>{c.nombre}{c.rol ? ` (${c.rol})` : ''}</option>)}
+                    </Selector>
                   </div>
-                  {candidatos.length === 0 && <p className="text-[11px] text-zinc-400 mt-1">No quedan usuarios internos activos para agregar (o ya están todos en la lista, o ya aprueban por su rol).</p>}
+                  <button type="button" onClick={agregarAprob} disabled={!candidatoSel || aprobBusy} className={`${BTN_PRINCIPAL} shrink-0 py-2.5`}>Agregar</button>
                 </div>
-                <div>
-                  <label className={lbl}>Autorizados a mano ({aprobadores.length})</label>
-                  {aprobadores.length === 0 ? (
-                    <p className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 mt-1">Nadie todavía. Solo Admin y Administracion aprueban por ahora.</p>
-                  ) : (
-                    <div className="mt-1 divide-y divide-zinc-100 border border-zinc-200 rounded-lg overflow-hidden">
-                      {aprobadores.map(a => (
-                        <div key={a.idUsuario} className="flex items-center justify-between gap-2 px-3 py-2 bg-white">
-                          <span className="text-sm"><span className="font-bold text-zinc-800">{a.nombre}</span>{a.rol && <span className="text-[11px] text-zinc-400"> · rol {a.rol}</span>}</span>
-                          <button type="button" onClick={() => quitarAprob(a)} disabled={aprobBusy} title="Quitar de la lista" className="text-zinc-400 hover:text-rose-600 disabled:opacity-50"><X size={14} /></button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                {candidatos.length === 0 && <p className="text-[11px] text-zinc-400 mt-1">No quedan usuarios internos activos para agregar (o ya están todos en la lista, o ya aprueban por su rol).</p>}
+              </div>
+              <div>
+                <label className={lbl}>Autorizados a mano ({aprobadores.length})</label>
+                {aprobadores.length === 0 ? (
+                  <p className="text-sm text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2">Nadie todavía. Solo Admin y Administracion aprueban por ahora.</p>
+                ) : (
+                  <div className="divide-y divide-zinc-100 border border-zinc-200 rounded-xl overflow-hidden">
+                    {aprobadores.map(a => (
+                      <div key={a.idUsuario} className="flex items-center justify-between gap-2 px-3 py-2 bg-white">
+                        <span className="text-sm"><span className="font-bold text-zinc-800">{a.nombre}</span>{a.rol && <span className="text-[11px] text-zinc-400"> · rol {a.rol}</span>}</span>
+                        <button type="button" onClick={() => quitarAprob(a)} disabled={aprobBusy} title="Quitar de la lista" aria-label={`Quitar a ${a.nombre}`}
+                          className="p-1.5 rounded-lg text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 disabled:opacity-50 transition-colors"><X size={14} /></button>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
+      {ventanaConfirmar}
     </div>
   );
 }

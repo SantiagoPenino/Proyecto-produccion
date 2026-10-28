@@ -9,7 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const contabilidadService = require('../services/contabilidadService');
 const ERPSyncService = require('../services/erpSyncService');
-const { generateThumbnail } = require('../utils/thumbnailGenerator');
+const { generateThumbnail, generateThumbnailFromPath, LIMITE_BYTES: THUMB_LIMITE_BYTES } = require('../utils/thumbnailGenerator');
 const { copiaDeTrabajo, borrarCopia } = require('../utils/copiaDeTrabajo');
 const { construirNombreArchivo, materialParaNombre, usaNombreNuevo } = require('../utils/nombreArchivoOrden');
 const { marcarRequisitoNoAplica } = require('../utils/requisitosAutoCumplimiento');
@@ -2388,17 +2388,31 @@ exports.uploadOrderFile = async (req, res) => {
                 logger.warn('[UploadStream] No se pudo preparar la copia para miniatura/perfil: ' + e.message);
             }
         }
+        // El archivo entero en memoria solo lo necesitan el perfil de color y el preflight (la miniatura
+        // trabaja sobre la copia en disco, ver abajo): se lee solo si alguno de los dos corre.
         const leerProc = file.buffer ? Promise.resolve(file.buffer)
-            : copiaFondo ? fs.promises.readFile(copiaFondo).catch(e => { logger.warn('[UploadStream] No se pudo leer la copia para miniatura/perfil: ' + e.message); return null; })
+            : copiaFondo && (wantProfile || wantPreflight) ? fs.promises.readFile(copiaFondo).catch(e => { logger.warn('[UploadStream] No se pudo leer la copia para perfil/preflight: ' + e.message); return null; })
             : Promise.resolve(null);
         const tareasFondo = [];
 
         // Thumbnail en background. Quién puede tener miniatura lo decide el generador mirando los
         // primeros bytes: filtrar acá por nombre dejaba sin miniatura a los archivos cuya extensión
         // no delata el tipo (o no la tienen).
-        if (wantThumb) {
-            tareasFondo.push(leerProc.then(procBuffer => procBuffer && generateThumbnail(procBuffer, codigoOrden, dbId, finalName))
+        // INF-SIS-2026-08: sobre la copia en disco, por ruta (antes leía el archivo entero a memoria, y
+        // Node no lee más de 2 GiB así: el banner de 2,7 GB de EUV-38376 quedó sin miniatura). Arriba del
+        // límite (THUMB_MAX_MB, 1 GB) no se rasteriza acá: el cron usa la miniatura que genera Drive.
+        if (wantThumb && file.buffer) {
+            tareasFondo.push(generateThumbnail(file.buffer, codigoOrden, dbId, finalName)
                 .catch(e => logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)));
+        } else if (wantThumb && copiaFondo) {
+            tareasFondo.push((async () => {
+                const { size } = await fs.promises.stat(copiaFondo);
+                if (size > THUMB_LIMITE_BYTES) {
+                    logger.info(`🖼️  [Thumbnail] ArchivoID=${dbId}: ${Math.round(size / 1048576)} MB, más que el límite: no se rasteriza en la subida; la hace el cron con la miniatura de Drive.`);
+                    return;
+                }
+                await generateThumbnailFromPath(copiaFondo, codigoOrden, dbId, finalName);
+            })().catch(e => logger.warn('[Thumbnail] Error async generando thumbnail:', e.message)));
         }
 
         // [DTF] Capa de tinta blanca automática (solo arte del área DF: el servicio mira la orden antes de
@@ -4445,7 +4459,13 @@ exports.getPickupOrders = async (req, res) => {
             return true;
         });
 
-        res.json({ success: true, data: uniqueOrders });
+        // Cotización con la que se pasan a pesos los dólares si el cliente mezcla monedas: la
+        // misma que usa el servidor al crear o cobrar el retiro. La pantalla no la calcula.
+        let cot = null;
+        try { cot = await require('../services/retiroService').cotizacionDelDia(pool); }
+        catch (eCot) { logger.warn('[PICKUP] No se pudo leer la cotización del día:', eCot.message); }
+
+        res.json({ success: true, data: uniqueOrders, cotizacion: cot?.cotizacion || null, cotizacionDia: cot?.dia || null });
 
     } catch (error) {
         logger.error("Error fetching pickup orders:", error);
@@ -4727,11 +4747,13 @@ exports.totemCreatePickup = async (req, res) => {
                 const OReIdOrdenRetiro = await crearRetiro(transaction, {
                     ordIds: rawIds,
                     totalCost: totalCost || 0,
+                    // El total sale de las órdenes (pendiente de cobro de cada una), no de la
+                    // pantalla: con pesos y dólares mezclados la pantalla los sumaba sin convertir.
+                    importesPorOrden: {},
                     lugarRetiro: lugarRetiroFinal,
                     usuarioAlta: 70,
                     formaRetiro: formaRetiro || 'RT',
                     codCliente: parseInt(codCliente, 10) || null,
-                    moneda: 'UYU'
                 });
 
                 await transaction.commit();
@@ -4950,7 +4972,8 @@ exports.createPickupOrder = async (req, res) => {
 
         // [RETIRO OBLIGATORIO 21/08] Refuerzo backend de la regla del portal: los pedidos con
         // más de 5 días (por fecha de ingreso) se retiran sí o sí — no se puede armar un retiro
-        // dejando afuera una orden vieja retirable DE LA MISMA MONEDA que las seleccionadas.
+        // dejando afuera una orden vieja retirable. Desde el 27/10 en cualquier moneda: iba por
+        // moneda solo porque no se podían mezclar pesos y dólares en un retiro.
         // El front ya lo impone; esto cierra la vía directa a la API (o un front cacheado).
         try {
             const DIAS_RETIRO_OBLIGATORIO = 5;
@@ -4963,7 +4986,6 @@ exports.createPickupOrder = async (req, res) => {
                         FROM OrdenesDeposito vieja WITH(NOLOCK)
                         LEFT JOIN EstadosOrdenes e WITH(NOLOCK) ON e.EOrIdEstadoOrden = vieja.OrdEstadoActual
                         WHERE vieja.CliIdCliente IN (SELECT DISTINCT sel.CliIdCliente FROM OrdenesDeposito sel WHERE sel.OrdIdOrden IN (${idsParam}))
-                          AND vieja.MonIdMoneda IN (SELECT DISTINCT sel.MonIdMoneda FROM OrdenesDeposito sel WHERE sel.OrdIdOrden IN (${idsParam}))
                           AND e.EOrNombreEstado IN ('Avisado', 'Ingresado', 'Para avisar', 'Pronto para entregar')
                           AND vieja.OReIdOrdenRetiro IS NULL
                           AND vieja.OrdFechaIngresoOrden < DATEADD(day, -@dias, GETDATE())
@@ -4987,22 +5009,18 @@ exports.createPickupOrder = async (req, res) => {
         const transaction = new sql.Transaction(pool);
         await transaction.begin();
 
-        // Determinar moneda
-        let targetCurrency = moneda || "UYU";
-        if (!moneda && orders && orders.length > 0) {
-            const firstCost = orders[0].costWithCurrency || '';
-            if (firstCost.includes('USD') || firstCost.includes('U$S')) targetCurrency = 'USD';
-        }
-
         try {
             const OReIdOrdenRetiro = await crearRetiro(transaction, {
                 ordIds: rawOrderIds,
                 totalCost: totalCost || 0,
+                // Moneda y total los calcula el servidor con el pendiente de cobro de cada orden:
+                // con pesos y dólares mezclados, el retiro va en pesos con los dólares convertidos.
+                importesPorOrden: {},
                 lugarRetiro,
                 usuarioAlta: UsuarioAlta,
                 formaRetiro: 'RW',
                 codCliente: parseInt(codCliente, 10) || null,
-                moneda: targetCurrency,
+                moneda: moneda || undefined,
                 direccion: direccion || null,
                 departamento: departamento || null,
                 localidad: localidad || null,
@@ -5052,7 +5070,10 @@ exports.createPickupOrder = async (req, res) => {
 // --- NUEVO: GENERAR COMPROBANTE PDF ---
 exports.generatePickupReceipt = async (req, res) => {
     try {
-        const { receiptId, orders, clientName, total } = req.body;
+        // moneda/cotizacion/dolares/dolaresEnPesos: retiro con pesos y dólares (los dólares
+        // pasan a pesos); cada orden lleva su moneda en `currency`.
+        const { receiptId, orders, clientName, total, moneda, cotizacion, dolares, dolaresEnPesos } = req.body;
+        const simDe = (c) => (/US|U\$/i.test(String(c || '')) ? 'US$' : '$');
 
         const doc = await PDFDocument.create();
         const page = doc.addPage([595.28, 841.89]); // A4
@@ -5093,7 +5114,7 @@ exports.generatePickupReceipt = async (req, res) => {
                 const desc = (order.desc || '').substring(0, 45);
                 page.drawText(order.id || '', { x: 50, y, size: 10, font });
                 page.drawText(desc, { x: 150, y, size: 10, font });
-                page.drawText(`$${order.amount}`, { x: 450, y, size: 10, font });
+                page.drawText(`${simDe(order.currency)} ${Number(order.amount || 0).toFixed(2)}`, { x: 450, y, size: 10, font });
                 y -= 20;
             });
         }
@@ -5102,7 +5123,11 @@ exports.generatePickupReceipt = async (req, res) => {
         page.drawLine({ start: { x: 50, y }, end: { x: 550, y }, thickness: 2, color: rgb(0, 0, 0) });
         y -= 25;
 
-        page.drawText(`TOTAL:    $${total}`, { x: 350, y, size: 14, font: fontBold });
+        page.drawText(`TOTAL:    ${simDe(moneda)} ${Number(total || 0).toFixed(2)}`, { x: 350, y, size: 14, font: fontBold });
+        if (Number(dolares) > 0 && Number(cotizacion) > 0) {
+            y -= 20;
+            page.drawText(`Incluye US$ ${Number(dolares).toFixed(2)} convertidos a $ ${Number(dolaresEnPesos || 0).toFixed(2)} (dólar a $ ${Number(cotizacion).toFixed(2)})`, { x: 50, y, size: 10, font });
+        }
 
         // Footer
         drawCenteredText('Gracias por su preferencia', 50, 10, font);
@@ -5119,14 +5144,53 @@ exports.generatePickupReceipt = async (req, res) => {
     }
 };
 
+// ── PESOS Y DÓLARES EN LOS PAGOS DEL PORTAL (27/10/2026, INF-SIS-2026-07) ─────────
+// Moneda, importes y total los calcula el servidor con el pendiente de cobro de cada orden
+// (cotizarSeleccion), no la pantalla. Con pesos y dólares mezclados el pago sale en pesos y
+// la cotización usada se guarda en el pedido de pago: el aviso (webhook) crea el retiro y le
+// pasa esa misma a la caja, que descuenta la deuda en dólares con ella y no con la del día
+// en que llega el aviso.
+const _cotizarPagoRetiro = async (pool, orders) => {
+    const { cotizarSeleccion } = require('../services/retiroService');
+    const sel = await cotizarSeleccion(pool, (orders || []).map(o => ({ ordId: o.OrdIdOrden })));
+    const porId = new Map((orders || []).map(o => [parseInt(o.OrdIdOrden, 10), o]));
+    return {
+        sel,
+        // Para el pedido de pago y los comprobantes: cada orden con su importe en la moneda del retiro
+        ordenes: sel.items.map(i => ({
+            id: porId.get(i.ordId)?.orderNumber || i.codigo,
+            desc: porId.get(i.ordId)?.desc || i.codigo,
+            amount: i.importeRetiro,
+            amountOriginal: i.importe,
+            currency: i.moneda,
+            rawId: i.ordId,
+        })),
+        // Para crear el retiro con los mismos importes que se cobraron (crearRetiro.importesPorOrden)
+        importes: Object.fromEntries(sel.items.map(i => [i.ordId, i.importe])),
+    };
+};
+
+// El total que vio el cliente contra el del servidor: si difieren en más de 1 (se actualizó la
+// cotización con la pantalla abierta), 409 con el total nuevo; la pantalla lo muestra y pide confirmar.
+const _totalCambiado = (sel, totalVisto) => {
+    const visto = Number(totalVisto);
+    if (totalVisto === undefined || totalVisto === null || !Number.isFinite(visto) || Math.abs(visto - sel.total) <= 1) return null;
+    const sim = sel.moneda === 'USD' ? 'US$' : '$';
+    return {
+        error: `El total de tu retiro pasó a ${sim} ${sel.total.toFixed(2)}${sel.mezcla ? ` (dólar a $ ${Number(sel.cotizacion).toFixed(2)})` : ''}.`,
+        codigo: 'TOTAL_CAMBIADO',
+        total: sel.total, moneda: sel.moneda,
+        cotizacion: sel.cotizacion, cotizacionDia: sel.cotizacionDia,
+        dolares: sel.dolares, dolaresEnPesos: sel.dolaresEnPesos,
+    };
+};
 
 // --- INIT HANDY PAYMENT (nuevo flujo: retiro se crea solo si el pago es exitoso) ---
 exports.initHandyPayment = async (req, res) => {
     try {
         const {
             orders,          // [{ OrdIdOrden, orderNumber, desc, amount, currency }]
-            totalAmount,
-            activeCurrency,
+            totalAmount,     // el que vio el cliente; moneda e importes los calcula el servidor
             lugarRetiro,
             direccion,
             departamento,
@@ -5140,35 +5204,36 @@ exports.initHandyPayment = async (req, res) => {
             return res.status(400).json({ error: 'No hay órdenes para pagar.' });
         }
 
-        const currencyCode = activeCurrency === 'USD' ? 840 : 858;
+        const pool = await getPool();
+        const { sel, ordenes, importes } = await _cotizarPagoRetiro(pool, orders);
+        const cambio = _totalCambiado(sel, totalAmount);
+        if (cambio) return res.status(409).json(cambio);
+        const aCobrar = ordenes.filter(o => o.amount > 0);
+        if (!aCobrar.length) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
+
+        const currencyCode = sel.moneda === 'USD' ? 840 : 858;
 
         // Productos para Handy
-        const products = orders.map(o => {
-            const amt = Number(Number(o.amount || 0).toFixed(2));
-            return {
-                Name: (o.desc || o.orderNumber || 'Pedido').substring(0, 50),
-                Quantity: 1,
-                Amount: amt,
-                TaxedAmount: Number((amt / 1.22).toFixed(2))
-            };
-        });
+        const products = aCobrar.map(o => ({
+            Name: (o.desc || o.id || 'Pedido').substring(0, 50),
+            Quantity: 1,
+            Amount: o.amount,
+            TaxedAmount: Number((o.amount / 1.22).toFixed(2))
+        }));
 
         const { createPaymentLink } = require('../services/handyService');
         const result = await createPaymentLink({
             products,
-            totalAmount,
+            totalAmount: sel.total,
             currencyCode,
             commerceName: 'USER',
             ordersData: {
                 type: 'pickup-deferred',       // marca el nuevo flujo
-                orders: orders.map(o => ({
-                    id: o.orderNumber,
-                    desc: o.desc || o.orderNumber || 'Pedido',
-                    amount: o.amount,
-                    rawId: o.OrdIdOrden        // necesario para crear el retiro
-                })),
+                orders: ordenes,               // rawId: necesario para crear el retiro
                 ordIds: orders.map(o => o.OrdIdOrden).filter(Boolean),
-                totalCost: totalAmount,
+                totalCost: sel.total,
+                importes,
+                cotizacion: sel.cotizacion,    // null si no mezcla monedas
                 lugarRetiro: lugarRetiro || 1,
                 direccion: direccion || null,
                 departamento: departamento || null,
@@ -5176,7 +5241,7 @@ exports.initHandyPayment = async (req, res) => {
                 agenciaId: agenciaId || null,
                 customAgencia: customAgencia || null,
                 receptorNombre: receptorNombre || null,
-                moneda: activeCurrency === 'USD' ? 'USD' : 'UYU'
+                moneda: sel.moneda
             },
             codCliente: req.user?.codCliente || 0,
             logPrefix: '[HANDY INIT]'
@@ -5291,7 +5356,7 @@ exports.getMisCuentas = async (req, res) => {
             WHERE cc.CliIdCliente = @Cli AND (cc.CueActiva = 1 OR @Inc = 1) AND cc.CueTipo LIKE 'DINERO%' AND cc.CueEsPrincipal = 0
             ORDER BY cc.CueActiva DESC, cc.CueIdCuenta`);
         // Umbral DGI del e-Ticket (10.000 UI): por encima hay que identificar al receptor.
-        // El valor de la UI se puede pisar desde ConfiguracionGlobal (clave VALOR_UI).
+        // El valor de la UI es el de la facturación (DGI_VALOR_UI, del BCU).
         const umbral = await _umbralEticketUI(pool);
         // BENEFICIOS (specs/40 RN-BEN.30): la bolsa de un beneficio es una cuenta más, pero con
         // su nombre, precio pactado, vencimiento y "te quedan ≈ N", y sin botón Recargar.
@@ -5520,11 +5585,12 @@ exports.reabrirMiCuenta = async (req, res) => {
 };
 
 // Umbral DGI del e-Ticket: sobre 10.000 UI el receptor debe identificarse (CI).
-// UI configurable en ConfiguracionGlobal clave 'VALOR_UI'; fallback 6.5 pesos.
+// UI: la misma que usa la facturación (ConfiguracionGlobal 'DGI_VALOR_UI', que trae del BCU el
+// job valorUI). Antes leía 'VALOR_UI', que no existía en prod, y quedaba en el fallback de 6.5.
 const _umbralEticketUI = async (pool) => {
     let valorUI = 6.5;
     try {
-        const r = await pool.request().query("SELECT Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = 'VALOR_UI'");
+        const r = await pool.request().query("SELECT Valor FROM dbo.ConfiguracionGlobal WITH(NOLOCK) WHERE Clave = 'DGI_VALOR_UI'");
         const v = parseFloat(String(r.recordset[0]?.Valor || '').replace(',', '.'));
         if (v > 0) valorUI = v;
     } catch (_) { /* tabla o clave ausente: se usa el default */ }
@@ -6121,13 +6187,16 @@ exports.cubrirConBilletera = async (req, res) => {
             OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                 ordIds:       ordIds,
                 // Total del RETIRO = valor de las órdenes (no solo lo consumido ahora:
-                // con órdenes ya cubiertas el plan puede ser menor y el retiro quedaba en 0)
+                // con órdenes ya cubiertas el plan puede ser menor y el retiro quedaba en 0).
+                // Moneda: la de las órdenes; si mezclan pesos y dólares, pesos con los dólares
+                // convertidos (antes: la de la primera orden, con el total sumado sin convertir).
                 totalCost:    r2(filas.reduce((s, f) => s + (parseFloat(f.OrdCostoFinal) || 0), 0)),
+                importesPorOrden: Object.fromEntries(filas.map(f => [f.OrdIdOrden, parseFloat(f.OrdCostoFinal) || 0])),
+                cotizacion:   cot,
                 lugarRetiro:  lugarRetiro || 1,
                 usuarioAlta:  70,
                 formaRetiro:  'RW',
                 codCliente:   codCliente,
-                moneda:       (filas[0] && Number(filas[0].MonIdMoneda) === 2) ? 'USD' : 'UYU',
                 direccion:    direccion || null,
                 departamento: departamento || null,
                 localidad:    localidad || null,
@@ -6167,9 +6236,14 @@ exports.pagarConSaldoBilletera = async (req, res) => {
         if (!codCliente) return res.status(401).json({ error: 'Sesión inválida.' });
         if (!(await _billeteraPortalHabilitada(pool, codCliente))) return res.status(403).json({ error: MSG_BILLETERA_PORTAL_OFF });
         if (!orders?.length) return res.status(400).json({ error: 'No hay órdenes para pagar.' });
-        const total = Math.round(Number(totalAmount) * 100) / 100;
-        if (!(total > 0)) return res.status(400).json({ error: 'Importe inválido.' });
-        const moneda = activeCurrency === 'USD' ? 'USD' : 'UYU';
+        // Moneda y total los calcula el servidor con el pendiente de cada orden; con pesos y
+        // dólares mezclados, el retiro va en pesos con los dólares a la cotización del día.
+        const { sel, importes } = await _cotizarPagoRetiro(pool, orders);
+        const cambio = _totalCambiado(sel, totalAmount);
+        if (cambio) return res.status(409).json(cambio);
+        const total = sel.total;
+        if (!(total > 0)) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
+        const moneda = sel.moneda;
 
         const cli = (await pool.request().input('Cod', sql.Int, codCliente)
             .query('SELECT CliIdCliente FROM dbo.Clientes WITH(NOLOCK) WHERE CodCliente = @Cod')).recordset[0];
@@ -6182,7 +6256,8 @@ exports.pagarConSaldoBilletera = async (req, res) => {
         // TC). En cross, los centavos se redondean HACIA ARRIBA (los cubre el cliente y
         // el detalle se le muestra antes de confirmar).
         const r2 = (n) => Math.round(n * 100) / 100;
-        const cot = parseFloat((await pool.request()
+        // Con pesos y dólares mezclados, la misma cotización con que se calculó el total
+        const cot = sel.cotizacion || parseFloat((await pool.request()
             .query('SELECT TOP 1 CotDolar FROM dbo.Cotizaciones WITH(NOLOCK) ORDER BY CotFecha DESC')).recordset[0]?.CotDolar) || 40;
         let elegibles = (await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
             SELECT cc.CueIdCuenta, cc.CueNombre, cc.CueTipo,
@@ -6237,6 +6312,8 @@ exports.pagarConSaldoBilletera = async (req, res) => {
             OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                 ordIds:       orders.map(o => o.OrdIdOrden).filter(Boolean),
                 totalCost:    total,
+                importesPorOrden: importes,
+                cotizacion:   sel.cotizacion || undefined,
                 lugarRetiro:  lugarRetiro || 1,
                 usuarioAlta:  70,
                 formaRetiro:  'RW',
@@ -6644,6 +6721,10 @@ exports.handyWebhook = async (req, res) => {
                             const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                                 ordIds:        storedData.ordIds,
                                 totalCost:     storedData.totalCost || tx.TotalAmount,
+                                // Los importes y la cotización con que se armó el link (sin ellos,
+                                // los links de antes del 27/10: total guardado)
+                                importesPorOrden: storedData.importes || undefined,
+                                cotizacion:    storedData.cotizacion || undefined,
                                 lugarRetiro:   storedData.lugarRetiro || 1,
                                 usuarioAlta:   70,
                                 formaRetiro:   'RW',
@@ -6779,6 +6860,10 @@ exports.handyWebhook = async (req, res) => {
                                         esAdministrativa:  true,
                                         tipoDocumento:     '07',   // E-Ticket Contado
                                         moneda,
+                                        // Retiro con pesos y dólares: la cotización con que se armó el
+                                        // link (portal o «Pagos pendientes»), para que la deuda en
+                                        // dólares se descuente con la misma (sin ella, la del día).
+                                        cotizacion:        storedData.cotizacion || undefined,
                                         observaciones:     `Cobro Handy (Tx: ${transactionId})`,
                                     },
                                     aplicaciones: [{
@@ -7117,8 +7202,7 @@ exports.initMpPayment = async (req, res) => {
     try {
         const {
             orders,
-            totalAmount,
-            activeCurrency,
+            totalAmount,     // el que vio el cliente; moneda e importes los calcula el servidor
             lugarRetiro,
             direccion,
             departamento,
@@ -7132,32 +7216,36 @@ exports.initMpPayment = async (req, res) => {
             return res.status(400).json({ error: 'No hay órdenes para pagar.' });
         }
 
-        const currency = activeCurrency === 'USD' ? 'USD' : 'UYU';
+        const pool = await getPool();
+        const { sel, ordenes, importes } = await _cotizarPagoRetiro(pool, orders);
+        const cambio = _totalCambiado(sel, totalAmount);
+        if (cambio) return res.status(409).json(cambio);
+        const aCobrar = ordenes.filter(o => o.amount > 0);
+        if (!aCobrar.length) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
 
-        const items = orders.map(o => ({
-            id: String(o.OrdIdOrden || o.id || ''),
-            title: (o.desc || o.orderNumber || 'Pedido').substring(0, 256),
+        const currency = sel.moneda;
+
+        const items = aCobrar.map(o => ({
+            id: String(o.rawId || o.id || ''),
+            title: (o.desc || o.id || 'Pedido').substring(0, 256),
             quantity: 1,
-            unit_price: Number(Number(o.amount || 0).toFixed(2)),
+            unit_price: o.amount,
             currency_id: currency
         }));
 
         const { createPreference } = require('../services/mercadoPagoService');
         const result = await createPreference({
             items,
-            totalAmount,
+            totalAmount: sel.total,
             currency,
             commerceName: 'USER',
             ordersData: {
                 type: 'pickup-deferred',
-                orders: orders.map(o => ({
-                    id: o.orderNumber,
-                    desc: o.desc || o.orderNumber || 'Pedido',
-                    amount: o.amount,
-                    rawId: o.OrdIdOrden
-                })),
+                orders: ordenes,
                 ordIds: orders.map(o => o.OrdIdOrden).filter(Boolean),
-                totalCost: totalAmount,
+                totalCost: sel.total,
+                importes,
+                cotizacion: sel.cotizacion,    // null si no mezcla monedas
                 lugarRetiro: lugarRetiro || 1,
                 direccion: direccion || null,
                 departamento: departamento || null,
@@ -7464,6 +7552,10 @@ exports.mpWebhook = async (req, res) => {
                 const OReIdOrdenRetiro = await crearRetiro(retiroTransaction, {
                     ordIds:       storedData.ordIds,
                     totalCost:    storedData.totalCost || totalAmountPaid,
+                    // Los importes y la cotización con que se armó el pago (sin ellos, los
+                    // pedidos de pago de antes del 27/10: total guardado)
+                    importesPorOrden: storedData.importes || undefined,
+                    cotizacion:   storedData.cotizacion || undefined,
                     lugarRetiro:  storedData.lugarRetiro || 1,
                     usuarioAlta:  70,
                     formaRetiro:  'RW',
@@ -7584,6 +7676,9 @@ exports.mpWebhook = async (req, res) => {
                         esAdministrativa:  true,
                         tipoDocumento:     '07',   // E-Ticket Contado
                         moneda,
+                        // Retiro con pesos y dólares: la cotización con que se armó el pago, para
+                        // que la deuda en dólares se descuente con la misma (sin ella, la del día).
+                        cotizacion:        storedData.cotizacion || undefined,
                         observaciones:     `Cobro MercadoPago (Tx: ${externalRef})`,
                     },
                     aplicaciones: [{

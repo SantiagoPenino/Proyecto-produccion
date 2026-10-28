@@ -12,10 +12,13 @@ const API_BASE = import.meta.env.VITE_API_URL || '/api';
 //  · "__firefox__": código que Firefox para iPhone inyecta en la página;
 //  · (22/10/2026) iabjs://: lo que inyecta el navegador interno de Instagram/Facebook en Android
 //    ("Error invoking postMessage: Java object is gone").
+//  · (27/10/2026) "_META": código que inyecta el navegador interno de Instagram/Facebook en iPhone
+//    ("evaluating 'window._META.IABInnerFrame'"). WebKit le pone la URL de la página a esos scripts,
+//    así que el stack no lo delata: se reconoce por el mensaje. La app no usa _META.
 const RX_URL_STACK = /(?:[a-z][a-z0-9+.-]*:\/\/[^\s)'"]+|webpack-internal:[^\s)'"]+)/gi;
 const RX_EXTENSION = /^((chrome|moz|safari|safari-web|ms-browser)-extension|iabjs):\/\//i;
 function esRuidoAjeno({ message, stack, source }) {
-    if (/__firefox__/.test(String(message || ''))) return true;
+    if (/__firefox__|\b_META\b/.test(String(message || ''))) return true;
     const urls = `${stack || ''}\n${source || ''}`.match(RX_URL_STACK) || [];
     return urls.length > 0 && urls.every(u => RX_EXTENSION.test(u));
 }

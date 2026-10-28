@@ -1,6 +1,83 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Microscope, Search, SearchX, Loader2, ScanSearch, UserCheck, Users, Globe, UserX } from 'lucide-react';
 import api from '../../services/api';
 import { toast } from 'sonner';
+
+// Estética nueva (28/10/2026): pestaña «Inteligencia de Precios» clara (zinc + brand-cyan), lista de clientes de a 50
+// (antes dibujaba los ~6.000 de una), niveles con número y cantidad, tablas por cantidad limpias (en el celular, una
+// tarjeta por producto), montos en formato uruguayo y US$ cuando la regla está en dólares. En el celular la lista va
+// arriba y el reporte abajo (antes el reporte quedaba fuera de la pantalla). Consultas, estados y armado de los
+// grupos sin cambios.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const CAMPO = 'w-full pl-9 pr-4 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ROTULO = 'text-[10px] font-black uppercase tracking-widest text-zinc-400';
+const TH = 'px-3 py-2.5 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[11px] font-bold px-2.5 py-1 rounded-full border whitespace-nowrap';
+const CHIP_CIAN = 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20';
+const CHIP_GRIS = 'bg-zinc-100 text-zinc-500 border-zinc-200';
+const claseModo = (elegido) => `flex-1 text-xs font-bold py-1.5 rounded-lg transition-colors ${elegido ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`;
+const claseItem = (elegido) => `w-full flex items-center gap-3 px-3 py-2.5 rounded-xl border text-left transition-colors select-none ${elegido
+    ? 'bg-brand-cyan/10 border-brand-cyan/20'
+    : 'border-transparent hover:bg-zinc-50'}`;
+
+// Montos y porcentajes en formato uruguayo; «US$» si la regla está en dólares (MonIdMoneda 2), «$» si no
+const fmtMonto = (v) => { const n = Number(v); return Number.isFinite(n) ? n.toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : String(v ?? ''); };
+const fmtPct = (v) => { const n = Number(v); return Number.isFinite(n) ? n.toLocaleString('es-UY', { maximumFractionDigits: 2 }) : String(v ?? ''); };
+const simbolo = (r) => (r?.MonIdMoneda === 2 ? 'US$' : '$');
+// Cantidad con su palabra en singular o plural ("1 cliente", "6.014 clientes")
+const cuenta = (n, uno, varios) => `${Number(n).toLocaleString('es-UY')} ${n === 1 ? uno : varios}`;
+const valorRegla = (r) => (r.TipoRegla.includes('percent') ? `${fmtPct(r.Valor)}%` : `${simbolo(r)} ${fmtMonto(r.Valor)}`);
+
+// Título de cada nivel del reporte del cliente: número, texto y cantidad
+const tituloNivel = (n, texto, cantidad) => (
+    <div className="flex items-center gap-2.5 pb-2.5 mb-3 border-b border-zinc-100">
+        <span className="w-6 h-6 rounded-lg border border-brand-cyan/20 bg-brand-cyan/10 text-brand-cyan text-[11px] font-black flex items-center justify-center shrink-0">{n}</span>
+        <h4 className="flex-1 min-w-0 text-sm sm:text-base font-black text-zinc-800">{texto}</h4>
+        <span className={`${CHIP} ${CHIP_GRIS} tabular-nums`}>{cantidad}</span>
+    </div>
+);
+const vacioNivel = (texto) => <p className="text-sm text-zinc-400 bg-zinc-50 border border-zinc-100 rounded-xl px-4 py-3">{texto}</p>;
+
+// En el celular, una tarjeta por producto en vez de la tabla por cantidades (una vista sola: no se dibujan las dos)
+const MQ_TABLA = '(min-width: 768px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
+// Lista de clientes de a 50 (patrón useDeAPoco de ExcepcionesDeudaView): con la búsqueda vacía llegan ~6.000 y se
+// dibujaban todos. Al acercarse al final se agregan 50 más. Vuelve a 50 cuando cambian las claves de reinicio (la
+// lista que manda el contenedor, el filtro o la vista): filteredCustomers es un arreglo nuevo en cada render, por eso
+// no se usa como clave.
+const DE_A = 50;
+const contenedorConScroll = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        if (/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    return null;
+};
+function useDeAPoco(total, ...reinicio) {
+    const [cuantos, setCuantos] = useState(DE_A);
+    useEffect(() => { setCuantos(DE_A); }, reinicio); // eslint-disable-line react-hooks/exhaustive-deps
+    const centinela = useRef(null);
+    useEffect(() => {
+        const el = centinela.current;
+        if (!el || cuantos >= total) return undefined;
+        // También si el aviso quedó arriba de la pantalla (un scroll rápido lo salteó)
+        const obs = new IntersectionObserver(([e]) => {
+            if (e.isIntersecting || (e.rootBounds && e.boundingClientRect.bottom < e.rootBounds.top)) setCuantos(c => c + DE_A);
+        }, { root: contenedorConScroll(el), rootMargin: '0px 0px 400px 0px' });
+        obs.observe(el);
+        return () => obs.disconnect();
+    }, [cuantos, total, ...reinicio]); // eslint-disable-line react-hooks/exhaustive-deps
+    return [Math.min(cuantos, total), centinela];
+}
 
 const PriceReports = ({ customers = [], onSearch }) => {
     const [profiles, setProfiles] = useState([]);
@@ -69,26 +146,43 @@ const PriceReports = ({ customers = [], onSearch }) => {
         return cName.toLowerCase().includes(lowerFilter) || String(c.CliIdCliente).includes(lowerFilter);
     });
 
+    // Estética nueva (28/10/2026): tabla o tarjetas según el ancho y lista de clientes de a 50
+    const conTabla = useConTabla();
+    const [cuantos, centinela] = useDeAPoco(filteredCustomers.length, customers, filterCust, viewMode);
+    const faltan = filteredCustomers.length - cuantos;
+
     return (
-        <div className="h-full flex gap-6 overflow-hidden">
+        <div className="h-full min-h-0 flex flex-col lg:flex-row gap-4 overflow-y-auto lg:overflow-hidden text-zinc-700">
             {/* SIDEBAR DE CONTROL */}
-            <div className="w-[340px] bg-white rounded-lg shadow border border-slate-200 flex flex-col h-full flex-shrink-0">
-                <div className="p-4 border-b bg-slate-50 space-y-4">
-                    <h2 className="font-bold text-slate-800 flex items-center gap-2 text-lg">
-                        <i className="fa-solid fa-microscope text-indigo-600"></i> Auditoría de Precios
-                    </h2>
-                    
+            <div className={`${CARD} lg:w-[340px] lg:h-full shrink-0 flex flex-col overflow-hidden`}>
+                <div className="p-3 sm:p-4 border-b border-zinc-100 flex flex-col gap-3 shrink-0">
+                    <div className="flex items-center gap-2">
+                        <Microscope size={18} className="text-brand-cyan shrink-0" />
+                        <h2 className={`${ROTULO} text-[11px] flex-1 min-w-0`}>Auditoría de Precios</h2>
+                        <span className={`${CHIP} ${CHIP_GRIS} tabular-nums`}>
+                            {viewMode === 'clients'
+                                ? cuenta(filteredCustomers.length, 'cliente', 'clientes')
+                                : cuenta(profiles.length, 'perfil', 'perfiles')}
+                        </span>
+                    </div>
+
                     {/* Switch Mode */}
-                    <div className="flex bg-slate-200 p-1 rounded-lg">
-                        <button 
+                    <div className="flex rounded-xl border border-zinc-200 bg-white p-1 gap-1 select-none" role="tablist" aria-label="Tipo de reporte">
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={viewMode === 'clients'}
                             onClick={() => setViewMode('clients')}
-                            className={`flex-1 text-xs font-bold py-1.5 rounded-md transition-all ${viewMode === 'clients' ? 'bg-white shadow text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
+                            className={claseModo(viewMode === 'clients')}
                         >
                             Visión Cliente
                         </button>
-                        <button 
+                        <button
+                            type="button"
+                            role="tab"
+                            aria-selected={viewMode === 'profiles'}
                             onClick={() => setViewMode('profiles')}
-                            className={`flex-1 text-xs font-bold py-1.5 rounded-md transition-all ${viewMode === 'profiles' ? 'bg-white shadow text-slate-800' : 'text-slate-500 hover:text-slate-700'}`}
+                            className={claseModo(viewMode === 'profiles')}
                         >
                             Visión Perfil
                         </button>
@@ -97,10 +191,11 @@ const PriceReports = ({ customers = [], onSearch }) => {
                     {/* Searcher for Clients */}
                     {viewMode === 'clients' && (
                         <div className="relative">
-                            <i className="fa-solid fa-search absolute left-3 top-2.5 text-slate-400 text-sm"></i>
+                            <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
                             <input
-                                className="w-full pl-9 pr-3 py-2 border border-slate-300 rounded text-sm focus:ring-2 focus:ring-indigo-100 outline-none"
+                                className={CAMPO}
                                 placeholder="Buscar por nombre o ID..."
+                                aria-label="Buscar cliente por nombre o ID"
                                 value={filterCust}
                                 onChange={e => {
                                     setFilterCust(e.target.value);
@@ -111,18 +206,21 @@ const PriceReports = ({ customers = [], onSearch }) => {
                     )}
                 </div>
 
-                {/* List Content */}
-                <div className="flex-1 overflow-y-auto no-scrollbar pb-6 bg-slate-50/50">
+                {/* List Content (en el celular, con alto tope para que el reporte quede a mano abajo) */}
+                <div className="flex-1 min-h-0 overflow-y-auto max-h-80 lg:max-h-none p-2">
                     {viewMode === 'clients' ? (
-                        <div>
+                        <div className="flex flex-col gap-0.5">
                             {filteredCustomers.length === 0 ? (
-                                <div className="p-8 text-center text-slate-400 text-sm">No se encontraron clientes.</div>
+                                <div className="px-4 py-10 flex flex-col items-center text-center">
+                                    <SearchX size={40} className="mb-3 text-brand-cyan" />
+                                    <span className="text-sm font-bold text-zinc-700">No se encontraron clientes.</span>
+                                </div>
                             ) : (
-                                filteredCustomers.map(c => {
+                                filteredCustomers.slice(0, cuantos).map(c => {
                                     const cId = c.CliIdCliente;
                                     const cName = c.Nombre || c.NombreFantasia || `Cliente ${cId}`;
                                     const isSelected = selectedClient === cId;
-                                    
+
                                     // Extract initials
                                     const words = cName.split(' ').filter(Boolean);
                                     let initials = '?';
@@ -131,52 +229,52 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                     } else if (words.length === 1) {
                                         initials = words[0].substring(0, 2).toUpperCase();
                                     }
-                                    
-                                    const AVATAR_COLORS = ['#f43f5e', '#ec4899', '#d946ef', '#a855f7', '#8b5cf6', '#6366f1', '#3b82f6', '#0ea5e9', '#06b6d4', '#14b8a6', '#10b981', '#22c55e', '#84cc16'];
-                                    const charCode = cName.charCodeAt(0) || 0;
-                                    const avatarColor = AVATAR_COLORS[charCode % AVATAR_COLORS.length];
 
                                     return (
-                                        <div
+                                        <button
+                                            type="button"
                                             key={cId}
                                             onClick={() => handleSearchClient(cId)}
-                                            className={`mx-3 my-2 rounded-xl p-4 cursor-pointer transition-all border ${isSelected ? 'bg-indigo-50 border-indigo-400 shadow-md transform scale-[1.02]' : 'bg-white border-slate-200 hover:shadow-md hover:border-indigo-300'}`}
+                                            className={claseItem(isSelected)}
                                         >
-                                            <div className="flex items-start gap-3">
-                                                <div 
-                                                    className="w-12 h-12 rounded-[14px] flex items-center justify-center text-white font-bold text-lg flex-shrink-0 shadow-sm"
-                                                    style={{ backgroundColor: avatarColor }}
-                                                >
-                                                    {initials}
-                                                </div>
-                                                <div className="flex-1 min-w-0 flex flex-col justify-center h-12">
-                                                    <div className="font-bold text-[#1e1b4b] text-[14px] truncate" title={cName}>{cName}</div>
-                                                    <div className="text-xs text-slate-400 font-medium font-mono mt-0.5">
-                                                        ID: {cId}
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        </div>
+                                            <span className={`w-9 h-9 rounded-xl flex items-center justify-center text-xs font-black shrink-0 ${isSelected ? 'bg-brand-cyan text-white' : 'bg-zinc-100 text-zinc-500'}`}>
+                                                {initials}
+                                            </span>
+                                            <span className="flex-1 min-w-0">
+                                                <span className={`block text-sm font-bold truncate ${isSelected ? 'text-brand-cyan' : 'text-zinc-800'}`} title={cName}>{cName}</span>
+                                                <span className="block text-[11px] text-zinc-400 font-mono mt-0.5">
+                                                    ID: {cId}
+                                                </span>
+                                            </span>
+                                        </button>
                                     );
                                 })
                             )}
+                            {faltan > 0 && (
+                                <div ref={centinela} className="py-3 text-center text-xs text-zinc-400 tabular-nums">
+                                    Mostrando {cuantos.toLocaleString('es-UY')} de {filteredCustomers.length.toLocaleString('es-UY')}…
+                                </div>
+                            )}
                         </div>
                     ) : (
-                        <div className="p-3 space-y-2">
+                        <div className="flex flex-col gap-0.5">
                             {profiles.map(p => {
                                 const isSelected = selectedProfile === p.ID;
                                 return (
-                                    <div
+                                    <button
+                                        type="button"
                                         key={p.ID}
                                         onClick={() => handleSearchProfile(p.ID)}
-                                        className={`border rounded-xl cursor-pointer transition-all p-4 ${isSelected ? 'bg-blue-50 border-blue-400 shadow ring-1 ring-blue-400' : 'bg-white border-slate-200 hover:border-blue-300'}`}
+                                        className={`${claseItem(isSelected)} items-start`}
                                     >
-                                        <div className="font-bold text-slate-800 flex justify-between items-center mb-1">
-                                            {p.Nombre}
-                                            {p.EsGlobal && <i className="fa-solid fa-earth-americas text-blue-400" title="Perfil Global"></i>}
-                                        </div>
-                                        <div className="text-xs text-slate-500 line-clamp-2">{p.Descripcion || 'Sin descripción'}</div>
-                                    </div>
+                                        <span className="flex-1 min-w-0">
+                                            <span className={`flex items-center justify-between gap-2 text-sm font-bold ${isSelected ? 'text-brand-cyan' : 'text-zinc-800'}`}>
+                                                <span className="truncate">{p.Nombre}</span>
+                                                {p.EsGlobal && <span className="shrink-0" title="Perfil Global"><Globe size={15} className="text-brand-cyan" aria-label="Perfil Global" /></span>}
+                                            </span>
+                                            <span className="block text-xs text-zinc-400 line-clamp-2 mt-0.5">{p.Descripcion || 'Sin descripción'}</span>
+                                        </span>
+                                    </button>
                                 )
                             })}
                         </div>
@@ -185,52 +283,50 @@ const PriceReports = ({ customers = [], onSearch }) => {
             </div>
 
             {/* RESULTS PANE */}
-            <div className="flex-1 overflow-y-auto bg-white rounded-lg shadow-sm border border-slate-200 p-6 custom-scrollbar relative">
+            <div className={`${CARD} flex-1 min-w-0 shrink-0 lg:shrink lg:h-full lg:overflow-y-auto custom-scrollbar relative p-4 sm:p-5`}>
                 {loading && (
-                    <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center">
-                        <i className="fa-solid fa-circle-notch fa-spin text-4xl text-indigo-600"></i>
+                    <div className="absolute inset-0 bg-white/80 z-10 flex items-center justify-center rounded-2xl">
+                        <Loader2 size={32} className="animate-spin text-brand-cyan" />
                     </div>
                 )}
-                
+
                 {!clientReport && !profileReport && !loading && (
-                    <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-60">
-                        <i className="fa-solid fa-magnifying-glass-chart text-6xl mb-4 text-slate-300"></i>
-                        <h3 className="text-xl font-bold">Panel Analítico</h3>
-                        <p>Selecciona un elemento en el panel izquierdo para desplegar el reporte.</p>
+                    <div className="min-h-[260px] h-full flex flex-col items-center justify-center text-center px-4">
+                        <ScanSearch size={40} className="mb-3 text-brand-cyan" />
+                        <h3 className="text-sm font-bold text-zinc-700">Panel Analítico</h3>
+                        <p className="text-xs text-zinc-400 mt-1">Selecciona un elemento en el panel izquierdo para desplegar el reporte.</p>
                     </div>
                 )}
 
                 {/* REPORTE CLIENTE */}
                 {clientReport && (
                     <div className="animate-fade-in">
-                        <div className="mb-6 flex justify-between items-center bg-indigo-50 p-4 rounded border border-indigo-100">
-                            <div>
-                                <h3 className="text-2xl font-bold text-indigo-900">
-                                    <i className="fa-solid fa-user-check text-indigo-500 mr-2"></i>
-                                    Análisis de Cliente: {clientReport.cliente?.IDCliente || clientReport.cliente?.Nombre}
+                        <div className="flex items-start gap-3 pb-4 mb-5 border-b border-zinc-100">
+                            <UserCheck size={22} className="text-brand-cyan shrink-0 mt-1" />
+                            <div className="min-w-0 flex-1">
+                                <p className={ROTULO}>Análisis de Cliente</p>
+                                <h3 className="text-lg sm:text-xl font-black text-zinc-900 leading-tight break-words mt-0.5">
+                                    {clientReport.cliente?.IDCliente || clientReport.cliente?.Nombre}
                                 </h3>
-                                <p className="text-indigo-600/80 font-mono text-sm mt-1">ID Interno: {clientReport.cliente?.CliIdCliente}</p>
+                                <p className="text-zinc-400 font-mono text-xs mt-1">ID Interno: {clientReport.cliente?.CliIdCliente}</p>
                             </div>
                         </div>
 
-                        <div className="space-y-8">
+                        <div className="flex flex-col gap-7">
                             {/* Nivel 1: Excepciones */}
                             <div>
-                                <h4 className="font-bold text-lg text-slate-800 border-b border-slate-200 pb-2 mb-4 flex items-center gap-2">
-                                    <div className="bg-red-100 text-red-600 w-6 h-6 rounded flex items-center justify-center text-xs">1</div>
-                                    Excepciones Directas (Precios Especiales)
-                                </h4>
+                                {tituloNivel(1, 'Excepciones Directas (Precios Especiales)', cuenta(clientReport.excepciones.length, 'precio', 'precios'))}
                                 {clientReport.excepciones.length === 0 ? (
-                                    <p className="text-slate-400 italic text-sm">Este cliente no tiene precios fijos ni excepciones pisadas manualmente.</p>
+                                    vacioNivel('Este cliente no tiene precios fijos ni excepciones pisadas manualmente.')
                                 ) : (
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                                    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-6 gap-2">
                                         {clientReport.excepciones.map((ex, i) => (
-                                            <div key={i} className="bg-white border border-red-200 rounded p-3 shadow-sm shadow-red-50">
-                                                <div className="font-bold text-slate-700">{ex.CodArticulo}</div>
-                                                <div className="text-sm font-mono text-red-600 mt-1">
-                                                    {ex.TipoRegla === 'percentage' || ex.TipoRegla === 'percentage_discount' || ex.TipoRegla === 'percentage_surcharge' ? 
-                                                        `${ex.TipoRegla.includes('surcharge')?'+':'-'}${ex.Valor}%` : 
-                                                        `$${ex.Valor}`
+                                            <div key={i} className="rounded-xl border border-zinc-200 bg-white px-3 py-2.5 min-w-0">
+                                                <div className="font-mono font-bold text-sm text-zinc-800 truncate" title={ex.CodArticulo}>{ex.CodArticulo}</div>
+                                                <div className="text-sm font-black tabular-nums text-brand-cyan mt-0.5">
+                                                    {ex.TipoRegla === 'percentage' || ex.TipoRegla === 'percentage_discount' || ex.TipoRegla === 'percentage_surcharge' ?
+                                                        `${ex.TipoRegla.includes('surcharge')?'+':'-'}${fmtPct(ex.Valor)}%` :
+                                                        `${simbolo(ex)} ${fmtMonto(ex.Valor)}`
                                                     }
                                                 </div>
                                             </div>
@@ -241,23 +337,23 @@ const PriceReports = ({ customers = [], onSearch }) => {
 
                             {/* Nivel 2: Perfiles Asignados */}
                             <div>
-                                <h4 className="font-bold text-lg text-slate-800 border-b border-slate-200 pb-2 mb-4 flex items-center gap-2">
-                                    <div className="bg-indigo-100 text-indigo-600 w-6 h-6 rounded flex items-center justify-center text-xs">2</div>
-                                    Perfiles y Convenios Aplicados
-                                </h4>
+                                {tituloNivel(2, 'Perfiles y Convenios Aplicados', cuenta(clientReport.perfilesAsignados.length, 'perfil', 'perfiles'))}
                                 {clientReport.perfilesAsignados.length === 0 ? (
-                                    <p className="text-slate-400 italic text-sm">El cliente no pertenece a ningún grupo de precios especial.</p>
+                                    vacioNivel('El cliente no pertenece a ningún grupo de precios especial.')
                                 ) : (
-                                    <div className="space-y-4">
+                                    <div className="flex flex-col gap-3">
                                         {clientReport.perfilesAsignados.map(p => {
                                             const rules = clientReport.reglasPerfiles.filter(r => r.PerfilID === p.ID);
                                             return (
-                                                <div key={p.ID} className="bg-indigo-50/50 border border-indigo-100 rounded overflow-hidden">
-                                                    <div className="bg-white p-3 border-b flex justify-between items-center">
-                                                        <span className="font-bold text-indigo-900"><i className="fa-solid fa-users text-indigo-400 mr-2"></i> {p.Nombre}</span>
-                                                        <span className="text-xs bg-indigo-100 text-indigo-700 font-bold px-2 py-0.5 rounded-full">{rules.length} reglas</span>
+                                                <div key={p.ID} className="rounded-xl border border-zinc-200 overflow-hidden">
+                                                    <div className="bg-zinc-50 px-3 sm:px-4 py-2.5 border-b border-zinc-200 flex justify-between items-center gap-3">
+                                                        <span className="flex items-center gap-2 min-w-0 font-bold text-sm text-zinc-800">
+                                                            <Users size={16} className="text-brand-cyan shrink-0" />
+                                                            <span className="min-w-0 break-words sm:truncate">{p.Nombre}</span>
+                                                        </span>
+                                                        <span className={`${CHIP} ${CHIP_CIAN} tabular-nums`}>{rules.length} reglas</span>
                                                     </div>
-                                                    <div className="p-3 overflow-x-auto">
+                                                    <div className="overflow-x-auto">
                                                         {(() => {
                                                             // Agrupar por producto (CodArticulo)
                                                             const grouped = {};
@@ -270,34 +366,65 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                                             const hasQty = rules.some(r => r.CantidadMinima > 1);
                                                             if (hasQty) {
                                                                 const allQtys = [...new Set(rules.map(r => r.CantidadMinima || 1))].sort((a,b)=>a-b);
-                                                                return (
-                                                                    <table className="w-full text-xs border-collapse">
-                                                                        <thead>
-                                                                            <tr className="bg-slate-50">
-                                                                                <th className="text-left p-2 font-semibold text-slate-600 border border-slate-200 min-w-[200px]">Producto / Grupo</th>
-                                                                                {allQtys.map(q => (
-                                                                                    <th key={q} className="p-2 font-semibold text-indigo-700 border border-slate-200 text-center min-w-[70px]">≥ {q} u.</th>
-                                                                                ))}
-                                                                            </tr>
-                                                                        </thead>
-                                                                        <tbody>
+                                                                if (!conTabla) {
+                                                                    // Celular: una tarjeta por producto con sus escalas
+                                                                    return (
+                                                                        <div className="p-3 flex flex-col gap-2">
                                                                             {products.map(prod => {
                                                                                 const g = grouped[prod];
                                                                                 return (
-                                                                                    <tr key={prod} className="hover:bg-indigo-50/30">
-                                                                                        <td className="p-2 border border-slate-200">
-                                                                                            <div className="font-bold text-slate-800">{prod}</div>
-                                                                                            {g.desc && g.desc !== prod && <div className="text-[10px] text-slate-400 mt-0.5">{g.desc}</div>}
+                                                                                    <div key={prod} className="rounded-xl border border-zinc-200 bg-white p-3">
+                                                                                        <div className="font-bold text-sm text-zinc-800 break-words">{prod}</div>
+                                                                                        {g.desc && g.desc !== prod && <div className="text-[11px] text-zinc-400 mt-0.5">{g.desc}</div>}
+                                                                                        <div className="grid grid-cols-3 gap-1.5 mt-2">
+                                                                                            {allQtys.map(q => {
+                                                                                                const match = g.rows.find(r => (r.CantidadMinima || 1) === q);
+                                                                                                return (
+                                                                                                    <div key={q} className="rounded-lg bg-zinc-50 px-2 py-1.5 min-w-0">
+                                                                                                        <div className="text-[10px] font-bold text-zinc-400 whitespace-nowrap">≥ {q} u.</div>
+                                                                                                        {match ? (
+                                                                                                            <div className={`text-xs font-mono font-bold tabular-nums truncate ${match.TipoRegla.includes('percent') ? 'text-brand-cyan' : 'text-zinc-800'}`}>
+                                                                                                                {valorRegla(match)}
+                                                                                                            </div>
+                                                                                                        ) : <div className="text-xs text-zinc-300">—</div>}
+                                                                                                    </div>
+                                                                                                );
+                                                                                            })}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                                return (
+                                                                    <table className="w-full text-xs">
+                                                                        <thead className="bg-white border-b border-zinc-200">
+                                                                            <tr>
+                                                                                <th className={`${TH} text-left min-w-[200px]`}>Producto / Grupo</th>
+                                                                                {allQtys.map(q => (
+                                                                                    <th key={q} className={`${TH} text-right min-w-[70px]`}>≥ {q} u.</th>
+                                                                                ))}
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody className="divide-y divide-zinc-100">
+                                                                            {products.map(prod => {
+                                                                                const g = grouped[prod];
+                                                                                return (
+                                                                                    <tr key={prod} className="hover:bg-zinc-50">
+                                                                                        <td className="px-3 py-2">
+                                                                                            <div className="font-bold text-zinc-800">{prod}</div>
+                                                                                            {g.desc && g.desc !== prod && <div className="text-[10px] text-zinc-400 mt-0.5">{g.desc}</div>}
                                                                                         </td>
                                                                                         {allQtys.map(q => {
                                                                                             const match = g.rows.find(r => (r.CantidadMinima || 1) === q);
                                                                                             return (
-                                                                                                <td key={q} className="p-2 text-center font-mono border border-slate-200">
+                                                                                                <td key={q} className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
                                                                                                     {match ? (
-                                                                                                        <span className={`font-bold ${match.TipoRegla.includes('percent') ? 'text-indigo-600' : 'text-emerald-600'}`}>
-                                                                                                            {match.TipoRegla.includes('percent') ? `${match.Valor}%` : `$${match.Valor}`}
+                                                                                                        <span className={`font-bold ${match.TipoRegla.includes('percent') ? 'text-brand-cyan' : 'text-zinc-800'}`}>
+                                                                                                            {valorRegla(match)}
                                                                                                         </span>
-                                                                                                    ) : <span className="text-slate-300">—</span>}
+                                                                                                    ) : <span className="text-zinc-300">—</span>}
                                                                                                 </td>
                                                                                             );
                                                                                         })}
@@ -310,12 +437,12 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                                             }
                                                             // Sin cantidades: vista simple de chips
                                                             return (
-                                                                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2">
+                                                                <div className="p-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 2xl:grid-cols-5 gap-2 empty:hidden">
                                                                     {rules.map((r, i) => (
-                                                                        <div key={i} className="text-xs bg-white border rounded p-1.5 flex justify-between items-center">
-                                                                            <span className="font-bold text-slate-600 truncate mr-2" title={r.CodArticulo}>{r.CodArticulo}</span>
-                                                                            <span className="font-mono text-indigo-600 flex-shrink-0">
-                                                                                {r.TipoRegla.includes('percent') ? `${r.Valor}%` : `$${r.Valor}`}
+                                                                        <div key={i} className="text-xs bg-white border border-zinc-200 rounded-lg px-2.5 py-1.5 flex justify-between items-center gap-2 min-w-0">
+                                                                            <span className="font-bold text-zinc-700 truncate" title={r.CodArticulo}>{r.CodArticulo || <span className="text-zinc-300">—</span>}</span>
+                                                                            <span className="font-mono font-bold tabular-nums text-brand-cyan shrink-0">
+                                                                                {valorRegla(r)}
                                                                             </span>
                                                                         </div>
                                                                     ))}
@@ -330,25 +457,25 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                 )}
                             </div>
 
-                            {/* Nivel 3: Globales */}
+                            {/* Nivel 3: Globales (más apagados: es la base que aplica a todos) */}
                             <div>
-                                <h4 className="font-bold text-lg text-slate-800 border-b border-slate-200 pb-2 mb-4 flex items-center gap-2">
-                                    <div className="bg-slate-200 text-slate-600 w-6 h-6 rounded flex items-center justify-center text-xs">3</div>
-                                    Políticas Globales Base
-                                </h4>
+                                {tituloNivel(3, 'Políticas Globales Base', cuenta(clientReport.perfilesGlobales.length, 'perfil', 'perfiles'))}
                                 {clientReport.perfilesGlobales.length === 0 ? (
-                                    <p className="text-slate-400 italic text-sm">No hay perfiles globales activos en la red.</p>
+                                    vacioNivel('No hay perfiles globales activos en la red.')
                                 ) : (
-                                    <div className="space-y-4 opacity-80 mix-blend-multiply">
+                                    <div className="flex flex-col gap-3">
                                         {clientReport.perfilesGlobales.map(p => {
                                             const rules = clientReport.reglasGlobales.filter(r => r.PerfilID === p.ID);
                                             return (
-                                                <div key={p.ID} className="bg-slate-50 border border-slate-200 rounded overflow-hidden">
-                                                    <div className="bg-slate-100 p-2 border-b flex justify-between items-center">
-                                                        <span className="font-bold text-slate-700 text-sm"><i className="fa-solid fa-earth-americas text-slate-400 mr-1"></i> {p.Nombre}</span>
-                                                        <span className="text-[10px] bg-slate-200 text-slate-500 font-bold px-2 py-0.5 rounded-full">{rules.length} items</span>
+                                                <div key={p.ID} className="rounded-xl border border-zinc-200 bg-zinc-50/60 overflow-hidden">
+                                                    <div className="bg-zinc-50 px-3 sm:px-4 py-2.5 border-b border-zinc-200 flex justify-between items-center gap-3">
+                                                        <span className="flex items-center gap-2 min-w-0 font-bold text-sm text-zinc-600">
+                                                            <Globe size={15} className="text-brand-cyan shrink-0" />
+                                                            <span className="min-w-0 break-words sm:truncate">{p.Nombre}</span>
+                                                        </span>
+                                                        <span className={`${CHIP} ${CHIP_GRIS} tabular-nums`}>{rules.length} items</span>
                                                     </div>
-                                                    <div className="p-2 overflow-x-auto">
+                                                    <div className="overflow-x-auto">
                                                         {(() => {
                                                             const grouped = {};
                                                             rules.forEach(r => {
@@ -360,34 +487,65 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                                             const hasQty = rules.some(r => r.CantidadMinima > 1);
                                                             if (hasQty) {
                                                                 const allQtys = [...new Set(rules.map(r => r.CantidadMinima || 1))].sort((a,b)=>a-b);
-                                                                return (
-                                                                    <table className="w-full text-[11px] border-collapse">
-                                                                        <thead>
-                                                                            <tr className="bg-white">
-                                                                                <th className="text-left p-2 font-semibold text-slate-600 border border-slate-200 min-w-[180px]">Producto</th>
-                                                                                {allQtys.map(q => (
-                                                                                    <th key={q} className="p-2 font-semibold text-slate-600 border border-slate-200 text-center min-w-[60px]">≥ {q}</th>
-                                                                                ))}
-                                                                            </tr>
-                                                                        </thead>
-                                                                        <tbody>
+                                                                if (!conTabla) {
+                                                                    // Celular: una tarjeta por producto con sus escalas
+                                                                    return (
+                                                                        <div className="p-2.5 flex flex-col gap-2">
                                                                             {products.map(prod => {
                                                                                 const g = grouped[prod];
                                                                                 return (
-                                                                                    <tr key={prod}>
-                                                                                        <td className="p-2 border border-slate-200">
-                                                                                            <div className="font-bold text-slate-700">{prod}</div>
-                                                                                            {g.desc && g.desc !== prod && <div className="text-[10px] text-slate-400 mt-0.5">{g.desc}</div>}
+                                                                                    <div key={prod} className="rounded-xl border border-zinc-200 bg-white p-3">
+                                                                                        <div className="font-bold text-sm text-zinc-700 break-words">{prod}</div>
+                                                                                        {g.desc && g.desc !== prod && <div className="text-[11px] text-zinc-400 mt-0.5">{g.desc}</div>}
+                                                                                        <div className="grid grid-cols-3 gap-1.5 mt-2">
+                                                                                            {allQtys.map(q => {
+                                                                                                const match = g.rows.find(r => (r.CantidadMinima || 1) === q);
+                                                                                                return (
+                                                                                                    <div key={q} className="rounded-lg bg-zinc-50 px-2 py-1.5 min-w-0">
+                                                                                                        <div className="text-[10px] font-bold text-zinc-400 whitespace-nowrap">≥ {q}</div>
+                                                                                                        {match ? (
+                                                                                                            <div className="text-xs font-mono font-bold tabular-nums truncate text-zinc-700">
+                                                                                                                {valorRegla(match)}
+                                                                                                            </div>
+                                                                                                        ) : <div className="text-xs text-zinc-300">—</div>}
+                                                                                                    </div>
+                                                                                                );
+                                                                                            })}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                );
+                                                                            })}
+                                                                        </div>
+                                                                    );
+                                                                }
+                                                                return (
+                                                                    <table className="w-full text-[11px] bg-white">
+                                                                        <thead className="border-b border-zinc-200">
+                                                                            <tr>
+                                                                                <th className={`${TH} text-left min-w-[180px]`}>Producto</th>
+                                                                                {allQtys.map(q => (
+                                                                                    <th key={q} className={`${TH} text-right min-w-[60px]`}>≥ {q}</th>
+                                                                                ))}
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody className="divide-y divide-zinc-100">
+                                                                            {products.map(prod => {
+                                                                                const g = grouped[prod];
+                                                                                return (
+                                                                                    <tr key={prod} className="hover:bg-zinc-50">
+                                                                                        <td className="px-3 py-2">
+                                                                                            <div className="font-bold text-zinc-700">{prod}</div>
+                                                                                            {g.desc && g.desc !== prod && <div className="text-[10px] text-zinc-400 mt-0.5">{g.desc}</div>}
                                                                                         </td>
                                                                                         {allQtys.map(q => {
                                                                                             const match = g.rows.find(r => (r.CantidadMinima || 1) === q);
                                                                                             return (
-                                                                                                <td key={q} className="p-2 text-center font-mono border border-slate-200">
+                                                                                                <td key={q} className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
                                                                                                     {match ? (
-                                                                                                        <span className="font-bold text-slate-700">
-                                                                                                            {match.TipoRegla.includes('percent') ? `${match.Valor}%` : `$${match.Valor}`}
+                                                                                                        <span className="font-bold text-zinc-700">
+                                                                                                            {valorRegla(match)}
                                                                                                         </span>
-                                                                                                    ) : <span className="text-slate-300">—</span>}
+                                                                                                    ) : <span className="text-zinc-300">—</span>}
                                                                                                 </td>
                                                                                             );
                                                                                         })}
@@ -399,10 +557,10 @@ const PriceReports = ({ customers = [], onSearch }) => {
                                                                 );
                                                             }
                                                             return (
-                                                                <div className="flex flex-wrap gap-1">
+                                                                <div className="p-2.5 flex flex-wrap gap-1.5 empty:hidden">
                                                                     {rules.map((r, i) => (
-                                                                        <span key={i} className="text-[10px] bg-white border border-slate-200 rounded px-1.5 py-0.5 font-mono text-slate-500">
-                                                                            {r.CodArticulo}: {r.TipoRegla.includes('percent')?'%':'$'}{r.Valor}
+                                                                        <span key={i} className="text-[11px] bg-white border border-zinc-200 rounded-lg px-2 py-0.5 font-mono text-zinc-500">
+                                                                            {r.CodArticulo || '—'}: <span className="font-bold text-zinc-700 tabular-nums">{valorRegla(r)}</span>
                                                                         </span>
                                                                     ))}
                                                                 </div>
@@ -422,39 +580,40 @@ const PriceReports = ({ customers = [], onSearch }) => {
                 {/* REPORTE PERFIL */}
                 {profileReport && (
                     <div className="animate-fade-in h-full flex flex-col">
-                        <div className="mb-6 flex justify-between items-center bg-indigo-50 p-4 rounded border border-indigo-100">
-                            <div>
-                                <h3 className="text-2xl font-bold text-indigo-900">
-                                    <i className="fa-solid fa-users text-indigo-500 mr-2"></i>
-                                    Perfil: {profileReport.profile?.Nombre}
+                        <div className="flex flex-wrap items-start gap-3 pb-4 mb-5 border-b border-zinc-100">
+                            <Users size={22} className="text-brand-cyan shrink-0 mt-1" />
+                            <div className="min-w-[200px] flex-1">
+                                <p className={ROTULO}>Perfil</p>
+                                <h3 className="text-lg sm:text-xl font-black text-zinc-900 leading-tight break-words mt-0.5">
+                                    {profileReport.profile?.Nombre}
                                 </h3>
-                                <p className="text-indigo-600/80 text-sm mt-1">{profileReport.clients.length} clientes asimilados registrados (exclusivo clientes en BDD).</p>
+                                <p className="text-zinc-400 text-xs mt-1">{profileReport.clients.length} clientes asimilados registrados (exclusivo clientes en BDD).</p>
                             </div>
                             {profileReport.profile?.EsGlobal && (
-                                <span className="bg-blue-100 text-blue-800 text-xs font-bold px-3 py-1 rounded-full border border-blue-200">
-                                    <i className="fa-solid fa-earth-americas"></i> PERFIL GLOBAL (Afecta a todos)
+                                <span className={`${CHIP} ${CHIP_CIAN}`}>
+                                    <Globe size={13} /> PERFIL GLOBAL (Afecta a todos)
                                 </span>
                             )}
                         </div>
 
                         <div className="flex-1">
                             {profileReport.clients.length === 0 ? (
-                                <div className="text-center p-12 border-2 border-dashed border-slate-200 rounded-lg">
-                                    <i className="fa-solid fa-user-xmark text-4xl text-slate-300 mb-2"></i>
-                                    <p className="text-slate-500 font-medium">Ningún cliente tiene asignado este perfil de manera cruzada explícita.</p>
+                                <div className="flex flex-col items-center justify-center text-center px-4 py-12 border border-dashed border-zinc-200 rounded-2xl">
+                                    <UserX size={40} className="mb-3 text-brand-cyan" />
+                                    <p className="text-sm font-bold text-zinc-700">Ningún cliente tiene asignado este perfil de manera cruzada explícita.</p>
                                 </div>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+                                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-3">
                                     {profileReport.clients.map(c => (
-                                        <div key={c.CliIdCliente} className="bg-white border hover:border-indigo-400 transition-colors rounded-lg p-4 shadow-sm">
-                                            <div className="font-bold text-slate-800 text-sm mb-1.5 truncate" title={c.Nombre || c.NombreFantasia}>
+                                        <div key={c.CliIdCliente} className="rounded-xl border border-zinc-200 bg-white p-3 hover:border-brand-cyan/40 transition-colors min-w-0">
+                                            <div className="font-bold text-zinc-800 text-sm mb-2 truncate" title={c.Nombre || c.NombreFantasia}>
                                                 {c.Nombre || c.NombreFantasia || 'Desconocido'}
                                             </div>
-                                            <div className="flex gap-3 text-[11px] font-mono">
-                                                <span className="bg-indigo-50 text-indigo-700 border border-indigo-100 px-2 py-0.5 rounded" title="IDCliente (código sistema)">
+                                            <div className="flex flex-wrap gap-1.5 text-[11px] font-mono">
+                                                <span className="bg-brand-cyan/10 text-brand-cyan border border-brand-cyan/20 px-2 py-0.5 rounded-lg" title="IDCliente (código sistema)">
                                                     IDCliente: {c.IDCliente || '—'}
                                                 </span>
-                                                <span className="bg-slate-100 text-slate-600 border border-slate-200 px-2 py-0.5 rounded" title="CliIdCliente (ID interno)">
+                                                <span className="bg-zinc-100 text-zinc-600 border border-zinc-200 px-2 py-0.5 rounded-lg" title="CliIdCliente (ID interno)">
                                                     CliIdCliente: {c.CliIdCliente}
                                                 </span>
                                             </div>

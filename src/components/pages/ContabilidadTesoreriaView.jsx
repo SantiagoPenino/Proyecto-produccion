@@ -1,13 +1,38 @@
 import React, { useState, useEffect } from 'react';
-import { Landmark, ArrowDownRight, ArrowUpRight, Search, Plus, Send, XCircle, CheckCircle2, ChevronRight, Clock, AlertTriangle, Loader2 } from 'lucide-react';
+import { Landmark, ArrowDownRight, ArrowUpRight, AlertTriangle, Loader2, SearchX } from 'lucide-react';
 import api from '../../services/apiClient';
 import { toast } from 'sonner';
 import ChequeRecibirModal from './tesoreria/ChequeRecibirModal';
 import ChequeEmitirModal from './tesoreria/ChequeEmitirModal';
 import ChequeDetalleModal from './tesoreria/ChequeDetalleModal';
+import Selector from '../ui/Selector';
 // Las fechas del cheque son columnas DATE: formatearlas con toLocaleDateString las
 // retrocedía un día (ver src/utils/fechas.js).
 import { fmtFecha, porFechaDesc } from '../../utils/fechas';
+
+// Estética nueva (27/10/2026): encabezado, pestañas en pastillas (Selector en el celular), tabla clara (en el
+// celular, una tarjeta por cheque), estados con color de estado y acciones parejas. La lógica no cambió.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const TH = 'px-4 py-3 text-left text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+// Botón de acción de la fila: gris, se pone cian al pasar (magenta en los que dan de baja o rechazan)
+const ACCION = 'px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 transition-colors whitespace-nowrap';
+const ACCION_CIAN = `${ACCION} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5`;
+const ACCION_PELIGRO = `${ACCION} hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`;
+
+// En el celular, tarjetas en vez de la tabla (una vista sola: no se dibujan las dos ocultando una)
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+  const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+  useEffect(() => {
+    const mq = window.matchMedia(MQ_TABLA);
+    const cambio = () => setConTabla(mq.matches);
+    mq.addEventListener('change', cambio);
+    return () => mq.removeEventListener('change', cambio);
+  }, []);
+  return conTabla;
+}
 
 export default function ContabilidadTesoreriaView() {
   const [bancos, setBancos] = useState([]);
@@ -21,6 +46,7 @@ export default function ContabilidadTesoreriaView() {
   const [aAnular, setAAnular] = useState(null);        // cheque en el diálogo de anulación
   const [motivoAnular, setMotivoAnular] = useState('');
   const [detalle, setDetalle] = useState(null);        // cheque abierto en el modal de detalle/edición
+  const conTabla = useConTabla();
 
   useEffect(() => {
     fetchData();
@@ -89,160 +115,197 @@ export default function ContabilidadTesoreriaView() {
   const formatCurrency = (val, idMoneda = 1) =>
     new Intl.NumberFormat('es-UY', { style: 'currency', currency: Number(idMoneda) === 2 ? 'USD' : 'UYU' }).format(val);
 
+  // Color de estado: en cartera verde, depositado cian, emitido (falta el débito) ámbar, rechazado magenta;
+  // endosado, cobrado y anulado en gris (ya salieron de la cartera).
   const getStateColor = (estado) => {
     const colors = {
-      'EN_CARTERA': 'bg-emerald-100 text-emerald-800 border-emerald-200',
-      'DEPOSITADO': 'bg-blue-100 text-blue-800 border-blue-200',
-      'ENDOSADO': 'bg-indigo-100 text-indigo-800 border-indigo-200',
-      'EMITIDO': 'bg-amber-100 text-amber-800 border-amber-200',
-      'RECHAZADO': 'bg-red-100 text-red-800 border-red-200',
-      'COBRADO': 'bg-slate-100 text-slate-800 border-slate-200',
-      'ANULADO': 'bg-slate-100 text-slate-400 border-slate-200 line-through',
+      'EN_CARTERA': 'bg-emerald-50 text-emerald-700 border-emerald-200',
+      'DEPOSITADO': 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20',
+      'ENDOSADO': 'bg-zinc-50 text-zinc-600 border-zinc-200',
+      'EMITIDO': 'bg-amber-50 text-amber-700 border-amber-200',
+      'RECHAZADO': 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20',
+      'COBRADO': 'bg-zinc-50 text-zinc-600 border-zinc-200',
+      'ANULADO': 'bg-zinc-50 text-zinc-400 border-zinc-200 line-through',
     };
-    return colors[estado] || 'bg-slate-100 text-slate-600';
+    return colors[estado] || 'bg-zinc-50 text-zinc-600 border-zinc-200';
   };
 
-  return (
-    <div className="flex-1 flex flex-col h-full bg-[#f8fafc] overflow-hidden">
-      {/* HEADER */}
-      <div className="bg-white border-b border-slate-200 px-8 py-6 shrink-0 z-10 flex justify-between items-center shadow-sm">
-        <div>
-          <h1 className="text-3xl font-black text-slate-800 tracking-tight flex items-center gap-3">
-            <div className="bg-indigo-100 text-indigo-600 p-2 rounded-xl">
-              <Landmark size={28} />
-            </div>
-            Tesorería & Cartera
-          </h1>
-          <p className="text-slate-500 font-medium mt-1">Gestión de cheques propios y de terceros</p>
-        </div>
-        <div className="flex gap-3">
-          <button 
-            onClick={() => setShowRecibirModal(true)}
-            className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-5 py-2.5 rounded-xl font-bold hover:bg-emerald-100 transition-colors border border-emerald-200">
-            <ArrowDownRight size={20} /> Recibir Cheque
+  const TABS = [
+    { id: 'CARTERA', label: 'Cartera (terceros)', count: cheques.filter(c => c.Tipo === 'TERCERO' && c.Estado === 'EN_CARTERA').length },
+    { id: 'PROPIOS', label: 'Cheques emitidos', count: cheques.filter(c => c.Tipo === 'PROPIO' && c.Estado === 'EMITIDO').length },
+    { id: 'HISTORIAL', label: 'Historial completo' },
+  ];
+  const lista = getFilteredCheques();
+
+  const estado = (cheque) => (
+    <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-[10px] font-bold border uppercase tracking-wide whitespace-nowrap ${getStateColor(cheque.Estado)}`}>
+      {cheque.Estado.replace('_', ' ')}
+    </span>
+  );
+
+  // Los botones no dependen del hover: se ven siempre, si no la columna parece vacía y nadie sabe que hay acciones.
+  const acciones = (cheque) => accionando === cheque.IdCheque ? (
+    <span className="inline-flex items-center gap-2 text-zinc-400 font-bold text-xs">
+      <Loader2 size={15} className="animate-spin text-brand-cyan" /> Procesando…
+    </span>
+  ) : (
+    <div className="flex flex-wrap justify-end gap-1.5">
+      {/* Ver / editar: disponible siempre. Sirve para completar el cliente
+          que lo depositó, el librador, etc. sin anular y recargar. */}
+      <button onClick={() => setDetalle(cheque)} className={ACCION_CIAN} title="Ver y editar los datos del cheque">
+        {cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO' ? 'Ver / Editar' : 'Ver'}
+      </button>
+      {cheque.Estado === 'EN_CARTERA' && (
+        <>
+          <button onClick={() => cambiarEstado(cheque, 'DEPOSITADO', 'Depositado')} className={ACCION_CIAN} title="Lo llevaste al banco">
+            Depositar
           </button>
-          <button 
-            onClick={() => setShowEmitirModal(true)}
-            className="flex items-center gap-2 bg-amber-50 text-amber-700 px-5 py-2.5 rounded-xl font-bold hover:bg-amber-100 transition-colors border border-amber-200">
-            <ArrowUpRight size={20} /> Emitir Cheque
+          <button onClick={() => cambiarEstado(cheque, 'ENDOSADO', 'Endosado')} className={ACCION_CIAN} title="Se lo pasaste a un proveedor">
+            Endosar
+          </button>
+          <button onClick={() => cambiarEstado(cheque, 'RECHAZADO', 'Rechazado')} className={ACCION_PELIGRO} title="El banco lo rebotó">
+            Rechazar
+          </button>
+        </>
+      )}
+      {cheque.Estado === 'EMITIDO' && (
+        <button onClick={() => cambiarEstado(cheque, 'COBRADO', 'Cobrado')} className={ACCION_CIAN} title="El banco te lo debitó">
+          Cobrado (Débito)
+        </button>
+      )}
+      {/* Anular: para el cheque cargado por error. Revierte el asiento. Solo en su
+          estado inicial: depositado, endosado o cobrado ya existió afuera. */}
+      {(cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO') && (
+        <button onClick={() => { setAAnular(cheque); setMotivoAnular(''); }} className={ACCION_PELIGRO}
+          title="Cargado por error: lo da de baja y revierte el asiento">
+          Anular
+        </button>
+      )}
+    </div>
+  );
+
+  const sinFilas = loading ? (
+    <span className="inline-flex items-center gap-2 text-sm text-zinc-400">
+      <Loader2 size={18} className="animate-spin text-brand-cyan" /> Cargando cheques...
+    </span>
+  ) : lista.length === 0 ? (
+    <div className="flex flex-col items-center justify-center text-center">
+      <SearchX size={40} className="mb-3 text-brand-cyan" />
+      <span className="text-sm font-bold text-zinc-700">No hay cheques en esta vista</span>
+    </div>
+  ) : null;
+
+  return (
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
+      {/* HEADER */}
+      <div className="flex flex-wrap items-center gap-3">
+        <Landmark size={30} className="text-brand-cyan shrink-0" />
+        <div className="min-w-[220px] flex-1">
+          <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Tesorería y cartera</h1>
+          <p className="text-sm text-zinc-500 mt-1">Gestión de cheques propios y de terceros</p>
+        </div>
+        <div className="flex gap-2 w-full sm:w-auto sm:ml-auto">
+          <button onClick={() => setShowRecibirModal(true)} className={`${BTN_PRINCIPAL} flex-1 sm:flex-none`}>
+            <ArrowDownRight size={16} /> Recibir cheque
+          </button>
+          <button onClick={() => setShowEmitirModal(true)} className={`${BTN_SECUNDARIO} flex-1 sm:flex-none`}>
+            <ArrowUpRight size={16} className="text-brand-magenta" /> Emitir cheque
           </button>
         </div>
       </div>
 
-      {/* TABS */}
-      <div className="px-8 pt-6">
-        <div className="flex gap-4 border-b border-slate-200">
-          <TabButton active={tab === 'CARTERA'} onClick={() => setTab('CARTERA')} label="Cartera (Terceros)" count={cheques.filter(c => c.Tipo === 'TERCERO' && c.Estado === 'EN_CARTERA').length} />
-          <TabButton active={tab === 'PROPIOS'} onClick={() => setTab('PROPIOS')} label="Cheques Emitidos" count={cheques.filter(c => c.Tipo === 'PROPIO' && c.Estado === 'EMITIDO').length} />
-          <TabButton active={tab === 'HISTORIAL'} onClick={() => setTab('HISTORIAL')} label="Historial Completo" />
-        </div>
+      {/* TABS: pastillas en escritorio, Selector en el celular */}
+      <div className="hidden md:inline-flex self-start rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+        {TABS.map(t => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-sm font-bold transition-colors whitespace-nowrap ${tab === t.id ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+            {t.label}
+            {t.count !== undefined && (
+              <span className={`min-w-[22px] px-1.5 py-0.5 rounded-full text-[11px] font-black tabular-nums ${tab === t.id ? 'bg-white/15 text-white' : 'bg-zinc-100 text-zinc-500'}`}>{t.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+      <div className="md:hidden">
+        <Selector className="w-full" value={tab} onChange={e => setTab(e.target.value)} aria-label="Vista">
+          {TABS.map(t => <option key={t.id} value={t.id}>{t.label}{t.count !== undefined ? ` (${t.count})` : ''}</option>)}
+        </Selector>
       </div>
 
       {/* CONTENT */}
-      <div className="flex-1 overflow-auto p-8">
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50 border-b border-slate-200 text-sm font-bold text-slate-500 uppercase tracking-wider">
-                <th className="p-4 pl-6">Nº Cheque / Banco</th>
-                <th className="p-4">Importe</th>
-                <th className="p-4">Fechas</th>
-                <th className="p-4">Estado</th>
-                <th className="p-4 text-right pr-6">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {loading ? (
-                <tr><td colSpan="5" className="p-8 text-center text-slate-400">Cargando...</td></tr>
-              ) : getFilteredCheques().length === 0 ? (
-                <tr><td colSpan="5" className="p-8 text-center text-slate-400 font-medium">No hay cheques en esta vista</td></tr>
-              ) : (
-                getFilteredCheques().map(cheque => (
-                  <tr key={cheque.IdCheque} className="hover:bg-slate-50 transition-colors group">
-                    <td className="p-4 pl-6">
-                      <div className="font-bold text-slate-800 text-base">{cheque.NumeroCheque}</div>
-                      <div className="text-sm text-slate-500">{cheque.NombreBanco}</div>
-                    </td>
-                    <td className="p-4">
-                      <div className="font-black text-slate-800 text-lg">{formatCurrency(cheque.Monto, cheque.IdMoneda)}</div>
-                    </td>
-                    <td className="p-4">
-                      <div className="text-sm font-medium text-slate-700 flex items-center gap-1">
-                        <span className="text-slate-400 w-8">Emi:</span> {fmtFecha(cheque.FechaEmision)}
-                      </div>
-                      <div className="text-sm font-bold text-indigo-700 flex items-center gap-1">
-                        <span className="text-slate-400 w-8 font-medium">Vto:</span> {fmtFecha(cheque.FechaVencimiento)}
-                      </div>
-                    </td>
-                    <td className="p-4">
-                      <span className={`px-3 py-1 rounded-full text-xs font-black border uppercase tracking-wider ${getStateColor(cheque.Estado)}`}>
-                        {cheque.Estado.replace('_', ' ')}
-                      </span>
-                    </td>
-                    {/* Los botones ya no dependen del hover: se ven siempre, si no la
-                        columna parece vacía y nadie sabe que hay acciones. */}
-                    <td className="p-4 text-right pr-6">
-                      {accionando === cheque.IdCheque ? (
-                        <span className="inline-flex items-center gap-2 text-slate-400 font-bold text-sm">
-                          <Loader2 size={16} className="animate-spin" /> Procesando…
-                        </span>
-                      ) : (
-                        <div className="flex justify-end gap-2">
-                          {/* Ver / editar: disponible siempre. Sirve para completar el cliente
-                              que lo depositó, el librador, etc. sin anular y recargar. */}
-                          <button onClick={() => setDetalle(cheque)}
-                            className="bg-slate-100 text-slate-600 px-3 py-2 rounded-lg hover:bg-slate-200 font-bold text-sm" title="Ver y editar los datos del cheque">
-                            {cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO' ? 'Ver / Editar' : 'Ver'}
-                          </button>
-                          {cheque.Estado === 'EN_CARTERA' && (
-                            <>
-                              <button onClick={() => cambiarEstado(cheque, 'DEPOSITADO', 'Depositado')}
-                                className="bg-blue-50 text-blue-700 px-3 py-2 rounded-lg hover:bg-blue-100 font-bold text-sm" title="Lo llevaste al banco">
-                                Depositar
-                              </button>
-                              <button onClick={() => cambiarEstado(cheque, 'ENDOSADO', 'Endosado')}
-                                className="bg-indigo-50 text-indigo-700 px-3 py-2 rounded-lg hover:bg-indigo-100 font-bold text-sm" title="Se lo pasaste a un proveedor">
-                                Endosar
-                              </button>
-                              <button onClick={() => cambiarEstado(cheque, 'RECHAZADO', 'Rechazado')}
-                                className="bg-red-50 text-red-700 px-3 py-2 rounded-lg hover:bg-red-100 font-bold text-sm" title="El banco lo rebotó">
-                                Rechazar
-                              </button>
-                            </>
-                          )}
-                          {cheque.Estado === 'EMITIDO' && (
-                            <button onClick={() => cambiarEstado(cheque, 'COBRADO', 'Cobrado')}
-                              className="bg-emerald-50 text-emerald-700 px-3 py-2 rounded-lg hover:bg-emerald-100 font-bold text-sm" title="El banco te lo debitó">
-                              Cobrado (Débito)
-                            </button>
-                          )}
-                          {/* Anular: para el cheque cargado por error. Revierte el asiento. Solo en su
-                              estado inicial: depositado, endosado o cobrado ya existió afuera. */}
-                          {(cheque.Estado === 'EN_CARTERA' || cheque.Estado === 'EMITIDO') && (
-                            <button onClick={() => { setAAnular(cheque); setMotivoAnular(''); }}
-                              className="bg-slate-50 text-slate-500 border border-slate-200 px-3 py-2 rounded-lg hover:bg-red-50 hover:text-red-700 hover:border-red-200 font-bold text-sm"
-                              title="Cargado por error: lo da de baja y revierte el asiento">
-                              Anular
-                            </button>
-                          )}
-                        </div>
-                      )}
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+      {!conTabla ? (
+        <div className="flex flex-col gap-2.5">
+          {sinFilas ? <div className={`${CARD} px-4 py-12 text-center`}>{sinFilas}</div> : lista.map(cheque => (
+            <div key={cheque.IdCheque} className={`${CARD} p-3.5 flex flex-col gap-2.5`}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono font-bold text-zinc-900">{cheque.NumeroCheque}</div>
+                  <div className="text-xs text-zinc-500">{cheque.NombreBanco}</div>
+                </div>
+                <div className="text-right shrink-0">
+                  <div className="font-black text-zinc-900 tabular-nums whitespace-nowrap">{formatCurrency(cheque.Monto, cheque.IdMoneda)}</div>
+                  <div className="mt-1">{estado(cheque)}</div>
+                </div>
+              </div>
+              <div className="text-xs text-zinc-500 tabular-nums">
+                Emitido {fmtFecha(cheque.FechaEmision)} · <span className="font-bold text-zinc-800">vence {fmtFecha(cheque.FechaVencimiento)}</span>
+              </div>
+              <div className="pt-2.5 border-t border-zinc-100">{acciones(cheque)}</div>
+            </div>
+          ))}
         </div>
-      </div>
-      
+      ) : (
+        <div className={`${CARD} overflow-hidden`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead className="bg-zinc-50 border-b border-zinc-200">
+                <tr>
+                  <th className={TH}>Nº cheque / Banco</th>
+                  <th className={TH}>Importe</th>
+                  <th className={TH}>Fechas</th>
+                  <th className={TH}>Estado</th>
+                  <th className={`${TH} text-right`}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {sinFilas ? (
+                  <tr><td colSpan="5" className="px-4 py-14 text-center">{sinFilas}</td></tr>
+                ) : (
+                  lista.map(cheque => (
+                    <tr key={cheque.IdCheque} className="hover:bg-zinc-50 transition-colors">
+                      <td className="px-4 py-3">
+                        <div className="font-mono font-bold text-zinc-900">{cheque.NumeroCheque}</div>
+                        <div className="text-xs text-zinc-500">{cheque.NombreBanco}</div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        <div className="font-black text-zinc-900 tabular-nums">{formatCurrency(cheque.Monto, cheque.IdMoneda)}</div>
+                      </td>
+                      <td className="px-4 py-3 whitespace-nowrap tabular-nums">
+                        <div className="text-xs text-zinc-500 flex items-center gap-1">
+                          <span className="text-zinc-400 w-8">Emi:</span> {fmtFecha(cheque.FechaEmision)}
+                        </div>
+                        <div className="text-xs font-bold text-zinc-800 flex items-center gap-1">
+                          <span className="text-zinc-400 w-8 font-medium">Vto:</span> {fmtFecha(cheque.FechaVencimiento)}
+                        </div>
+                      </td>
+                      <td className="px-4 py-3">{estado(cheque)}</td>
+                      <td className="px-4 py-3 text-right">{acciones(cheque)}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {showRecibirModal && (
-        <ChequeRecibirModal 
-          onClose={() => setShowRecibirModal(false)} 
+        <ChequeRecibirModal
+          onClose={() => setShowRecibirModal(false)}
           onSuccess={() => {
             setShowRecibirModal(false);
             fetchData();
-          }} 
+          }}
         />
       )}
       {showEmitirModal && (
@@ -266,50 +329,46 @@ export default function ContabilidadTesoreriaView() {
 
       {/* Anular cheque — pide motivo y explica qué se revierte */}
       {aAnular && (
-        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4">
+        <div className="fixed inset-0 z-[6000] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4">
             <div className="flex items-start gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-red-100 border border-red-200 flex items-center justify-center shrink-0">
-                <AlertTriangle size={22} className="text-red-600" />
-              </div>
+              <AlertTriangle size={22} className="text-brand-magenta shrink-0 mt-0.5" />
               <div>
-                <h3 className="font-black text-slate-900 text-lg leading-tight">Anular cheque N° {aAnular.NumeroCheque}</h3>
-                <p className="text-sm text-slate-500 font-medium mt-0.5">
+                <h3 className="font-black text-zinc-900 text-lg leading-tight">Anular cheque N° {aAnular.NumeroCheque}</h3>
+                <p className="text-sm text-zinc-500 mt-0.5 tabular-nums">
                   {aAnular.NombreBanco} · {formatCurrency(aAnular.Monto, aAnular.IdMoneda)} · vto {fmtFecha(aAnular.FechaVencimiento)}
                 </p>
               </div>
             </div>
 
-            <div className="bg-slate-50 border border-slate-200 rounded-2xl px-4 py-3 text-xs text-slate-600 font-medium leading-relaxed">
+            <div className="bg-zinc-50 border border-zinc-200 rounded-xl px-4 py-3 text-xs text-zinc-600 leading-relaxed">
               El cheque sale de la cartera y <strong>se revierte su asiento contable</strong> (se genera la
               contrapartida; el asiento original no se borra). La fila queda como <strong>ANULADO</strong> en
               el historial, no se elimina. Si el cheque está vinculado a un cobro, primero hay que anular ese cobro.
             </div>
 
             <div>
-              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Motivo</label>
+              <label htmlFor="motivo-anular-cheque" className="block text-[10px] font-black text-zinc-400 uppercase tracking-widest mb-1.5">Motivo</label>
               <input
+                id="motivo-anular-cheque"
                 autoFocus
                 value={motivoAnular}
                 onChange={e => setMotivoAnular(e.target.value)}
                 placeholder="Ej: cargado dos veces por error"
-                className="w-full mt-1 bg-white border-2 border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold text-slate-800 outline-none focus:border-indigo-500"
+                className="w-full px-3 py-2 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15"
               />
             </div>
 
-            <div className="flex gap-2">
-              <button
-                onClick={() => { setAAnular(null); setMotivoAnular(''); }}
-                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-white border-2 border-slate-200 text-slate-600 hover:bg-slate-50"
-              >
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setAAnular(null); setMotivoAnular(''); }} className={BTN_SECUNDARIO}>
                 Cancelar
               </button>
               <button
                 onClick={anularCheque}
                 disabled={!motivoAnular.trim() || accionando === aAnular.IdCheque}
-                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-red-600 text-white hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed"
+                className="inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-magenta text-white text-sm font-bold hover:bg-brand-magenta/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
-                {accionando === aAnular.IdCheque ? 'Anulando…' : 'Anular y revertir asiento'}
+                {accionando === aAnular.IdCheque ? <><Loader2 size={15} className="animate-spin" /> Anulando…</> : 'Anular y revertir asiento'}
               </button>
             </div>
           </div>
@@ -318,20 +377,3 @@ export default function ContabilidadTesoreriaView() {
     </div>
   );
 }
-
-const TabButton = ({ active, onClick, label, count }) => (
-  <button
-    onClick={onClick}
-    className={`pb-4 px-2 font-bold text-base transition-colors relative ${
-      active ? 'text-indigo-600' : 'text-slate-400 hover:text-slate-600'
-    }`}
-  >
-    {label}
-    {count !== undefined && (
-      <span className={`ml-2 px-2 py-0.5 rounded-full text-xs ${active ? 'bg-indigo-100 text-indigo-700' : 'bg-slate-100 text-slate-500'}`}>
-        {count}
-      </span>
-    )}
-    {active && <div className="absolute bottom-0 left-0 right-0 h-1 bg-indigo-600 rounded-t-full" />}
-  </button>
-);

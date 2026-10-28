@@ -14,6 +14,7 @@ router.get('/area', interno, inventoryController.getInventoryByArea); // ?areaId
 router.post('/stock/add', interno, inventoryController.addStock);
 router.post('/stock/close', interno, inventoryController.closeBobina);
 router.post('/stock/adjust', interno, inventoryController.adjustBobina); // Nueva ruta ajuste
+router.get('/stock/bobina/:id', interno, inventoryController.getBobina); // Saldo actual de una bobina (el modal de ajuste la relee al abrirse)
 router.get('/stock/history', interno, inventoryController.getBobinaHistory); // Nueva ruta historial
 router.post('/stock/confirmar-medida', interno, inventoryController.confirmarMedida); // Confirmar medida tela de cliente
 router.get('/stock/estado-tela',       interno, inventoryController.getEstadoTela);   // Estado de cuenta por bobina

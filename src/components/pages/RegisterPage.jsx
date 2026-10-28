@@ -307,7 +307,7 @@ const RegisterPage = () => {
 
                                 {/* Email */}
                                 <Field label="Email" icon={Mail} required error={fieldErrors.email}>
-                                    <input type="email" className={`${inputClass} ${fieldErrors.email ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder="tu@email.com" value={form.email} onChange={set('email')} onBlur={handleBlur('email')} />
+                                    <input type="email" className={`${inputClass} ${fieldErrors.email ? 'border-custom-magenta focus:ring-brand-magenta focus:border-custom-magenta' : ''}`} placeholder="tu@email.com" value={form.email} maxLength={40} onChange={set('email')} onBlur={handleBlur('email')} />
                                 </Field>
 
                                 {/* Contraseña | Confirmar Contraseña */}

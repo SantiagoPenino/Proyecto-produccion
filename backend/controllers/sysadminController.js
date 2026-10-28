@@ -516,6 +516,10 @@ exports.estadoBackup = (req, res) => {
 //  · (22/10/2026) iabjs://: los scripts que inyecta el navegador interno de Instagram/Facebook en
 //    Android ("Error invoking postMessage: Java object is gone", en=iabjs://navigation_performance_
 //    logger_android). Se cuentan como una extensión más: solo se descartan si TODO el stack es de ahí.
+//  · (27/10/2026) "_META": lo mismo en iPhone ("evaluating 'window._META.IABInnerFrame'", al entrar
+//    desde el link de la bio). WebKit le pone la URL de la página al script inyectado, así que el stack
+//    parece nuestro (user.com.uy/:1:51, y la línea 1 del index.html es el DOCTYPE): se reconoce por el
+//    mensaje. La app no usa _META.
 // No se guardan ni se loguean, y no cuentan para la alerta de "muchos errores".
 // La misma regla está en src/utils/errorReporter.js (ahí evita mandarlos); acá cubre a los
 // navegadores que todavía tienen el front viejo.
@@ -525,6 +529,7 @@ const esRuidoAjeno = (message, source, stack) => {
     const m = String(message || '');
     if (/window\.ethereum/i.test(m)) return true;
     if (/__firefox__/.test(m)) return true;
+    if (/\b_META\b/.test(m)) return true;
     const urls = `${stack || ''}\n${source || ''}`.match(RX_URL_STACK) || [];
     if (urls.length && urls.every(u => RX_EXTENSION.test(u))) return true;
     const sinOrigen = !source || /^(undefined|null)?:0:0$/.test(String(source).trim());

@@ -32,6 +32,12 @@ export const telaClienteService = {
         return response.data;
     },
 
+    // La tela se le dio en mano al cliente: cierra la solicitud (y la bobina, si sigue abierta)
+    marcarEntregada: async (tevId, nota) => {
+        const response = await api.post(`/tela-cliente/bandeja/${tevId}/entregada`, { nota });
+        return response.data;
+    },
+
     empaquetarDevolucion: async (tevId) => {
         const response = await api.post(`/tela-cliente/bandeja/${tevId}/empaquetar`);
         return response.data;

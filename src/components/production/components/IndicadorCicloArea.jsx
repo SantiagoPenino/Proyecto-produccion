@@ -5,7 +5,7 @@ import { Timer, X, Loader2, TriangleAlert } from 'lucide-react';
 import { cicloPlantaService } from '../../../services/api';
 import Selector from '../../ui/Selector';
 import SelectorFecha from '../../ui/SelectorFecha';
-import { fmtDuracion, fmtDiasHabiles, fmtCorridos, ORIGEN_INICIO, tituloCiclo } from '../../../utils/cicloPlanta';
+import { fmtDuracion, fmtDiasHabiles, fmtCiclo, fmtHorasCorto, superaJornada, fmtCorridos, ORIGEN_INICIO, tituloCiclo } from '../../../utils/cicloPlanta';
 
 // Tiempo de respuesta del área (plan INF-SIS-2026-04): promedio del ciclo en planta de las órdenes de clientes
 // (Normal y Urgente) que quedaron prontas en los últimos 30 días. El ciclo de cada orden son las horas laborales
@@ -60,6 +60,8 @@ function DetalleCiclo({ area, nombre, onCerrar, onAbrirOrden }) {
     });
     const jornada = d?.minutosJornada;
     const maxSemana = Math.max(1, ...(d?.semanas || []).map(s => s.promedio || 0));
+    // Las barras van todas en la misma unidad: en días hábiles solo si alguna semana pasa de una jornada
+    const semanasEnDias = (d?.semanas || []).some(s => s.ordenes && superaJornada(s.promedio, jornada));
 
     return createPortal(
         <div className="fixed inset-0 z-[6000] flex items-start sm:items-center justify-center bg-zinc-900/60 overflow-y-auto p-0 sm:p-4" onMouseDown={onCerrar}>
@@ -116,8 +118,8 @@ function DetalleCiclo({ area, nombre, onCerrar, onAbrirOrden }) {
                             )}
 
                             <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-                                <Tarjeta titulo="Promedio" valor={fmtDiasHabiles(d.promedio, jornada)} detalle={`${fmtDuracion(d.promedio)} laborales`} />
-                                <Tarjeta titulo="Mediana" valor={fmtDiasHabiles(d.mediana, jornada)} detalle={`${fmtDuracion(d.mediana)} · la mitad tardó menos`} />
+                                <Tarjeta titulo="Promedio" valor={fmtCiclo(d.promedio, jornada)} detalle={superaJornada(d.promedio, jornada) ? `${fmtDuracion(d.promedio)} laborales` : 'horas laborales del área'} />
+                                <Tarjeta titulo="Mediana" valor={fmtCiclo(d.mediana, jornada)} detalle={superaJornada(d.mediana, jornada) ? `${fmtDuracion(d.mediana)} · la mitad tardó menos` : 'la mitad tardó menos'} />
                                 <Tarjeta titulo="Órdenes" valor={num(d.ordenes)} detalle={`prontas del ${ddmm(d.desde)} al ${ddmm(d.hasta)}`} />
                                 <Tarjeta titulo="Reloj corrido" valor={fmtCorridos(d.corridosPromedio)} detalle={d.esperaClientePromedio > 0 ? `sin contar ${fmtDuracion(d.esperaClientePromedio)} de espera del cliente` : 'promedio, con noches y fines de semana'} />
                             </div>
@@ -128,13 +130,13 @@ function DetalleCiclo({ area, nombre, onCerrar, onAbrirOrden }) {
                                     {d.semanas.map(s => (
                                         <div key={s.semana} className="flex-1 min-w-0 h-full flex flex-col items-center justify-end gap-1"
                                             title={s.ordenes ? `Semana del ${ddmm(s.semana)}: ${num(s.ordenes)} órdenes · promedio ${fmtDuracion(s.promedio)} · mediana ${fmtDuracion(s.mediana)}` : `Semana del ${ddmm(s.semana)}: sin órdenes`}>
-                                            <span className="text-[11px] font-bold text-zinc-600 tabular-nums">{s.ordenes ? fmtDiasHabiles(s.promedio, jornada, { corto: true }).replace(' d háb.', '') : '—'}</span>
+                                            <span className="text-[11px] font-bold text-zinc-600 tabular-nums">{!s.ordenes ? '—' : semanasEnDias ? fmtDiasHabiles(s.promedio, jornada, { corto: true }).replace(' d háb.', '') : fmtHorasCorto(s.promedio)}</span>
                                             <div className="w-full max-w-[44px] rounded-t-md bg-brand-cyan" style={{ height: `${s.ordenes ? Math.max(4, Math.round(100 * (s.promedio || 0) / maxSemana)) : 0}%` }} />
                                             <span className="text-[10px] text-zinc-400 tabular-nums">{ddmm(s.semana)}</span>
                                         </div>
                                     ))}
                                 </div>
-                                <div className="text-[11px] text-zinc-400 mt-2">Días hábiles promedio de las órdenes que quedaron prontas cada semana (de lunes a domingo).</div>
+                                <div className="text-[11px] text-zinc-400 mt-2">{semanasEnDias ? 'Días hábiles' : 'Horas laborales'} promedio de las órdenes que quedaron prontas cada semana (de lunes a domingo).</div>
                             </div>
 
                             <div className="bg-white rounded-2xl border border-zinc-200 overflow-hidden">
@@ -157,7 +159,7 @@ function DetalleCiclo({ area, nombre, onCerrar, onAbrirOrden }) {
                                                 </td>
                                                 <td className="px-2 py-2 text-right tabular-nums text-zinc-600">{num(p.ordenes)}</td>
                                                 <td className="px-2 py-2 text-right tabular-nums">
-                                                    {p.ordenes ? <><span className="font-bold text-zinc-800">{fmtDiasHabiles(p.promedio, jornada, { corto: true })}</span> <span className="text-zinc-400 text-xs">{fmtDuracion(p.promedio)}</span></> : '—'}
+                                                    {p.ordenes ? <><span className="font-bold text-zinc-800">{fmtCiclo(p.promedio, jornada, { corto: true })}</span>{superaJornada(p.promedio, jornada) && <span className="text-zinc-400 text-xs"> {fmtDuracion(p.promedio)}</span>}</> : '—'}
                                                 </td>
                                                 <td className="px-4 py-2 text-right tabular-nums text-zinc-600 hidden sm:table-cell">{p.ordenes ? fmtDuracion(p.mediana) : '—'}</td>
                                             </tr>
@@ -179,8 +181,8 @@ function DetalleCiclo({ area, nombre, onCerrar, onAbrirOrden }) {
                                                 <div className="text-xs text-zinc-500 truncate">{o.cliente} · <span className={COLOR_PRIORIDAD[o.prioridad] || ''}>{o.prioridad}</span></div>
                                             </div>
                                             <div className="text-right shrink-0">
-                                                <div className="text-sm font-black text-zinc-800 tabular-nums">{fmtDiasHabiles(o.minutosCiclo, jornada, { corto: true })}</div>
-                                                <div className="text-[11px] text-zinc-400 tabular-nums">{fmtDuracion(o.minutosCiclo)}</div>
+                                                <div className="text-sm font-black text-zinc-800 tabular-nums">{fmtCiclo(o.minutosCiclo, jornada, { corto: true })}</div>
+                                                {superaJornada(o.minutosCiclo, jornada) && <div className="text-[11px] text-zinc-400 tabular-nums">{fmtDuracion(o.minutosCiclo)}</div>}
                                             </div>
                                         </button>
                                     ))}
@@ -222,8 +224,8 @@ export default function IndicadorCicloArea({ area, nombre, onAbrirOrden }) {
                     ) : (
                         <>
                             <span className="text-sm tablet:text-xs font-black text-zinc-800 whitespace-nowrap">
-                                {d.ordenes ? fmtDiasHabiles(d.promedio, d.minutosJornada) : 'Sin órdenes'}
-                                {d.ordenes > 0 && <span className="font-bold text-zinc-400 tablet:hidden"> · {fmtDuracion(d.promedio)}</span>}
+                                {d.ordenes ? fmtCiclo(d.promedio, d.minutosJornada) : 'Sin órdenes'}
+                                {d.ordenes > 0 && <span className="font-bold text-zinc-400 tablet:hidden">{superaJornada(d.promedio, d.minutosJornada) ? ` · ${fmtDuracion(d.promedio)}` : ' laborales'}</span>}
                             </span>
                             <span className="text-[10px] text-zinc-400 whitespace-nowrap tablet:hidden">
                                 promedio de 30 días · {num(d.ordenes)} órdenes{!d.tieneHorario ? ' · sin horario' : ''}
@@ -251,7 +253,7 @@ export function CicloOrdenBadge({ ordenId }) {
     const v = { minutos: c.MinutosCiclo, corridos: c.MinutosCorridos, espera: c.MinutosEsperaCliente, origen: c.OrigenInicio };
     return (
         <span className="text-xs font-bold text-zinc-600 bg-white px-2 py-0.5 rounded border border-zinc-200 flex items-center gap-1 whitespace-nowrap" title={tituloCiclo(v)}>
-            <Timer size={12} className="text-brand-cyan" /> Ciclo en planta: {fmtDuracion(c.MinutosCiclo)} · {fmtDiasHabiles(c.MinutosCiclo, c.minutosJornada, { corto: true })}
+            <Timer size={12} className="text-brand-cyan" /> Ciclo en planta: {fmtDuracion(c.MinutosCiclo)}{superaJornada(c.MinutosCiclo, c.minutosJornada) ? ` · ${fmtDiasHabiles(c.MinutosCiclo, c.minutosJornada, { corto: true })}` : ''}
         </span>
     );
 }

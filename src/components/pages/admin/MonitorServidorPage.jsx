@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback, createContext, useContext } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useCallback, createContext, useContext } from 'react';
 import {
     Activity, Cpu, MemoryStick, HardDrive, Database, Gauge, Server, Clock, Volume2, VolumeX,
     Maximize2, Minimize2, AlertTriangle, CheckCircle2, XCircle, Archive, WifiOff, Cloud, ExternalLink,
@@ -136,6 +136,34 @@ function Sparkline({ datos = [], max, color = '#006E97', alto = 40, marcas = [] 
     );
 }
 
+// Valor en una sola línea: si no entra en el ancho de la tarjeta (ej. «166.84 / 20.60» en Red), achica la letra lo justo.
+function ValorEnUnaLinea({ children, className }) {
+    const ref = useRef(null);
+    useLayoutEffect(() => {
+        const el = ref.current;
+        if (!el) return;
+        const ajustar = () => {
+            el.style.fontSize = '';
+            for (let i = 0; i < 3 && el.scrollWidth > el.clientWidth; i++) {
+                const tam = parseFloat(getComputedStyle(el).fontSize);
+                el.style.fontSize = `${Math.max(10, Math.floor(tam * el.clientWidth / el.scrollWidth * 10) / 10 - (i ? 0.5 : 0))}px`;
+            }
+        };
+        ajustar();
+        document.fonts?.ready.then(ajustar);
+        // Solo cuando cambia el ancho: el alto cambia al achicar la letra y volvería a disparar el ajuste.
+        let anchoAnterior = el.clientWidth;
+        const ro = new ResizeObserver(() => {
+            if (el.clientWidth === anchoAnterior) return;
+            anchoAnterior = el.clientWidth;
+            ajustar();
+        });
+        ro.observe(el);
+        return () => ro.disconnect();
+    }, [children]);
+    return <div ref={ref} className={`${className} whitespace-nowrap overflow-hidden`}>{children}</div>;
+}
+
 function Metrica({ icono: Icono, titulo, valor, sub, nivel = 'neutro', datos, max, marcas }) {
     const c = COLOR[nivel] || COLOR.neutro;
     return (
@@ -144,7 +172,7 @@ function Metrica({ icono: Icono, titulo, valor, sub, nivel = 'neutro', datos, ma
                 <Icono size={14} className="text-brand-cyan shrink-0" />
                 <span className={`${ROTULO} truncate`}>{titulo}</span>
             </div>
-            <div className={`text-2xl 2xl:text-3xl font-black tabular-nums leading-tight ${nivel === 'neutro' || nivel === 'ok' ? 'text-zinc-900' : c.texto}`}>{valor}</div>
+            <ValorEnUnaLinea className={`text-2xl 2xl:text-3xl font-black tabular-nums leading-tight ${nivel === 'neutro' || nivel === 'ok' ? 'text-zinc-900' : c.texto}`}>{valor}</ValorEnUnaLinea>
             <div className="text-xs text-zinc-500 truncate min-h-[16px]">{sub}</div>
             {datos && <div className="mt-1"><Sparkline datos={datos} max={max} alto={30} marcas={marcas} color={nivel === 'neutro' || nivel === 'ok' ? '#006E97' : c.trazo} /></div>}
         </div>

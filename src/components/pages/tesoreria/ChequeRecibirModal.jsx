@@ -1,7 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { X, CheckCircle, Landmark, Calendar, User, Hash, DollarSign, Building2, PenTool, Book, AlertTriangle } from 'lucide-react';
+import { X, CheckCircle, Landmark, Calendar, User, Hash, DollarSign, Building2, PenTool, Book, AlertTriangle, Loader2 } from 'lucide-react';
 import api from '../../../services/apiClient';
 import { toast } from 'sonner';
+import Selector from '../../ui/Selector';
+import SelectorFecha from '../../ui/SelectorFecha';
+
+// Estética nueva (27/10/2026): ventana clara, propio/tercero y común/diferido en pastillas, moneda, banco, cliente y
+// rubro con el Selector propio, fechas con SelectorFecha y «Aceptar y cargar» en brand-cyan. La lógica no cambió.
+// También la abren la Caja y su panel de pago.
+const ETIQUETA = 'flex items-center gap-1.5 text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const CAMPO = 'w-full px-3 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
 
 /**
  * origenCaja: true cuando el cheque se da de alta desde un cobro de caja. En ese caso el
@@ -127,62 +137,69 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
     }
   };
 
+
+  // ── Piezas del render ───────────────────────────────────────────────────────
+  // Las opciones (propio/tercero, común/diferido, pago parcial) llaman al mismo handleChange que los inputs.
+  const elegir = (name, value) => handleChange({ target: { name, value } });
+  const Segmento = ({ name, opciones }) => (
+    <div className="grid grid-cols-2 rounded-xl border border-zinc-200 bg-white p-1 gap-1" role="radiogroup">
+      {opciones.map(o => (
+        <button key={o} type="button" role="radio" aria-checked={formData[name] === o} onClick={() => elegir(name, o)}
+          className={`px-3 py-1.5 rounded-lg text-sm font-bold transition-colors ${formData[name] === o ? 'bg-zinc-900 text-white' : 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100'}`}>
+          {o}
+        </button>
+      ))}
+    </div>
+  );
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50  animate-in fade-in">
-      <div className="bg-white rounded-2xl shadow-xl max-w-2xl w-full overflow-hidden flex flex-col">
+    // z-[6000]: con z-50 quedaba debajo de la barra de arriba (5010) y el título se tapaba (27/10)
+    <div className="fixed inset-0 z-[6000] flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[92vh] overflow-hidden flex flex-col">
         {/* Header */}
-        <div className="px-6 py-5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
-          <div className="flex items-center gap-3">
-            <div className="bg-emerald-100 p-2.5 rounded-xl text-emerald-600">
-              <Landmark size={24} />
-            </div>
+        <div className="px-6 py-4 border-b border-zinc-100 flex items-start justify-between gap-3 shrink-0">
+          <div className="flex items-start gap-3">
+            <Landmark size={24} className="text-brand-cyan shrink-0 mt-0.5" />
             <div>
-              <h2 className="text-xl font-black text-slate-800 tracking-tight">Recibir Cheque</h2>
-              <p className="text-sm font-medium text-slate-500">Datos detallados del documento</p>
+              <h2 className="text-lg font-black text-zinc-900 tracking-tight">Recibir cheque</h2>
+              <p className="text-sm text-zinc-500">Datos detallados del documento</p>
             </div>
           </div>
-          <button onClick={onClose} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-xl transition-colors">
-            <X size={24} />
+          <button type="button" onClick={onClose} aria-label="Cerrar"
+            className="shrink-0 text-zinc-400 hover:text-brand-magenta w-9 h-9 rounded-full hover:bg-brand-magenta/5 flex items-center justify-center transition-colors">
+            <X size={18} />
           </button>
         </div>
 
         {/* Body */}
-        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-6 overflow-y-auto max-h-[75vh]">
-          
-          {/* Fila superior: Opciones y Montos */}
-          <div className="grid grid-cols-12 gap-6 items-start">
-            
+        <form onSubmit={handleSubmit} className="p-6 flex flex-col gap-5 overflow-y-auto">
+
+          {/* Fila superior: opciones y montos */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-start">
+
             {/* Opciones de tipo */}
-            <div className="col-span-4 flex flex-col gap-3">
-              <div className="flex gap-4 p-3 border border-slate-200 rounded-xl bg-slate-50">
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                  <input type="radio" name="CategoriaPropiedad" value="Propio" checked={formData.CategoriaPropiedad === 'Propio'} onChange={handleChange} className="w-4 h-4 text-emerald-600 focus:ring-emerald-500" /> Propio
-                </label>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                  <input type="radio" name="CategoriaPropiedad" value="Tercero" checked={formData.CategoriaPropiedad === 'Tercero'} onChange={handleChange} className="w-4 h-4 text-emerald-600 focus:ring-emerald-500" /> Tercero
-                </label>
+            <div className="sm:col-span-4 flex flex-col gap-3">
+              <div>
+                <span className={ETIQUETA}>Cheque</span>
+                <Segmento name="CategoriaPropiedad" opciones={['Propio', 'Tercero']} />
               </div>
-              <div className="flex gap-4 p-3 border border-slate-200 rounded-xl bg-slate-50">
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                  <input type="radio" name="ClasificacionPlazo" value="Común" checked={formData.ClasificacionPlazo === 'Común'} onChange={handleChange} className="w-4 h-4 text-emerald-600 focus:ring-emerald-500" /> Común
-                </label>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 cursor-pointer">
-                  <input type="radio" name="ClasificacionPlazo" value="Diferido" checked={formData.ClasificacionPlazo === 'Diferido'} onChange={handleChange} className="w-4 h-4 text-emerald-600 focus:ring-emerald-500" /> Diferido
-                </label>
+              <div>
+                <span className={ETIQUETA}>Plazo</span>
+                <Segmento name="ClasificacionPlazo" opciones={['Común', 'Diferido']} />
               </div>
             </div>
 
-            {/* Monto y Cheque */}
-            <div className="col-span-8 grid grid-cols-2 gap-4">
+            {/* Monto y cheque */}
+            <div className="sm:col-span-8 grid grid-cols-1 sm:grid-cols-2 gap-3">
               <div>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                  <Hash size={16} className="text-slate-400" /> Cheque Nº *
+                <label htmlFor="recibir-numero" className={ETIQUETA}>
+                  <Hash size={12} /> Cheque Nº *
                 </label>
-                <input type="text" name="NumeroCheque" value={formData.NumeroCheque} onChange={handleChange} required placeholder="Ej. 12345678" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+                <input id="recibir-numero" type="text" name="NumeroCheque" value={formData.NumeroCheque} onChange={handleChange} required placeholder="Ej. 12345678" className={`${CAMPO} font-mono`} />
               </div>
               <div>
-                <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                  <DollarSign size={16} className="text-slate-400" /> Importe *
+                <label htmlFor="recibir-monto" className={ETIQUETA}>
+                  <DollarSign size={12} /> Importe *
                 </label>
                 <div className="flex gap-2">
                   {/* Moneda del cheque: sin esto un cheque en dólares entraba a cartera
@@ -191,36 +208,35 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
                       pudiera cambiar acá, el cheque quedaría en US$ y el recibo y el
                       saldo del cliente en $ (o al revés). */}
                   {origenCaja ? (
-                    <div className="w-[86px] shrink-0 border border-slate-200 bg-slate-100 rounded-xl px-2 py-2.5 font-black text-slate-500 text-center"
+                    <div className="w-[84px] shrink-0 border border-zinc-200 bg-zinc-50 rounded-xl px-2 py-2.5 text-sm font-black text-zinc-500 text-center"
                       title="Moneda del cobro. Para cargar un cheque en otra moneda, cambiá la moneda de la operación.">
                       {String(formData.IdMoneda) === '2' ? 'US$' : '$'}
                     </div>
                   ) : (
-                    <select name="IdMoneda" value={formData.IdMoneda} onChange={handleChange}
-                      className="w-[86px] shrink-0 border border-slate-200 rounded-xl px-2 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white"
-                      title="Moneda en la que está escrito el cheque">
+                    <Selector filtro resaltar={false} name="IdMoneda" className="w-[84px] shrink-0" value={String(formData.IdMoneda)} onChange={handleChange}
+                      title="Moneda en la que está escrito el cheque" aria-label="Moneda del cheque" anchoLista={120}>
                       <option value="1">$</option>
                       <option value="2">US$</option>
-                    </select>
+                    </Selector>
                   )}
-                  <input type="number" step="0.01" name="Monto" value={formData.Monto} onChange={handleChange} required placeholder="0.00" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-black text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+                  <input id="recibir-monto" type="number" step="0.01" name="Monto" value={formData.Monto} onChange={handleChange} required placeholder="0.00" className={`${CAMPO} font-black tabular-nums`} />
                 </div>
                 {origenCaja && (
-                  <p className="text-[11px] font-semibold text-slate-400 mt-1.5">
+                  <p className="text-[11px] text-zinc-400 mt-1.5">
                     Se carga en {String(formData.IdMoneda) === '2' ? 'US$' : '$'} porque es la moneda del cobro. Si el
                     cheque está en la otra moneda, cerrá y cambiá la moneda de la operación.
                   </p>
                 )}
                 {/* El asiento del cheque se lleva en pesos: sin TC, US$ 1.000 entran al mayor como $ 1.000. */}
                 {String(formData.IdMoneda) === '2' && (
-                  <div className="mt-2">
-                    <label className="text-xs font-bold text-amber-700 mb-1 block">
-                      Cotización del día * <span className="font-medium text-amber-600/70">(1 US$ = $ …)</span>
+                  <div className="mt-2.5">
+                    <label htmlFor="recibir-cotizacion" className="block text-[10px] font-black uppercase tracking-widest text-amber-700 mb-1.5">
+                      Cotización del día * <span className="normal-case tracking-normal font-semibold text-amber-600/80">(1 US$ = $ …)</span>
                     </label>
-                    <input type="number" step="0.01" name="Cotizacion" value={formData.Cotizacion} onChange={handleChange}
+                    <input id="recibir-cotizacion" type="number" step="0.01" name="Cotizacion" value={formData.Cotizacion} onChange={handleChange}
                       placeholder="Ej. 40.50"
-                      className="w-full border border-amber-200 bg-amber-50/50 rounded-xl px-4 py-2 font-black text-amber-900 focus:outline-none focus:ring-2 focus:ring-amber-500/20" />
-                    <p className="text-[11px] font-medium text-amber-600/80 mt-1">
+                      className="w-full px-3 py-2 bg-amber-50/60 border border-amber-200 rounded-xl text-sm font-black text-amber-900 tabular-nums focus:outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-400/20" />
+                    <p className="text-[11px] text-amber-700/80 mt-1">
                       Con este tipo de cambio se contabiliza el cheque.
                       {parseFloat(formData.Monto) > 0 && parseFloat(formData.Cotizacion) > 0
                         ? ` US$ ${formData.Monto} = $ ${(parseFloat(formData.Monto) * parseFloat(formData.Cotizacion)).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}.`
@@ -230,131 +246,131 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
                 )}
               </div>
 
-              <div className="col-span-2 mt-1">
-                <label className="flex items-center gap-2 text-sm font-bold text-rose-600 cursor-pointer bg-rose-50 p-3 rounded-xl border border-rose-100">
-                  <input type="checkbox" name="EsPagoParcial" checked={formData.EsPagoParcial} onChange={handleChange} className="w-4 h-4 text-rose-600 rounded focus:ring-rose-500" />
-                  El Importe Corresponde a un pago Parcial y no al Total de Cheque
-                </label>
+              <div className="sm:col-span-2">
+                <button type="button" role="checkbox" aria-checked={!!formData.EsPagoParcial}
+                  onClick={() => handleChange({ target: { name: 'EsPagoParcial', type: 'checkbox', checked: !formData.EsPagoParcial } })}
+                  className={`w-full flex items-center gap-2.5 text-left text-sm font-bold p-3 rounded-xl border transition-colors ${formData.EsPagoParcial ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-zinc-50 border-zinc-200 text-zinc-600 hover:bg-zinc-100'}`}>
+                  <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${formData.EsPagoParcial ? 'bg-amber-500 border-amber-500 text-white' : 'border-zinc-300 bg-white'}`}>
+                    {formData.EsPagoParcial && <svg viewBox="0 0 12 12" className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2"><path d="M2.5 6.5l2.5 2.5 4.5-5" /></svg>}
+                  </span>
+                  El importe corresponde a un pago parcial y no al total del cheque
+                </button>
               </div>
             </div>
 
           </div>
 
-          <hr className="border-slate-100" />
+          <hr className="border-zinc-100" />
 
-          {/* Datos Bancarios */}
-          <div className="grid grid-cols-12 gap-4">
-            <div className="col-span-8">
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Landmark size={16} className="text-slate-400" /> Banco Emisor *
-              </label>
-              <select name="IdBanco" value={formData.IdBanco} onChange={handleChange} required className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white">
-                <option value="">Seleccione un banco...</option>
-                {bancos.map(b => <option key={b.IdBanco} value={b.IdBanco}>{b.NombreBanco}</option>)}
-              </select>
+          {/* Datos bancarios */}
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+            <div className="sm:col-span-8">
+              <span className={ETIQUETA}>
+                <Landmark size={12} /> Banco emisor *
+              </span>
+              <Selector name="IdBanco" className="w-full" value={String(formData.IdBanco)} onChange={handleChange} aria-label="Banco emisor" anchoLista={260}>
+                <option value="">{loadingBancos ? 'Cargando bancos…' : 'Seleccione un banco...'}</option>
+                {bancos.map(b => <option key={b.IdBanco} value={String(b.IdBanco)}>{b.NombreBanco}</option>)}
+              </Selector>
             </div>
-            <div className="col-span-4">
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Building2 size={16} className="text-slate-400" /> Agencia
+            <div className="sm:col-span-4">
+              <label htmlFor="recibir-agencia" className={ETIQUETA}>
+                <Building2 size={12} /> Agencia
               </label>
-              <input type="text" name="Agencia" value={formData.Agencia} onChange={handleChange} placeholder="Ej. Casa Central" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              <input id="recibir-agencia" type="text" name="Agencia" value={formData.Agencia} onChange={handleChange} placeholder="Ej. Casa Central" className={CAMPO} />
             </div>
           </div>
 
           {/* Firmantes */}
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <PenTool size={16} className="text-slate-400" /> Emitido por
+              <label htmlFor="recibir-emitido" className={ETIQUETA}>
+                <PenTool size={12} /> Emitido por
               </label>
-              <input type="text" name="EmitidoPor" value={formData.EmitidoPor} onChange={handleChange} placeholder="Titular de la cuenta" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              <input id="recibir-emitido" type="text" name="EmitidoPor" value={formData.EmitidoPor} onChange={handleChange} placeholder="Titular de la cuenta" className={CAMPO} />
             </div>
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <PenTool size={16} className="text-slate-400" /> Endosado por
+              <label htmlFor="recibir-endosado" className={ETIQUETA}>
+                <PenTool size={12} /> Endosado por
               </label>
-              <input type="text" name="EndosadoPor" value={formData.EndosadoPor} onChange={handleChange} placeholder="Si aplica" className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              <input id="recibir-endosado" type="text" name="EndosadoPor" value={formData.EndosadoPor} onChange={handleChange} placeholder="Si aplica" className={CAMPO} />
             </div>
           </div>
 
           {/* Fechas */}
-          <div className="grid grid-cols-2 gap-4 bg-slate-50 p-4 rounded-xl border border-slate-100">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Calendar size={16} className="text-slate-400" /> Emisión *
-              </label>
-              <input type="date" name="FechaEmision" value={formData.FechaEmision} onChange={handleChange} required className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20" />
+              <span className={ETIQUETA}>
+                <Calendar size={12} /> Emisión *
+              </span>
+              <SelectorFecha name="FechaEmision" className="w-full" value={formData.FechaEmision} onChange={handleChange} aria-label="Fecha de emisión" />
             </div>
             <div>
-              <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <Calendar size={16} className="text-indigo-400" /> Vencimiento *
-              </label>
-              <input type="date" name="FechaVencimiento" value={formData.FechaVencimiento} onChange={handleChange} required className="w-full border border-indigo-200 rounded-xl px-4 py-2.5 font-medium text-indigo-800 focus:outline-none focus:ring-2 focus:ring-indigo-500/20" />
+              <span className={ETIQUETA}>
+                <Calendar size={12} className="text-brand-cyan" /> Vencimiento *
+              </span>
+              <SelectorFecha name="FechaVencimiento" className="w-full" value={formData.FechaVencimiento} onChange={handleChange} aria-label="Fecha de vencimiento" />
             </div>
           </div>
 
-          <hr className="border-slate-100" />
+          {/* Rubros contables */}
+          <div className="bg-zinc-50 border border-zinc-100 rounded-xl p-4">
+            <h4 className="text-[11px] font-black text-zinc-500 mb-3 uppercase tracking-widest flex items-center gap-2"><Book size={14} className="text-brand-cyan" /> Rubros contables</h4>
 
-          {/* Rubros Contables */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-4">
-             <h4 className="text-sm font-black text-slate-500 mb-4 uppercase tracking-widest flex items-center gap-2"><Book size={16}/> Rubros Contables</h4>
-             
-             <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                    <User size={16} className="text-slate-400" /> Cliente / Origen
-                  </label>
-                  <select name="IdClienteOrigen" value={formData.IdClienteOrigen} onChange={handleChange} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white">
-                    <option value="">(Opcional) Seleccione cliente...</option>
-                    {/* /clients devuelve CliIdCliente / Nombre / NombreFantasia. Con los
-                        nombres viejos (IdCliente / RazonSocial) la lista salía en blanco. */}
-                    {clientes.map(c => (
-                      <option key={c.CliIdCliente} value={c.CliIdCliente}>
-                        {(c.Nombre || '').trim()}{c.NombreFantasia && c.NombreFantasia.trim() !== (c.Nombre || '').trim() ? ` — ${c.NombreFantasia.trim()}` : ''}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                <div>
-                  <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                    <Book size={16} className="text-slate-400" /> Rubro Debe
-                  </label>
-                  <select name="RubroContableId" value={formData.RubroContableId} onChange={handleChange} className="w-full border border-slate-200 rounded-xl px-4 py-2.5 font-medium text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 bg-white">
-                    <option value="">(Opcional) Seleccione rubro...</option>
-                    {cuentas.map(c => <option key={c.CueIdCuenta} value={c.CueIdCuenta}>[{c.CueCodigo}] {c.CueNombre}</option>)}
-                  </select>
-                </div>
-             </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <span className={ETIQUETA}>
+                  <User size={12} /> Cliente / origen
+                </span>
+                <Selector name="IdClienteOrigen" className="w-full" value={String(formData.IdClienteOrigen)} onChange={handleChange} aria-label="Cliente u origen" anchoLista={320}>
+                  <option value="">(Opcional) Seleccione cliente...</option>
+                  {/* /clients devuelve CliIdCliente / Nombre / NombreFantasia. Con los
+                      nombres viejos (IdCliente / RazonSocial) la lista salía en blanco. */}
+                  {clientes.map(c => (
+                    <option key={c.CliIdCliente} value={String(c.CliIdCliente)}>
+                      {(c.Nombre || '').trim()}{c.NombreFantasia && c.NombreFantasia.trim() !== (c.Nombre || '').trim() ? ` — ${c.NombreFantasia.trim()}` : ''}
+                    </option>
+                  ))}
+                </Selector>
+              </div>
+              <div>
+                <span className={ETIQUETA}>
+                  <Book size={12} /> Rubro debe
+                </span>
+                <Selector name="RubroContableId" className="w-full" value={String(formData.RubroContableId)} onChange={handleChange} aria-label="Rubro debe" anchoLista={340}>
+                  <option value="">(Opcional) Seleccione rubro...</option>
+                  {cuentas.map(c => <option key={c.CueIdCuenta} value={String(c.CueIdCuenta)}>[{c.CueCodigo}] {c.CueNombre}</option>)}
+                </Selector>
+              </div>
+            </div>
           </div>
 
         </form>
 
         {/* Footer */}
-        <div className="p-6 border-t border-slate-100 bg-white flex justify-end gap-3 shrink-0">
-          <button type="button" onClick={onClose} className="px-5 py-2.5 rounded-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors">
+        <div className="px-6 py-3 border-t border-zinc-100 bg-white flex justify-end gap-2 shrink-0">
+          <button type="button" onClick={onClose} className={BTN_SECUNDARIO}>
             Cancelar
           </button>
-          <button onClick={handleSubmit} disabled={procesando} className="px-6 py-2.5 rounded-xl font-bold bg-emerald-600 text-white hover:bg-emerald-700 transition-colors flex items-center gap-2 shadow-lg shadow-emerald-600/20 disabled:opacity-50 disabled:cursor-not-allowed">
-            {procesando ? 'Guardando...' : <><CheckCircle size={18} /> Aceptar y Cargar</>}
+          <button type="button" onClick={handleSubmit} disabled={procesando} className={BTN_PRINCIPAL}>
+            {procesando ? <><Loader2 size={15} className="animate-spin" /> Guardando...</> : <><CheckCircle size={15} /> Aceptar y cargar</>}
           </button>
         </div>
       </div>
 
       {/* Cheque repetido — se avisa antes de duplicarlo en cartera */}
       {avisoDuplicado && (
-        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4 border-2 border-amber-300">
+        <div className="fixed inset-0 z-[6010] bg-black/40 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full p-6 flex flex-col gap-4">
             <div className="flex items-start gap-3">
-              <div className="w-11 h-11 rounded-2xl bg-amber-100 border border-amber-300 flex items-center justify-center shrink-0">
-                <AlertTriangle size={22} className="text-amber-600" />
-              </div>
+              <AlertTriangle size={22} className="text-amber-500 shrink-0 mt-0.5" />
               <div>
-                <h3 className="font-black text-slate-900 text-lg leading-tight">Este cheque ya está cargado</h3>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mt-0.5">N° {formData.NumeroCheque}</p>
+                <h3 className="font-black text-zinc-900 text-lg leading-tight">Este cheque ya está cargado</h3>
+                <p className="text-xs font-bold text-zinc-400 uppercase tracking-widest mt-0.5">N° <span className="font-mono">{formData.NumeroCheque}</span></p>
               </div>
             </div>
 
-            <div className="bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3 text-xs font-medium text-amber-800 leading-relaxed">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-3 text-xs text-amber-800 leading-relaxed">
               {avisoDuplicado.mensaje}
               <div className="mt-2 font-bold">
                 Si es el mismo cheque, cargarlo de nuevo lo va a contar dos veces en cartera
@@ -362,20 +378,16 @@ export default function ChequeRecibirModal({ onClose, onSuccess, initialMonto = 
               </div>
             </div>
 
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setAvisoDuplicado(null)}
-                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-emerald-600 text-white hover:bg-emerald-700"
-              >
-                Volver y revisar
-              </button>
+            <div className="flex flex-col-reverse sm:flex-row justify-end gap-2">
               <button
                 type="button"
                 onClick={() => { setAvisoDuplicado(null); handleSubmit({ preventDefault: () => {} }, true); }}
-                className="flex-1 py-2.5 rounded-xl font-black text-xs uppercase tracking-wider bg-white border-2 border-amber-400 text-amber-700 hover:bg-amber-50"
+                className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-amber-300 bg-white text-sm font-bold text-amber-700 hover:bg-amber-50 transition-colors"
               >
                 Es otro cheque, cargarlo igual
+              </button>
+              <button type="button" onClick={() => setAvisoDuplicado(null)} className={BTN_PRINCIPAL}>
+                Volver y revisar
               </button>
             </div>
           </div>

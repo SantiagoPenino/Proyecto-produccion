@@ -272,6 +272,188 @@ async function ordenCubiertaPorLibro(transaction, OrdIdOrdenDeposito) {
     }
 }
 
+/* ── RETIROS CON PESOS Y DÓLARES (27/10/2026, INF-SIS-2026-07) ──────────────
+ * Cada orden queda en su moneda; acá se decide la moneda del RETIRO y su total.
+ * Todas las órdenes a cobrar en dólares → retiro en dólares, como siempre. En pesos, o
+ * mezcladas → retiro en pesos: los dólares pasan a pesos con la cotización del día
+ * (Cotizaciones.CotDolar, la misma de la caja y la billetera) o con la que se pase, que es
+ * la que quedó fija al empezar un pago online.
+ * Antes, si alguna orden era en dólares, el retiro entero quedaba en dólares con el total
+ * sumado sin convertir: RT-34046 ($ 3.000 + $ 3.000 + US$ 5,28) figuraba «US$ 6.005,28».
+ */
+const r2 = (n) => Math.round(Number(n) * 100) / 100;
+const monedaDe = (c) => (/US|U\$/i.test(String(c || '')) ? 'USD' : 'UYU');
+
+/** Última cotización del dólar cargada: { cotizacion, fecha, dia: 'dd/mm' }, o null si no hay. */
+async function cotizacionDelDia(exec) {
+    // dia armado en SQL: el Date del driver se corre de día según la zona horaria
+    const r = await exec.request().query(
+        'SELECT TOP 1 CotDolar, CotFecha, CONVERT(VARCHAR(5), CotFecha, 103) AS Dia FROM dbo.Cotizaciones WITH(NOLOCK) WHERE CotDolar > 0 ORDER BY CotFecha DESC');
+    const row = r.recordset[0];
+    return row ? { cotizacion: Number(row.CotDolar), fecha: row.CotFecha, dia: row.Dia } : null;
+}
+
+/**
+ * Moneda y pendiente de cobro de cada orden, con las reglas de la lista del portal
+ * (getPickupOrders): moneda e importe de la cobranza si la tiene, si no los de la orden;
+ * paga (cobranza, billetera entera o pago anotado) → 0; cubierta en parte por la billetera
+ * → el resto que quedó en la cuenta corriente. Con `pendiente: false` solo lee la moneda.
+ * @returns {Map<number, {codigo, moneda, pendiente}>}
+ */
+async function leerOrdenesParaCobro(exec, ordIds, { pendiente = true } = {}) {
+    const req = exec.request();
+    ordIds.forEach((id, i) => req.input(`oc${i}`, sql.Int, id));
+    const r = await req.query(`
+        SELECT o.OrdIdOrden, o.OrdCodigoOrden, o.MonIdMoneda, o.OrdCostoFinal, o.PagIdPago,
+               pc.Moneda AS CobMoneda, pc.MontoTotal AS CobMonto, pc.EstadoCobro
+               ${pendiente ? `,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM dbo.MovimientosCuenta cx WITH(NOLOCK)
+                   JOIN dbo.CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                   WHERE ccx.CliIdCliente = o.CliIdCliente
+                     AND cx.MovTipo = 'CONSUMO_CUENTA'
+                     AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                     AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                     AND (cx.OrdIdOrden = o.OrdIdOrden
+                          OR cx.OrdIdOrden IN (SELECT erp.OrdenID FROM dbo.Ordenes erp WITH(NOLOCK) WHERE erp.CodigoOrden = o.OrdCodigoOrden))
+               ) THEN 1 ELSE 0 END AS CubiertaBilletera,
+               CASE WHEN EXISTS (
+                   SELECT 1 FROM dbo.MovimientosCuenta cp WITH(NOLOCK)
+                   JOIN dbo.CuentasCliente ccp WITH(NOLOCK) ON ccp.CueIdCuenta = cp.CueIdCuenta
+                   WHERE ccp.CliIdCliente = o.CliIdCliente
+                     AND cp.MovTipo = 'CONSUMO_CUENTA'
+                     AND (cp.MovAnulado IS NULL OR cp.MovAnulado = 0)
+                     AND cp.MovObservaciones LIKE 'CUBIERTO[_]PARCIAL[_]CUENTA%'
+                     AND (cp.OrdIdOrden = o.OrdIdOrden
+                          OR cp.OrdIdOrden IN (SELECT erp3.OrdenID FROM dbo.Ordenes erp3 WITH(NOLOCK) WHERE erp3.CodigoOrden = o.OrdCodigoOrden))
+               ) THEN 1 ELSE 0 END AS ParcialBilletera,
+               (SELECT TOP 1 ABS(mr.MovImporte)
+                FROM dbo.MovimientosCuenta mr WITH(NOLOCK)
+                JOIN dbo.CuentasCliente ccr WITH(NOLOCK) ON ccr.CueIdCuenta = mr.CueIdCuenta
+                WHERE ccr.CliIdCliente = o.CliIdCliente
+                  AND mr.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+                  AND (mr.MovAnulado IS NULL OR mr.MovAnulado = 0)
+                  AND mr.DocIdDocumento IS NULL
+                  AND (mr.MovObservaciones IS NULL OR mr.MovObservaciones NOT LIKE 'CUBIERTO%')
+                  AND (mr.OrdIdOrden = o.OrdIdOrden
+                       OR mr.OrdIdOrden IN (SELECT erp4.OrdenID FROM dbo.Ordenes erp4 WITH(NOLOCK) WHERE erp4.CodigoOrden = o.OrdCodigoOrden))
+                ORDER BY mr.MovIdMovimiento DESC) AS RestoCtaCte` : ''}
+        FROM dbo.OrdenesDeposito o WITH(NOLOCK)
+        OUTER APPLY (SELECT TOP 1 p.Moneda, p.MontoTotal, p.EstadoCobro
+                     FROM dbo.PedidosCobranza p WITH(NOLOCK)
+                     WHERE p.NoDocERP = o.OrdCodigoOrden
+                     ORDER BY p.ID DESC) pc
+        WHERE o.OrdIdOrden IN (${ordIds.map((_, i) => `@oc${i}`).join(',')})
+    `);
+    const out = new Map();
+    for (const o of r.recordset) {
+        let importe = o.CobMonto != null ? Number(o.CobMonto) : (Number(o.OrdCostoFinal) || 0);
+        let paga = o.EstadoCobro === 'Pagado';
+        if (o.CubiertaBilletera === 1 || o.PagIdPago != null) paga = true;
+        else if (o.ParcialBilletera === 1 && o.RestoCtaCte != null) importe = Number(o.RestoCtaCte);
+        out.set(o.OrdIdOrden, {
+            codigo:    (o.OrdCodigoOrden || `#${o.OrdIdOrden}`).trim(),
+            moneda:    o.CobMoneda ? monedaDe(o.CobMoneda) : (Number(o.MonIdMoneda) === 2 ? 'USD' : 'UYU'),
+            pendiente: paga ? 0 : r2(Math.max(0, importe)),
+        });
+    }
+    return out;
+}
+
+/**
+ * Moneda y total de un retiro a partir de sus órdenes. La usan todos los caminos que arman
+ * o cobran un retiro (portal, tótem, mostrador, Mercado Pago, Handy, billetera, «Pagos
+ * pendientes») y los recálculos al editar o sacar una orden.
+ *
+ * @param exec   pool o transacción
+ * @param {Array<{ordId:number, importe?:number}>} items — importe a cobrar de cada orden EN SU
+ *        MONEDA; si no viene, el pendiente de cobro (leerOrdenesParaCobro).
+ * @param {{cotizacion?:number}} [opts] — cotización fija (la guardada al empezar un pago
+ *        online); sin ella, la del día.
+ * @returns {Promise<{moneda:'UYU'|'USD', mezcla:boolean, cotizacion:number|null,
+ *           cotizacionDia:string|null, total:number, dolares:number, dolaresEnPesos:number,
+ *           items:Array<{ordId, codigo, moneda, importe, importeRetiro}>}>}
+ *   mezcla: hay importes a cobrar en las dos monedas. dolares / dolaresEnPesos: lo que se
+ *   convirtió (0 si no hay mezcla).
+ */
+async function cotizarSeleccion(exec, items, { cotizacion } = {}) {
+    const pedidos = new Map();
+    for (const it of items || []) {
+        const id = parseInt(it.ordId, 10);
+        if (isNaN(id)) continue;
+        const imp = (it.importe === undefined || it.importe === null || it.importe === '') ? null : Number(it.importe);
+        pedidos.set(id, Number.isFinite(imp) ? r2(Math.max(0, imp)) : null);
+    }
+    if (!pedidos.size) throw new Error('No hay órdenes para calcular el total del retiro.');
+    const faltaPendiente = [...pedidos.values()].some(v => v === null);
+    const datos = await leerOrdenesParaCobro(exec, [...pedidos.keys()], { pendiente: faltaPendiente });
+
+    const filas = [];
+    for (const [ordId, importe] of pedidos) {
+        const d = datos.get(ordId);
+        if (!d) continue; // orden inexistente: quien arma el retiro ya la descarta
+        filas.push({ ordId, codigo: d.codigo, moneda: d.moneda, importe: importe === null ? d.pendiente : importe });
+    }
+    if (!filas.length) throw new Error('Las órdenes del retiro no existen.');
+
+    const monedasACobrar = new Set(filas.filter(f => f.importe > 0.004).map(f => f.moneda));
+    const mezcla = monedasACobrar.size > 1;
+    const soloDolares = monedasACobrar.size
+        ? (monedasACobrar.size === 1 && monedasACobrar.has('USD'))
+        : filas.every(f => f.moneda === 'USD');
+    const moneda = soloDolares ? 'USD' : 'UYU';
+
+    let cot = null, cotDia = null;
+    if (mezcla) {
+        if (Number(cotizacion) > 1) {
+            cot = Number(cotizacion);
+        } else {
+            const c = await cotizacionDelDia(exec);
+            if (!c) throw new Error('No hay cotización del dólar cargada: no se puede pasar a pesos un retiro con órdenes en dólares.');
+            cot = c.cotizacion;
+            cotDia = c.dia;
+        }
+    }
+
+    let dolares = 0, dolaresEnPesos = 0;
+    for (const f of filas) {
+        if (moneda === 'UYU' && f.moneda === 'USD' && f.importe > 0) {
+            f.importeRetiro = r2(f.importe * cot);
+            dolares += f.importe;
+            dolaresEnPesos += f.importeRetiro;
+        } else {
+            f.importeRetiro = f.importe;
+        }
+    }
+    return {
+        moneda, mezcla, cotizacion: cot, cotizacionDia: cotDia,
+        total: r2(filas.reduce((s, f) => s + f.importeRetiro, 0)),
+        dolares: r2(dolares), dolaresEnPesos: r2(dolaresEnPesos),
+        items: filas,
+    };
+}
+
+/**
+ * Vuelve a calcular el total y la moneda de un retiro con el costo de sus órdenes
+ * (OrdCostoFinal), convirtiendo si mezcla monedas. Reemplaza el SUM(OrdCostoFinal) sin
+ * convertir que hacían al editar, sacar o cancelar una orden y al repropagar una cotización.
+ * @returns la cotización del retiro (cotizarSeleccion), o null si quedó sin órdenes.
+ */
+async function recalcularTotalRetiro(exec, OReIdOrdenRetiro) {
+    const r = await exec.request()
+        .input('RetiroId', sql.Int, OReIdOrdenRetiro)
+        .query('SELECT OrdIdOrden, OrdCostoFinal FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro = @RetiroId');
+    if (!r.recordset.length) return null;
+    const sel = await cotizarSeleccion(exec, r.recordset.map(o => ({ ordId: o.OrdIdOrden, importe: Number(o.OrdCostoFinal) || 0 })));
+    await exec.request()
+        .input('RetiroId', sql.Int, OReIdOrdenRetiro)
+        .input('Total', sql.Decimal(18, 2), sel.total)
+        .input('Moneda', sql.VarChar(10), sel.moneda)
+        .query('UPDATE dbo.OrdenesRetiro SET OReCostoTotalOrden = @Total, MonIdMoneda = @Moneda WHERE OReIdOrdenRetiro = @RetiroId');
+    if (sel.mezcla) logger.info(`[RETIRO] Total de R-${OReIdOrdenRetiro} recalculado: $ ${sel.total} (US$ ${sel.dolares} @ ${sel.cotizacion}).`);
+    return sel;
+}
+
 /**
  * Crea una orden de retiro completa dentro de una transacción existente.
  *
@@ -283,10 +465,15 @@ async function ordenCubiertaPorLibro(transaction, OrdIdOrdenDeposito) {
  * @param {number} params.usuarioAlta — ID del usuario que crea el retiro
  * @param {string} params.formaRetiro — 'RL' (Retiro Local) o 'RW' (Retiro Web)
  * @param {number} [params.codCliente] — código del cliente
- * @param {string} [params.moneda] — moneda del retiro ('UYU' o 'USD')
+ * @param {string} [params.moneda] — sugerencia; la moneda la decide cotizarSeleccion
+ * @param {Object} [params.importesPorOrden] — { [OrdIdOrden]: importe en la moneda de la orden }.
+ *        Si viene (aunque sea {}), el total sale de las órdenes: el importe de este mapa o, si
+ *        la orden no está, su pendiente de cobro. Sin él se usa totalCost, salvo que el retiro
+ *        mezcle monedas: ahí el total siempre se calcula convertido.
+ * @param {number} [params.cotizacion] — cotización fija (la del pago online); sin ella, la del día
  * @returns {number} OReIdOrdenRetiro — ID del retiro creado
  */
-async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuarioAlta, formaRetiro, codCliente, moneda, direccion, departamento, localidad, agenciaId }) {
+async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuarioAlta, formaRetiro, codCliente, moneda, direccion, departamento, localidad, agenciaId, importesPorOrden, cotizacion }) {
     if (!ordIds || ordIds.length === 0) {
         throw new Error('No se proporcionaron órdenes válidas para el retiro.');
     }
@@ -349,17 +536,23 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     const ordenesData  = ordDataRes.recordset;
     const pagoExistenteId = ordenesData.find(o => o.PagIdPago)?.PagIdPago || null;
 
-    // ── AUTO-DETECCIÓN DE MONEDA REAL DESDE LAS ÓRDENES ─────────────────────
-    // Si ALGUNA orden hija es USD (MonIdMoneda=2), el retiro entero es en USD.
-    // Las órdenes hijas son fuente de verdad: usan FK entero a Monedas (1=UYU, 2=USD).
-    // El parámetro `moneda` del frontend es solo sugerencia y puede estar equivocado.
-    const tieneOrdenUSD = ordenesData.some(o => o.MonIdMoneda === 2);
-    // Lógica con paréntesis explícitos para evitar bugs de precedencia de operadores:
-    // USD si → alguna orden hija es USD, O el caller envió explícitamente 'USD'
-    // UYU en cualquier otro caso
-    const monedaFinal = (tieneOrdenUSD || (moneda && moneda.toUpperCase() === 'USD')) ? 'USD' : (moneda || 'UYU');
-    if (monedaFinal !== moneda) {
-        logger.warn(`[crearRetiro] Moneda corregida: parámetro='${moneda}' → detectada='${monedaFinal}' (tieneOrdenUSD=${tieneOrdenUSD})`);
+    // ── MONEDA Y TOTAL DEL RETIRO (cotizarSeleccion) ────────────────────────
+    // Las órdenes son la fuente de verdad: todas a cobrar en dólares → dólares; si no, pesos,
+    // con los dólares convertidos. El parámetro `moneda` es solo una sugerencia.
+    const sel = await cotizarSeleccion(transaction,
+        ordIds.map(id => ({ ordId: id, importe: importesPorOrden ? importesPorOrden[id] : undefined })),
+        { cotizacion });
+    const monedaFinal = sel.moneda;
+    const monedaOrden = new Map(sel.items.map(i => [i.ordId, i.moneda]));
+    let costoTotal = totalCost || 0;
+    if (importesPorOrden || sel.mezcla) {
+        if (Math.abs(r2(costoTotal) - sel.total) > 0.009) {
+            logger.info(`[crearRetiro] Total calculado con las órdenes: ${costoTotal} → ${monedaFinal} ${sel.total}${sel.mezcla ? ` (US$ ${sel.dolares} @ ${sel.cotizacion})` : ''}`);
+        }
+        costoTotal = sel.total;
+    }
+    if (moneda && String(moneda).toUpperCase() !== monedaFinal) {
+        logger.warn(`[crearRetiro] Moneda corregida: parámetro='${moneda}' → según las órdenes='${monedaFinal}'${sel.mezcla ? ' (pesos y dólares)' : ''}`);
     }
 
     // ── CONTROL DE ENTREGA: estado inicial del retiro según COBERTURA ────────────
@@ -473,12 +666,20 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
 
     } else {
         // ¿Las cubre el CRÉDITO? Ciclo semanal, o plata adelantada (saldo limpio >= 0).
+        // La plata adelantada se mira en la moneda de cada orden: si el retiro mezcla, las de
+        // dólares contra la cuenta en dólares y las de pesos contra la de pesos.
         let cubiertoPorCredito = tieneCicloSemanal;
         let detalle = 'ciclo semanal';
         if (!cubiertoPorCredito) {
-            const { adelanto, tieneAnticipo } = await calcularAdelantoLimpio(transaction, CliIdCliente, monedaFinal);
-            cubiertoPorCredito = tieneAnticipo && adelanto >= -0.01;
-            detalle = `adelanto ${monedaFinal}=${adelanto.toFixed(2)} (tieneAnticipo=${tieneAnticipo})`;
+            const monedasCredito = [...new Set(ordenesQueNecesitanCredito.map(o => monedaOrden.get(o.OrdIdOrden) || monedaFinal))];
+            const detalles = [];
+            cubiertoPorCredito = true;
+            for (const mon of monedasCredito) {
+                const { adelanto, tieneAnticipo } = await calcularAdelantoLimpio(transaction, CliIdCliente, mon);
+                if (!(tieneAnticipo && adelanto >= -0.01)) cubiertoPorCredito = false;
+                detalles.push(`adelanto ${mon}=${adelanto.toFixed(2)} (tieneAnticipo=${tieneAnticipo})`);
+            }
+            detalle = detalles.join(', ');
         }
 
         if (cubiertoPorCredito) {
@@ -501,7 +702,7 @@ async function crearRetiro(transaction, { ordIds, totalCost, lugarRetiro, usuari
     // 2. INSERT OrdenesRetiro (con CodCliente, MonIdMoneda, FormaRetiro, PagIdPago si ya está pago)
     await transaction.request()
         .input('OReId', sql.Int, OReIdOrdenRetiro)
-        .input('Costo', sql.Float, totalCost || 0)
+        .input('Costo', sql.Float, costoTotal)
         .input('Lugar', sql.Int, lugarRetiro)
         .input('Estado', sql.Int, estadoOrdenRetiro)
         .input('Usr', sql.Int, usuarioAlta)
@@ -887,4 +1088,4 @@ async function registrarPago(transaction, { ordenRetiroId, metodoPagoId, monedaI
     return { pagoId };
 }
 
-module.exports = { crearRetiro, marcarEntregado, registrarPago };
+module.exports = { crearRetiro, marcarEntregado, registrarPago, cotizarSeleccion, recalcularTotalRetiro, cotizacionDelDia };

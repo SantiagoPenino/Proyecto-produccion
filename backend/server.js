@@ -549,6 +549,14 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error("❌ [CRON] Error cargando CotizacionBCU:", e.message);
             }
 
+            // VALOR DE LA UI (BCU) para el tope del e-Ticket
+            try {
+                const { startValorUIJob } = require('./jobs/valorUI.job');
+                startValorUIJob();
+            } catch (e) {
+                logger.error("❌ [CRON] Error cargando ValorUI:", e.message);
+            }
+
             // CUADRE NOCTURNO DE SALDOS (Contabilidad) — 06:30 hs. Arranca acá como los demás
             // jobs: cada job vivo se arranca desde server.js (el viejo scheduler.js, que nunca
             // corría porque el sync ERP está apagado, se borró el 15/10).

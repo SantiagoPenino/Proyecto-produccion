@@ -578,11 +578,8 @@ async function propagarCotizacionADeposito(pool, { pedidoId, monedaFinal, cotiza
             }
 
             if (dep.OReIdOrdenRetiro) {
-                await new sql.Request(transaction).input('RetiroId', sql.Int, dep.OReIdOrdenRetiro).query(`
-                    UPDATE dbo.OrdenesRetiro
-                    SET OReCostoTotalOrden = (SELECT SUM(OrdCostoFinal) FROM dbo.OrdenesDeposito WHERE OReIdOrdenRetiro=@RetiroId)
-                    WHERE OReIdOrdenRetiro=@RetiroId
-                `);
+                // Convierte si el retiro mezcla pesos y dólares (antes sumaba sin convertir)
+                await require('../services/retiroService').recalcularTotalRetiro(transaction, dep.OReIdOrdenRetiro);
             }
 
             await transaction.commit();

@@ -1,6 +1,143 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import {
+    Tags, BadgePercent, Search, X, CircleX, Loader2, Users, UserCog, Plus, PlusCircle, Trash2, Save, Pencil, Package,
+    Folder, FolderOpen, Globe, ChevronRight, ChevronDown, ChevronUp, ArrowLeft, Lock, Check, Ban, Briefcase,
+    GraduationCap, Store, PersonStanding, Tag, Database, Eye, EyeOff, Minus, Zap, LayoutGrid, ListChecks, Asterisk,
+    PackageOpen, SearchX
+} from 'lucide-react';
 import api from '../../services/api';
 import { toast } from 'sonner';
+import Selector from '../ui/Selector';
+import useConfirmar from '../ui/useConfirmar';
+
+// Estética nueva (28/10/2026): encabezado con ícono, todo claro (zinc + brand-cyan); lista de clientes, ficha del cliente,
+// tablas, panel lateral y ventana de perfiles con el estilo del sistema; montos en formato uruguayo (US$ / $) y el
+// descuento como «25 % menos» (recargo en magenta); Selector propio para la familia; «Quitar cliente» con confirmación
+// propia (antes window.confirm). En el celular: la lista va arriba y se pliega al elegir un cliente, y tarjetas en vez de
+// tablas. La lógica (estados, cuentas, guardado) no cambió.
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const BTN_ELEGIDO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-900 bg-zinc-900 text-sm font-bold text-white hover:bg-zinc-800 transition-colors';
+// Destructivo: gris que se pone magenta al pasar
+const BTN_PELIGRO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-500 hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5 transition-colors';
+// Botones de la ficha del cliente: en el celular van de a dos y un punto más chicos
+const BTN_FICHA = 'text-[13px] sm:text-sm whitespace-nowrap';
+const BTN_ICONO = 'w-8 h-8 rounded-lg border border-zinc-200 bg-white flex items-center justify-center text-zinc-400 transition-colors';
+const BTN_ICONO_CHICO = 'w-6 h-6 rounded-md flex items-center justify-center text-zinc-400 hover:text-brand-magenta hover:bg-brand-magenta/5 transition-colors';
+const CAMPO_BASE = 'w-full py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const CAMPO = `${CAMPO_BASE} pl-9 pr-4`;
+const CAMPO_CON_X = `${CAMPO_BASE} pl-9 pr-9`;
+// Campos de números (sin ancho ni relleno lateral: cada uno pone el suyo)
+const CAMPO_NUM = 'py-2.5 bg-white border border-zinc-200 rounded-xl text-sm font-mono text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+// Campos de la grilla del catálogo: el borde lo pone cada uno (cian si es el tipo de regla activo)
+const CAMPO_TABLA = 'w-full py-1.5 bg-white border rounded-lg text-sm font-mono text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15 disabled:bg-zinc-50 disabled:text-zinc-400 transition-colors';
+const BORDE_ACTIVO = 'border-brand-cyan ring-2 ring-brand-cyan/15';
+const BORDE_NORMAL = 'border-zinc-200';
+const ETIQUETA = 'block text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1';
+const ROTULO = 'text-[11px] font-black uppercase tracking-widest text-zinc-400';
+const TH = 'px-4 py-3 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+const CHIP = 'inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+const CHIP_CIAN = 'bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20';
+const CHIP_ZINC = 'bg-zinc-50 text-zinc-500 border-zinc-200';
+const CHIP_AMBAR = 'bg-amber-50 text-amber-700 border-amber-200';
+// Pestañas / segmentados: la elegida en negro
+const PESTANA = 'px-2 py-1.5 rounded-lg text-xs font-bold transition-colors text-center';
+const PESTANA_SI = 'bg-zinc-900 text-white';
+const PESTANA_NO = 'text-zinc-500 hover:text-zinc-800 hover:bg-zinc-100';
+
+// Montos en pantalla: formato uruguayo con 2 decimales y «US$» / «$» (la moneda llega como USD / UYU)
+const simboloMoneda = (m) => (m === 'USD' || m === 'US$' || m === 'U$S') ? 'US$' : (!m || m === 'UYU' || m === '$') ? '$' : m;
+const fmtMonto = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtPrecio = (moneda, n) => `${simboloMoneda(moneda)} ${fmtMonto(n)}`;
+
+// Porcentaje con su sentido: descuento en verde («25 % menos»), recargo en magenta («10 % más»), cero en gris
+const ChipPct = ({ pct, dec = 2 }) => {
+    const n = parseFloat(pct) || 0;
+    const texto = Math.abs(n).toLocaleString('es-UY', { maximumFractionDigits: dec });
+    const clase = n > 0 ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+        : n < 0 ? 'bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20'
+        : 'bg-zinc-50 text-zinc-500 border-zinc-200';
+    return (
+        <span className={`inline-flex items-center text-[11px] font-bold px-2 py-0.5 rounded-full border whitespace-nowrap ${clase}`}>
+            {n > 0 ? `${texto} % menos` : n < 0 ? `${texto} % más` : '0 %'}
+        </span>
+    );
+};
+
+// Tarifa especial de una excepción, para la tabla de reglas asignadas. Las cuentas son las de antes, copiadas tal cual
+// (armaban el texto «USD 16.50 (25.0% OFF)»); ahora devuelven el precio y el porcentaje por separado para mostrarlos en
+// formato uruguayo. dec = decimales del porcentaje (el del precio fijo se redondeaba a 1, igual que antes).
+const tarifaDeRegla = (precioBase, moneda, state) => {
+    const r = { precio: null, pct: null, dec: 2 };
+    if (state.tipoRegla === 'percentage') {
+        const discPct = parseFloat(state.discStr) || 0;
+        if (precioBase > 0) {
+            const calculatedPrice = precioBase * (1 - discPct / 100);
+            r.precio = calculatedPrice; r.pct = discPct;
+        } else {
+            r.pct = discPct;
+        }
+    } else {
+        const fixedPrice = parseFloat(state.customStr) || 0;
+        if (precioBase > 0) {
+            const discPct = ((precioBase - fixedPrice) / precioBase) * 100;
+            r.precio = fixedPrice; r.pct = Number(discPct.toFixed(1)); r.dec = 1;
+        } else {
+            r.precio = fixedPrice;
+        }
+    }
+    return r;
+};
+
+// Tipo de la excepción para el ícono (antes un emoji): global, familia o producto (misma clasificación que activeRules)
+const tipoDeRegla = (cod) => cod === 'TOTAL' ? { Icono: Globe, texto: 'Global' }
+    : cod.startsWith('GRUPO:') ? { Icono: Folder, texto: 'Familia' }
+    : { Icono: Package, texto: 'Producto' };
+
+// En el celular, tarjetas en vez de tablas (una vista sola: no se dibujan las dos ocultando una). Desde 1024 px, tabla
+// y la lista de clientes al costado.
+const MQ_TABLA = '(min-width: 1024px)';
+function useConTabla() {
+    const [conTabla, setConTabla] = useState(() => window.matchMedia(MQ_TABLA).matches);
+    useEffect(() => {
+        const mq = window.matchMedia(MQ_TABLA);
+        const cambio = () => setConTabla(mq.matches);
+        mq.addEventListener('change', cambio);
+        return () => mq.removeEventListener('change', cambio);
+    }, []);
+    return conTabla;
+}
+
+// Listas de clientes de a 50 (patrón useDeAPoco de ExcepcionesDeudaView): «Buscar en la base» con dos letras trae miles
+// (con «ma», más de 5.000) y se dibujaban todos de una. Al acercarse al final se agregan 50 más; vuelve a 50 cuando
+// cambia algo de `reinicio` (la lista, el filtro, la pestaña). El margen se mide contra el contenedor que scrollea de
+// verdad (la lista en la compu, la página en el celular). El centinela va con ref de función porque la lista se desmonta
+// al cambiar de pestaña o al plegarla en el celular.
+const DE_A = 50;
+const contenedorConScroll = (el) => {
+    for (let p = el.parentElement; p && p !== document.body; p = p.parentElement) {
+        if (/(auto|scroll)/.test(getComputedStyle(p).overflowY) && p.scrollHeight > p.clientHeight) return p;
+    }
+    return null;
+};
+function useDeAPoco(total, ...reinicio) {
+    const [cuantos, setCuantos] = useState(DE_A);
+    const [centinela, setCentinela] = useState(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    useEffect(() => { setCuantos(DE_A); }, reinicio);
+    useEffect(() => {
+        if (!centinela || cuantos >= total) return undefined;
+        // También si el aviso quedó arriba de la pantalla (un scroll rápido lo salteó)
+        const obs = new IntersectionObserver(([e]) => {
+            if (e.isIntersecting || (e.rootBounds && e.boundingClientRect.bottom < e.rootBounds.top)) setCuantos(c => c + DE_A);
+        }, { root: contenedorConScroll(centinela), rootMargin: '0px 0px 600px 0px' });
+        obs.observe(centinela);
+        return () => obs.disconnect();
+    }, [cuantos, total, centinela]);
+    return [Math.min(cuantos, total), setCentinela];
+}
 
 // --- PANEL LATERAL (DRAWER): Nueva Excepción de Precio (Catálogo Integrado) ---
 const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule, editingRule, rowStateMap }) => {
@@ -201,98 +338,101 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
 
     if (!isOpen) return null;
 
-    return (
+    // Va en portal y en z-[6000]/[6010]: arriba de la barra de arriba (5010), aunque la pantalla esté embebida
+    return createPortal(
         <>
-            {/* Backdrop */}
-            <div className="fixed inset-0 bg-black/40 z-[990] transition-opacity animate-in fade-in duration-200" onClick={onClose}></div>
-            
-            {/* Drawer (Split Layout max-w-2xl) */}
-            <div className="fixed inset-y-0 right-0 z-[995] w-full max-w-2xl bg-white shadow-2xl flex flex-col transform translate-x-0 transition-transform duration-300 text-slate-700 animate-in slide-in-from-right duration-300">
-                {/* Header */}
-                <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                    <div>
-                        <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-                            <i className="fa-solid fa-tags text-indigo-500"></i> Asignar Reglas de Precio
-                        </h3>
-                        <p className="text-xs text-slate-400 mt-0.5">Asigna y edita tarifas especiales sobre productos y familias de forma unificada.</p>
+            {/* Fondo */}
+            <div className="fixed inset-0 bg-black/40 z-[6000] animate-in fade-in duration-200" onClick={onClose}></div>
+
+            {/* Panel lateral: en la compu, la lista a la izquierda y la regla a la derecha; en el celular, una cosa por vez */}
+            <div className="fixed inset-y-0 right-0 z-[6010] w-full max-w-3xl bg-white shadow-2xl flex flex-col text-zinc-700 text-sm animate-in slide-in-from-right duration-300">
+                {/* Encabezado */}
+                <div className="px-4 sm:px-5 py-4 border-b border-zinc-200 flex items-start gap-3">
+                    <Tags size={22} className="text-brand-cyan shrink-0 mt-0.5" />
+                    <div className="min-w-0 flex-1">
+                        <h3 className="text-lg font-black text-zinc-900 leading-tight">Asignar reglas de precio</h3>
+                        <p className="text-xs text-zinc-500 mt-0.5">Asigná y editá tarifas especiales sobre productos y familias desde un solo lugar.</p>
                     </div>
-                    <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">
-                        <i className="fa-solid fa-xmark"></i>
+                    <button onClick={onClose} title="Cerrar" aria-label="Cerrar" className="w-8 h-8 rounded-xl hover:bg-zinc-100 flex items-center justify-center text-zinc-400 hover:text-zinc-700 transition-colors shrink-0">
+                        <X size={18} />
                     </button>
                 </div>
 
-                {/* Body (Pantalla Dividida) */}
-                <div className="flex-1 flex overflow-hidden p-6 gap-6">
-                    {/* Columna Izquierda: Buscador y Listado del Catálogo */}
-                    <div className="w-3/5 flex flex-col h-full overflow-hidden border-r border-slate-100 pr-6">
+                {/* Cuerpo */}
+                <div className="flex-1 flex flex-col md:flex-row min-h-0 overflow-hidden">
+                    {/* Lista del catálogo */}
+                    <div className="flex-1 md:flex-none w-full md:w-3/5 flex flex-col min-h-0 p-4 sm:p-5 md:border-r md:border-zinc-200">
                         {/* Buscador */}
                         <div className="relative mb-3">
-                            <i className="fa-solid fa-search absolute left-3 top-2.5 text-slate-400 text-xs"></i>
+                            <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
                             <input
                                 type="text"
-                                className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400 text-xs text-slate-700 bg-white"
+                                className={CAMPO_CON_X}
                                 placeholder="Buscar por código o descripción..."
                                 value={searchQuery}
                                 onChange={e => setSearchQuery(e.target.value)}
                             />
                             {searchQuery && (
-                                <button 
+                                <button
                                     onClick={() => setSearchQuery('')}
-                                    className="absolute right-3 top-2 text-slate-400 hover:text-slate-600"
+                                    title="Borrar la búsqueda"
+                                    className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700"
                                 >
-                                    <i className="fa-solid fa-circle-xmark text-xs"></i>
+                                    <CircleX size={16} />
                                 </button>
                             )}
                         </div>
 
-                        {/* Tabs de Filtro */}
-                        <div className="flex bg-slate-100 p-0.5 rounded-lg mb-3">
+                        {/* Pestañas de filtro */}
+                        <div className="grid grid-cols-3 rounded-xl border border-zinc-200 bg-white p-1 gap-1 mb-3">
                             <button
                                 type="button"
                                 onClick={() => setFilterTab('todos')}
-                                className={`flex-1 py-1.5 text-[10px] font-black rounded transition-all text-center ${filterTab === 'todos' ? 'bg-[#1E1B4B] text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+                                className={`${PESTANA} ${filterTab === 'todos' ? PESTANA_SI : PESTANA_NO}`}
                             >
-                                Todos ({counts.todos})
+                                Todos <span className="opacity-70">({counts.todos})</span>
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setFilterTab('sin_regla')}
-                                className={`flex-1 py-1.5 text-[10px] font-black rounded transition-all text-center ${filterTab === 'sin_regla' ? 'bg-[#1E1B4B] text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+                                className={`${PESTANA} ${filterTab === 'sin_regla' ? PESTANA_SI : PESTANA_NO}`}
                                 title="Productos y familias sin regla asignada (no coincidentes)"
                             >
-                                Sin Regla ({counts.sinRegla})
+                                Sin regla <span className="opacity-70">({counts.sinRegla})</span>
                             </button>
                             <button
                                 type="button"
                                 onClick={() => setFilterTab('con_regla')}
-                                className={`flex-1 py-1.5 text-[10px] font-black rounded transition-all text-center ${filterTab === 'con_regla' ? 'bg-[#1E1B4B] text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
+                                className={`${PESTANA} ${filterTab === 'con_regla' ? PESTANA_SI : PESTANA_NO}`}
                             >
-                                Con Regla ({counts.conRegla})
+                                Con regla <span className="opacity-70">({counts.conRegla})</span>
                             </button>
                         </div>
 
                         {/* Listado */}
-                        <div className="flex-1 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
+                        <div className="flex-1 min-h-0 overflow-y-auto space-y-1.5 pr-1 custom-scrollbar">
                             {visibleList.length === 0 ? (
-                                <div className="text-center py-10 text-slate-400 text-xs">
-                                    <i className="fa-solid fa-folder-open text-2xl mb-2 opacity-50 block"></i>
-                                    No se encontraron ítems coincidentes.
+                                <div className="flex flex-col items-center justify-center text-center py-10">
+                                    <SearchX size={40} className="mb-3 text-brand-cyan" />
+                                    <span className="text-sm font-bold text-zinc-700">No se encontraron ítems coincidentes.</span>
+                                    <span className="text-xs text-zinc-400 mt-1">Probá con otra búsqueda u otra pestaña.</span>
                                 </div>
                             ) : (
                                 visibleList.map(item => {
                                     const isSelected = selectedItem?.CodArticulo === item.CodArticulo;
                                     const state = rowStateMap[item.CodArticulo];
                                     const hasRule = state?.isActive;
-                                    
+
+                                    // Regla del ítem: porcentaje (verde si es descuento, magenta si es recargo), precio fijo en cian
                                     let badgeContent = null;
                                     if (hasRule) {
                                         if (state.tipoRegla === 'percentage') {
-                                            badgeContent = <span className="bg-emerald-100 text-emerald-800 text-[9px] font-black px-1.5 py-0.5 rounded whitespace-nowrap">{state.discStr}% OFF</span>;
+                                            badgeContent = <ChipPct pct={state.discStr} />;
                                         } else {
-                                            badgeContent = <span className="bg-blue-100 text-blue-800 text-[9px] font-black px-1.5 py-0.5 rounded whitespace-nowrap">${state.customStr}</span>;
+                                            badgeContent = <span className={`${CHIP} ${CHIP_CIAN} normal-case`}>{fmtPrecio(item.Moneda, state.customStr)}</span>;
                                         }
                                     } else {
-                                        badgeContent = <span className="bg-slate-100 text-slate-400 text-[9px] font-bold px-1.5 py-0.5 rounded whitespace-nowrap">Sin Regla</span>;
+                                        badgeContent = <span className={`${CHIP} ${CHIP_ZINC} normal-case`}>Sin regla</span>;
                                     }
 
                                     const isGlobal = item.CodArticulo === 'TOTAL';
@@ -301,13 +441,14 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                     const isExpanded = isFamily && expandedFamilies.has(item.Grupo);
                                     const searching = searchQuery.trim() !== '' || filterTab !== 'todos';
 
-                                    let typeIcon = "📦";
+                                    // Ícono del tipo (antes un emoji)
+                                    let TypeIcon = Package;
                                     let typeLabel = "Producto";
                                     if (isGlobal) {
-                                        typeIcon = "🌐";
+                                        TypeIcon = Globe;
                                         typeLabel = "Global";
                                     } else if (isFamily) {
-                                        typeIcon = isExpanded ? "📂" : "📁";
+                                        TypeIcon = isExpanded ? FolderOpen : Folder;
                                         typeLabel = "Familia";
                                     }
 
@@ -320,33 +461,36 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                     return (
                                         <div
                                             key={item.CodArticulo}
+                                            data-item-catalogo
                                             onClick={handleRowClick}
                                             style={isChild && !searching ? { marginLeft: '1.25rem' } : undefined}
-                                            className={`flex items-center justify-between p-2 rounded-lg cursor-pointer transition-all border ${isSelected ? 'bg-indigo-50/50 border-indigo-300 shadow-sm' : isFamily ? 'bg-slate-50 border-slate-200 hover:border-indigo-300' : 'bg-white border-slate-100 hover:border-slate-300'} ${isChild && !searching ? 'border-l-2 border-l-slate-200' : ''}`}
+                                            className={`flex items-center justify-between gap-2 px-3 py-2 rounded-xl cursor-pointer transition-colors border ${isSelected ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : isFamily ? 'bg-zinc-50 border-zinc-200 hover:border-brand-cyan/40' : 'bg-white border-zinc-200 hover:border-zinc-300'} ${isChild && !searching ? 'border-l-2 border-l-zinc-300' : ''}`}
                                         >
                                             <div className="flex items-center gap-2.5 min-w-0">
                                                 {isFamily && !searching && (
-                                                    <i className={`fa-solid ${isExpanded ? 'fa-chevron-down' : 'fa-chevron-right'} text-[10px] text-slate-400 w-2.5 flex-shrink-0`}></i>
+                                                    isExpanded
+                                                        ? <ChevronDown size={14} className="text-zinc-400 shrink-0" />
+                                                        : <ChevronRight size={14} className="text-zinc-400 shrink-0" />
                                                 )}
-                                                <span className="text-base select-none" title={typeLabel}>{typeIcon}</span>
+                                                <span className="shrink-0" title={typeLabel}><TypeIcon size={17} className="text-brand-cyan" /></span>
                                                 <div className="min-w-0">
-                                                    <div className="font-bold text-slate-700 text-xs truncate" title={item.Descripcion}>{item.Descripcion}</div>
-                                                    <div className="text-[9px] font-mono text-slate-400 mt-0.5 truncate">
-                                                        Ref: {item.CodArticulo} {item.Precio > 0 && `| Base: $${Number(item.Precio).toFixed(2)}`}
-                                                        {isFamily && familyChildCount[item.Grupo] ? ` | ${familyChildCount[item.Grupo]} productos` : ''}
+                                                    <div className="font-bold text-zinc-800 text-sm truncate" title={item.Descripcion}>{item.Descripcion}</div>
+                                                    <div className="text-[11px] font-mono text-zinc-400 mt-0.5 truncate">
+                                                        Ref: {item.CodArticulo}{item.Precio > 0 && ` · Base ${fmtPrecio(item.Moneda, item.Precio)}`}
+                                                        {isFamily && familyChildCount[item.Grupo] ? ` · ${familyChildCount[item.Grupo]} productos` : ''}
                                                     </div>
                                                 </div>
                                             </div>
-                                            
-                                            <div className="flex items-center gap-2 ml-2 flex-shrink-0">
+
+                                            <div className="flex items-center gap-1.5 shrink-0">
                                                 {badgeContent}
                                                 {hasRule && (
                                                     <button
                                                         onClick={(e) => handleRemoveDirect(e, item.CodArticulo)}
-                                                        className="w-5 h-5 rounded hover:bg-red-50 text-slate-400 hover:text-red-500 flex items-center justify-center transition-colors"
+                                                        className={BTN_ICONO_CHICO}
                                                         title="Eliminar excepción"
                                                     >
-                                                        <i className="fa-solid fa-trash-can text-[10px]"></i>
+                                                        <Trash2 size={14} />
                                                     </button>
                                                 )}
                                             </div>
@@ -355,31 +499,31 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                 })
                             )}
                             {filteredItems.length > 100 && (
-                                <div className="text-[10px] text-slate-400 text-center py-2 border-t border-slate-100">
-                                    Mostrando los primeros 100 de {filteredItems.length} ítems. Usa el buscador.
+                                <div className="text-[11px] text-zinc-400 text-center py-2 border-t border-zinc-100">
+                                    Mostrando los primeros 100 de {filteredItems.length} ítems. Usá el buscador.
                                 </div>
                             )}
                         </div>
                     </div>
 
-                    {/* Columna Derecha: Configuración de la Regla (Formulario Contextual) */}
-                    <div className="w-2/5 flex flex-col h-full overflow-hidden pl-2">
+                    {/* La regla del elemento elegido (formulario). En el celular va abajo de la lista, solo con algo elegido. */}
+                    <div className={`${selectedItem ? 'flex' : 'hidden md:flex'} w-full md:w-2/5 flex-col shrink-0 md:shrink min-h-0 max-h-[58%] md:max-h-none overflow-y-auto p-4 sm:p-5 border-t border-zinc-200 md:border-t-0 shadow-[0_-8px_24px_rgba(0,0,0,0.06)] md:shadow-none`}>
                         {!selectedItem ? (
-                            <div className="flex-1 flex flex-col items-center justify-center text-center p-4 border-2 border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-                                <i className="fa-solid fa-arrow-left text-2xl text-slate-300 mb-3 animate-pulse"></i>
-                                <p className="text-xs font-black text-slate-500">Selecciona un elemento</p>
-                                <p className="text-[10px] text-slate-400 mt-1 leading-relaxed">Elige un producto o familia de la lista izquierda para definir su precio especial o descuento.</p>
+                            <div className="flex-1 flex flex-col items-center justify-center text-center p-4 border-2 border-dashed border-zinc-200 rounded-2xl">
+                                <ArrowLeft size={28} className="text-brand-cyan mb-3" />
+                                <p className="text-sm font-bold text-zinc-700">Elegí un elemento</p>
+                                <p className="text-xs text-zinc-400 mt-1 leading-relaxed">Elegí un producto o una familia de la lista para definir su precio especial o descuento.</p>
                             </div>
                         ) : (
-                            <div className="space-y-4">
-                                <div className="p-3.5 bg-indigo-50 border border-indigo-100 rounded-xl">
-                                    <p className="text-[9px] text-indigo-500 font-black tracking-wide uppercase">Configurar Excepción</p>
-                                    <h4 className="font-bold text-slate-800 text-xs mt-0.5 leading-snug">{selectedItem.Descripcion}</h4>
-                                    <p className="text-[9px] font-mono text-slate-400 mt-1">Ref: {selectedItem.CodArticulo}</p>
+                            <div className="space-y-3 md:space-y-4">
+                                <div className="p-3 md:p-4 bg-zinc-50 border border-zinc-200 rounded-xl">
+                                    <p className="text-[10px] font-black uppercase tracking-widest text-brand-cyan">Configurar excepción</p>
+                                    <h4 className="font-bold text-zinc-900 text-sm mt-1 leading-snug">{selectedItem.Descripcion}</h4>
+                                    <p className="text-[11px] font-mono text-zinc-400 mt-1">Ref: {selectedItem.CodArticulo}</p>
                                     {selectedItem.Precio > 0 && (
-                                        <div className="flex justify-between items-center text-[10px] font-bold text-slate-500 mt-2.5 pt-2.5 border-t border-indigo-200/30">
-                                            <span>Precio Base:</span>
-                                            <span className="font-mono text-slate-700 bg-white px-2 py-0.5 rounded border border-indigo-100 font-bold">${Number(selectedItem.Precio).toFixed(2)}</span>
+                                        <div className="flex justify-between items-center gap-2 text-xs font-bold text-zinc-500 mt-3 pt-3 border-t border-zinc-200">
+                                            <span>Precio base</span>
+                                            <span className="font-mono text-zinc-800 bg-white px-2 py-0.5 rounded-lg border border-zinc-200">{fmtPrecio(selectedItem.Moneda, selectedItem.Precio)}</span>
                                         </div>
                                     )}
                                 </div>
@@ -389,13 +533,13 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                     // PRODUCTO: Entradas duales
                                     <div className="space-y-3">
                                         <div>
-                                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Precio Fijo ({selectedItem.Moneda === 'USD' ? 'USD' : '$'})</label>
+                                            <label className={ETIQUETA}>Precio fijo ({selectedItem.Moneda === 'USD' ? 'US$' : '$'})</label>
                                             <div className="relative">
-                                                <span className="absolute left-2.5 top-1.5 text-slate-400 font-bold text-xs">{selectedItem.Moneda === 'USD' ? 'USD' : '$'}</span>
+                                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 font-bold text-sm pointer-events-none">{selectedItem.Moneda === 'USD' ? 'US$' : '$'}</span>
                                                 <input
                                                     type="number"
                                                     step="0.01"
-                                                    className="w-full pl-7 pr-3 py-1.5 border border-slate-300 rounded-lg font-mono text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                                                    className={`${CAMPO_NUM} w-full pl-12 pr-3`}
                                                     placeholder="Ej: 150"
                                                     value={customStr}
                                                     onChange={e => handlePriceChange(e.target.value)}
@@ -403,17 +547,17 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                             </div>
                                         </div>
                                         <div>
-                                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Descuento (%)</label>
+                                            <label className={ETIQUETA}>Descuento (%)</label>
                                             <div className="relative">
                                                 <input
                                                     type="number"
                                                     step="0.01"
-                                                    className="w-full pl-3 pr-6 py-1.5 border border-slate-300 rounded-lg font-mono text-xs outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100"
+                                                    className={`${CAMPO_NUM} w-full pl-3 pr-8`}
                                                     placeholder="Ej: 10"
                                                     value={discStr}
                                                     onChange={e => handleDiscChange(e.target.value)}
                                                 />
-                                                <span className="absolute right-2.5 top-1.5 text-slate-400 font-bold text-xs">%</span>
+                                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 font-bold text-sm pointer-events-none">%</span>
                                             </div>
                                         </div>
                                     </div>
@@ -421,42 +565,42 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                                     // FAMILIA O GLOBAL: Solo descuento
                                     <div className="space-y-3">
                                         <div>
-                                            <label className="block text-[10px] font-black text-slate-400 uppercase tracking-wider mb-1">Descuento (%)</label>
+                                            <label className={ETIQUETA}>Descuento (%)</label>
                                             <div className="relative">
                                                 <input
                                                     type="number"
                                                     step="0.01"
-                                                    className="w-full pl-3 pr-6 py-1.5 border border-slate-300 rounded-lg font-mono text-xs outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100"
+                                                    className={`${CAMPO_NUM} w-full pl-3 pr-8`}
                                                     placeholder="Ej: 15"
                                                     value={discStr}
                                                     onChange={e => setDiscStr(e.target.value)}
                                                 />
-                                                <span className="absolute right-2.5 top-1.5 text-slate-400 font-bold text-xs">%</span>
+                                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 font-bold text-sm pointer-events-none">%</span>
                                             </div>
                                         </div>
-                                        <p className="text-[10px] text-slate-400 leading-relaxed">
-                                            {selectedItem.CodArticulo === 'TOTAL' 
-                                                ? 'Esta regla actúa como descuento global para cualquier producto que no tenga regla específica o de familia.' 
+                                        <p className="text-xs text-zinc-500 leading-relaxed">
+                                            {selectedItem.CodArticulo === 'TOTAL'
+                                                ? 'Esta regla actúa como descuento global para cualquier producto que no tenga regla específica o de familia.'
                                                 : 'Este descuento se aplicará a todos los productos que pertenezcan a esta familia.'}
                                         </p>
                                     </div>
                                 )}
 
-                                {/* Acciones del Formulario */}
-                                <div className="pt-2 flex gap-2">
+                                {/* Acciones del formulario */}
+                                <div className="pt-1 flex gap-2">
                                     <button
                                         type="button"
                                         onClick={() => { setSelectedItem(null); setCustomStr(''); setDiscStr(''); }}
-                                        className="flex-1 py-2 border border-slate-300 hover:bg-slate-100 text-slate-600 rounded-lg font-bold transition-colors text-xs"
+                                        className={`${BTN_SECUNDARIO} shrink-0`}
                                     >
                                         Limpiar
                                     </button>
                                     <button
                                         type="button"
                                         onClick={handleSubmit}
-                                        className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-bold transition-colors text-xs shadow-md shadow-indigo-100"
+                                        className={`${BTN_PRINCIPAL} flex-1 whitespace-nowrap`}
                                     >
-                                        Aplicar Regla
+                                        <Check size={15} /> Aplicar regla
                                     </button>
                                 </div>
                             </div>
@@ -464,7 +608,8 @@ const NewRuleDrawer = ({ isOpen, onClose, baseProducts, onAddRule, onRemoveRule,
                     </div>
                 </div>
             </div>
-        </>
+        </>,
+        document.body
     );
 };
 
@@ -495,46 +640,46 @@ const ProfileSelectionModal = ({ isOpen, onClose, allProfiles, selectedProfileId
         onApply(tempIds);
     };
 
-    return (
+    // Sin blur; en portal y en z-[6000]/[6010], arriba de la barra de arriba (5010)
+    return createPortal(
         <>
-            {/* Backdrop */}
-            <div className="fixed inset-0 bg-slate-900/40 backdrop-blur-sm z-[9990] transition-opacity animate-in fade-in duration-200" onClick={onClose}></div>
-            
-            {/* Modal */}
-            <div className="fixed inset-0 z-[9995] flex items-center justify-center p-4">
-                <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[85vh] text-slate-700 transform scale-100 transition-all duration-300 animate-in zoom-in-95 duration-200">
-                    {/* Header */}
-                    <div className="p-5 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                        <div>
-                            <h3 className="text-lg font-black text-slate-800 flex items-center gap-2">
-                                <i className="fa-solid fa-user-gear text-indigo-500"></i> Gestionar Perfiles
-                            </h3>
-                            <p className="text-xs text-slate-400 mt-0.5">Asigna o quita perfiles de precios para este cliente.</p>
+            {/* Fondo */}
+            <div className="fixed inset-0 bg-black/40 z-[6000] animate-in fade-in duration-200" onClick={onClose}></div>
+
+            {/* Ventana */}
+            <div className="fixed inset-0 z-[6010] flex items-center justify-center p-3 sm:p-4">
+                <div className="bg-white rounded-2xl border border-zinc-200 shadow-2xl w-full max-w-2xl flex flex-col overflow-hidden max-h-[90vh] text-zinc-700 text-sm animate-in zoom-in-95 duration-200">
+                    {/* Encabezado */}
+                    <div className="px-4 sm:px-5 py-4 border-b border-zinc-200 flex items-start gap-3">
+                        <UserCog size={22} className="text-brand-cyan shrink-0 mt-0.5" />
+                        <div className="min-w-0 flex-1">
+                            <h3 className="text-lg font-black text-zinc-900 leading-tight">Gestionar perfiles</h3>
+                            <p className="text-xs text-zinc-500 mt-0.5">Asigná o quitá perfiles de precios para este cliente.</p>
                         </div>
-                        <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-slate-200 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors">
-                            <i className="fa-solid fa-xmark"></i>
+                        <button onClick={onClose} title="Cerrar" aria-label="Cerrar" className="w-8 h-8 rounded-xl hover:bg-zinc-100 flex items-center justify-center text-zinc-400 hover:text-zinc-700 transition-colors shrink-0">
+                            <X size={18} />
                         </button>
                     </div>
 
-                    {/* Body */}
-                    <div className="flex-1 overflow-y-auto p-6 space-y-6 custom-scrollbar">
+                    {/* Cuerpo */}
+                    <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-6 custom-scrollbar">
                         {/* Perfiles Globales (Activos / Bloqueados) */}
                         <div>
-                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                                <i className="fa-solid fa-earth-americas text-slate-400"></i> Perfiles Globales (Activos)
+                            <h4 className={`${ROTULO} mb-3 flex items-center gap-1.5`}>
+                                <Globe size={14} className="text-brand-cyan" /> Perfiles globales (activos)
                             </h4>
                             {globalProfiles.length === 0 ? (
-                                <p className="text-xs text-slate-400 italic">No hay perfiles globales configurados en el sistema.</p>
+                                <p className="text-xs text-zinc-400">No hay perfiles globales configurados en el sistema.</p>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                     {globalProfiles.map(p => (
-                                        <div key={p.ID} className="flex items-center justify-between p-3.5 bg-slate-50 border border-slate-200/80 rounded-xl select-none opacity-80">
-                                            <div className="min-w-0 pr-2">
-                                                <div className="font-bold text-slate-700 text-xs truncate">{p.Nombre}</div>
-                                                <div className="text-[10px] text-slate-400 truncate mt-0.5">{p.Descripcion || 'Perfil global activo por defecto'}</div>
+                                        <div key={p.ID} className="flex items-center justify-between gap-2 p-3 bg-zinc-50 border border-zinc-200 rounded-xl select-none">
+                                            <div className="min-w-0">
+                                                <div className="font-bold text-zinc-700 text-sm truncate">{p.Nombre}</div>
+                                                <div className="text-xs text-zinc-400 truncate mt-0.5">{p.Descripcion || 'Perfil global activo por defecto'}</div>
                                             </div>
-                                            <span className="text-slate-400 bg-white border border-slate-200 w-7 h-7 rounded-full flex items-center justify-center text-xs flex-shrink-0 shadow-sm" title="Este perfil es global y se aplica automáticamente">
-                                                <i className="fa-solid fa-lock"></i>
+                                            <span className="text-zinc-400 shrink-0" title="Este perfil es global y se aplica automáticamente">
+                                                <Lock size={15} />
                                             </span>
                                         </div>
                                     ))}
@@ -544,28 +689,30 @@ const ProfileSelectionModal = ({ isOpen, onClose, allProfiles, selectedProfileId
 
                         {/* Asignación de Perfiles (Editables) */}
                         <div>
-                            <h4 className="text-[10px] font-black text-slate-400 uppercase tracking-wider mb-3 flex items-center gap-1.5">
-                                <i className="fa-solid fa-user-tag text-slate-400"></i> Asignación de Perfiles
+                            <h4 className={`${ROTULO} mb-3 flex items-center gap-1.5`}>
+                                <UserCog size={14} className="text-brand-cyan" /> Asignación de perfiles
                             </h4>
                             {assignableProfiles.length === 0 ? (
-                                <p className="text-xs text-slate-400 italic">No hay perfiles asignables configurados.</p>
+                                <p className="text-xs text-zinc-400">No hay perfiles asignables configurados.</p>
                             ) : (
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
                                     {assignableProfiles.map(p => {
                                         const isChecked = tempIds.has(p.ID);
                                         return (
-                                            <div 
-                                                key={p.ID} 
+                                            <div
+                                                key={p.ID}
+                                                role="checkbox"
+                                                aria-checked={isChecked}
                                                 onClick={() => handleToggle(p.ID)}
-                                                className={`flex items-center justify-between p-3.5 rounded-xl cursor-pointer transition-all border select-none ${isChecked ? 'bg-indigo-50/40 border-indigo-500 shadow-sm' : 'bg-white border-slate-100 hover:border-slate-300'}`}
+                                                className={`flex items-center justify-between gap-2 p-3 rounded-xl cursor-pointer transition-colors border select-none ${isChecked ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : 'bg-white border-zinc-200 hover:border-zinc-300'}`}
                                             >
-                                                <div className="min-w-0 pr-2">
-                                                    <div className="font-bold text-slate-800 text-xs truncate">{p.Nombre}</div>
-                                                    <div className="text-[10px] text-slate-400 truncate mt-0.5">{p.Descripcion || 'Sin descripción'}</div>
+                                                <div className="min-w-0">
+                                                    <div className="font-bold text-zinc-800 text-sm truncate">{p.Nombre}</div>
+                                                    <div className="text-xs text-zinc-400 truncate mt-0.5">{p.Descripcion || 'Sin descripción'}</div>
                                                 </div>
-                                                <div className={`w-5.5 h-5.5 rounded-full border flex items-center justify-center flex-shrink-0 transition-all ${isChecked ? 'bg-indigo-600 border-indigo-600 text-white shadow-sm shadow-indigo-100' : 'border-slate-300 bg-white'}`}>
-                                                    {isChecked && <i className="fa-solid fa-check text-[10px]"></i>}
-                                                </div>
+                                                <span className={`w-5 h-5 rounded-md border flex items-center justify-center shrink-0 transition-colors ${isChecked ? 'bg-brand-cyan border-brand-cyan text-white' : 'border-zinc-300 bg-white'}`}>
+                                                    {isChecked && <Check size={13} strokeWidth={3} />}
+                                                </span>
                                             </div>
                                         );
                                     })}
@@ -574,26 +721,27 @@ const ProfileSelectionModal = ({ isOpen, onClose, allProfiles, selectedProfileId
                         </div>
                     </div>
 
-                    {/* Footer */}
-                    <div className="p-4 border-t border-slate-100 bg-slate-50 flex justify-end gap-2.5">
-                        <button 
-                            type="button" 
-                            onClick={onClose} 
-                            className="px-4 py-2 border border-slate-200 hover:bg-slate-200 text-slate-600 rounded-xl font-bold transition-all text-xs"
+                    {/* Pie */}
+                    <div className="px-4 sm:px-5 py-3 border-t border-zinc-200 bg-zinc-50 grid grid-cols-2 sm:flex sm:justify-end gap-2">
+                        <button
+                            type="button"
+                            onClick={onClose}
+                            className={BTN_SECUNDARIO}
                         >
                             Cancelar
                         </button>
-                        <button 
-                            type="button" 
-                            onClick={handleSubmit} 
-                            className="px-5 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold transition-all text-xs shadow-md shadow-indigo-100"
+                        <button
+                            type="button"
+                            onClick={handleSubmit}
+                            className={BTN_PRINCIPAL}
                         >
-                            Aplicar Perfiles
+                            <Check size={15} /> Aplicar perfiles
                         </button>
                     </div>
                 </div>
             </div>
-        </>
+        </>,
+        document.body
     );
 };
 
@@ -649,6 +797,13 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
     const [urgExcAreas, setUrgExcAreas] = useState([]);       // lista de áreas disponibles
     const [urgExcAreaSearch, setUrgExcAreaSearch] = useState('');
     const [urgExcProdDropOpen, setUrgExcProdDropOpen] = useState(false);
+
+    // Estética nueva: en el celular (sin tabla) la lista de clientes va arriba y se pliega al elegir uno (queda un botón
+    // para volver a abrirla). «Quitar cliente» confirma con la ventana propia (antes window.confirm).
+    const conTabla = useConTabla();
+    const [listaAbiertaCelular, setListaAbiertaCelular] = useState(false);
+    useEffect(() => { setListaAbiertaCelular(false); }, [selClientId]);
+    const [confirmar, ventanaConfirmar] = useConfirmar();
 
     useEffect(() => {
         loadClients();
@@ -1166,8 +1321,8 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
         toast.info(`Regla eliminada para ${codArticulo}.`);
     };
 
-    const handleDeleteClient = () => {
-        if (!selClientId || !window.confirm(`¿Seguro que deseas eliminar los precios especiales del cliente ${selClientId}? Volverá a tarifa normal.`)) return;
+    const handleDeleteClient = async () => {
+        if (!selClientId || !(await confirmar({ titulo: 'Quitar cliente de precios especiales', texto: `¿Seguro que deseas eliminar los precios especiales del cliente ${selClientId}? Volverá a tarifa normal.`, confirmar: 'Quitar cliente', peligro: true }))) return;
         api.delete(`/special-prices/${selClientId}`)
             .then(() => {
                 toast.success("Cliente eliminado de reglas especiales");
@@ -1288,11 +1443,238 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
     // Extraer Categorías Únicas para Selector (ignorar GLOBAL)
     const categoriasDropdown = ["TODAS", "ACTIVAS", ...new Set(baseProducts.filter(p => p.Grupo !== 'GLOBAL').map(p => p.Grupo).filter(Boolean))];
 
+    // --- PRESENTACIÓN (estética nueva) ---
+    const [cuantosTarifas, centinelaTarifas] = useDeAPoco(filteredClients.length, clients, filterClient, sidebarTab);
+    const [cuantosBase, centinelaBase] = useDeAPoco(dbSearchResults.length, dbSearchResults, sidebarTab);
+    const mostrarLista = conTabla || !selClientId || listaAbiertaCelular;
+
+    // Acciones de una excepción (tabla en la compu, tarjeta en el celular)
+    const accionesRegla = (codArticulo, state) => (
+        <div className="flex items-center justify-center gap-2">
+            <button
+                onClick={() => {
+                    setEditingRule({ codArticulo, state });
+                    setIsDrawerOpen(true);
+                }}
+                className={`${BTN_ICONO} hover:text-brand-cyan hover:border-brand-cyan/40 hover:bg-brand-cyan/5`}
+                title="Editar excepción"
+            >
+                <Pencil size={14} />
+            </button>
+            <button
+                onClick={() => handleRemoveRule(codArticulo)}
+                className={`${BTN_ICONO} hover:text-brand-magenta hover:border-brand-magenta/30 hover:bg-brand-magenta/5`}
+                title="Eliminar excepción"
+            >
+                <Trash2 size={14} />
+            </button>
+        </div>
+    );
+
+    // Tarifa especial de una excepción: precio en formato uruguayo + el porcentaje con su sentido
+    const celdaTarifa = (tarifa, moneda) => (
+        <div className="flex items-center gap-1.5 flex-wrap">
+            {tarifa.precio !== null && <span className="font-mono font-bold text-zinc-900 whitespace-nowrap">{fmtPrecio(moneda, tarifa.precio)}</span>}
+            {tarifa.pct !== null && <ChipPct pct={tarifa.pct} dec={tarifa.dec} />}
+        </div>
+    );
+
+    // Datos de una fila del catálogo completo (mismas cuentas que antes vivían dentro del map de la tabla)
+    const datosFila = (prod) => {
+        const st = rowStateMap[prod.CodArticulo] || {};
+        const isSelected = selectedRows.has(prod.CodArticulo);
+        const isActive = st.isActive;
+        const isGroupRow = prod.ProIdProducto === null && prod.CodArticulo.startsWith('GRUPO:');
+        const isGlobal = prod.ProIdProducto === 0;
+        const isExpanded = expandedGroups.has(prod.Grupo);
+        const isHidden = hiddenGroups.has(prod.Grupo);
+        return { st, isSelected, isActive, isGroupRow, isGlobal, isExpanded, isHidden };
+    };
+
+    // Casilla de "todas" (encabezado de la tabla o arriba de las tarjetas)
+    const chkTodos = () => (
+        <input
+            type="checkbox"
+            className="w-4 h-4 accent-[#006E97] cursor-pointer align-middle"
+            aria-label="Elegir todas las filas visibles"
+            onChange={() => toggleSelectAll(visibleProducts)}
+            checked={selectedRows.size > 0 && selectedRows.size >= visibleProducts.length && visibleProducts.length > 0}
+        />
+    );
+
+    const chkGrupo = (prod, { isSelected, isHidden }) => (
+        <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => toggleRowSelect(prod.CodArticulo)}
+            className="w-4 h-4 accent-[#006E97] cursor-pointer align-middle disabled:cursor-not-allowed"
+            disabled={isHidden}
+        />
+    );
+
+    const chkProducto = (prod, { isSelected }) => (
+        <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={() => toggleRowSelect(prod.CodArticulo)}
+            className="w-4 h-4 accent-[#006E97] cursor-pointer align-middle"
+        />
+    );
+
+    // Cabeza de una familia del árbol: ojo (ocultar/mostrar), +/- (abrir/cerrar), nombre, regla de la familia y su %
+    const cabezaGrupo = (prod, { st, isActive, isExpanded, isHidden }) => (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 w-full cursor-pointer select-none" onClick={() => { if(!isHidden) toggleGroupNode(prod.Grupo); }}>
+            {/* OJO TOGGLE */}
+            <button
+                onClick={(e) => { e.stopPropagation(); toggleHideGroupNode(prod.Grupo); }}
+                className={`w-7 h-7 flex items-center justify-center rounded-lg border transition-colors shrink-0 ${isHidden ? 'bg-zinc-200 border-zinc-200 text-zinc-500 hover:bg-zinc-300' : 'bg-white border-zinc-200 text-zinc-400 hover:text-brand-magenta hover:border-brand-magenta/30'}`}
+                title={isHidden ? "Mostrar esta familia" : "Ocultar esta familia e ignorarla"}
+            >
+                {isHidden ? <EyeOff size={14} /> : <Eye size={14} />}
+            </button>
+
+            <button disabled={isHidden} className={`w-6 h-6 flex items-center justify-center bg-white border border-zinc-200 rounded-md text-zinc-500 shrink-0 ${!isHidden ? 'hover:text-brand-cyan hover:border-brand-cyan/40 transition-colors' : ''}`}>
+                {isExpanded && !isHidden ? <Minus size={13} /> : <Plus size={13} />}
+            </button>
+            {isExpanded && !isHidden ? <FolderOpen size={18} className="text-brand-cyan shrink-0" /> : <Folder size={18} className="text-zinc-400 shrink-0" />}
+            <span className={`font-black tracking-wide min-w-0 break-words ${isHidden ? 'text-zinc-500 line-through' : 'text-zinc-800'}`}>
+                {prod.Descripcion.toUpperCase()}
+            </span>
+
+            {/* Si el Grupo en sí tiene un % de descuento guardado (Regla a nivel raíz de familia) */}
+            {isActive && !isHidden && (
+                <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    <span className={`${CHIP} ${CHIP_CIAN}`}>Regla de toda la familia</span>
+                    <ChipPct pct={st.discStr} />
+                    <button
+                        onClick={() => handleRemoveRule(prod.CodArticulo)}
+                        className={BTN_ICONO_CHICO}
+                        title="Eliminar regla de familia"
+                    >
+                        <Trash2 size={13} />
+                    </button>
+                </div>
+            )}
+
+            {/* Inputs rápidos en la misma fila del grupo para descuento global de familia */}
+            {!isHidden && (
+                <div className="w-full sm:w-auto sm:ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                    <span className="text-[10px] font-black text-zinc-400 uppercase tracking-widest whitespace-nowrap">Tarifa familia</span>
+                    <div className="relative w-28">
+                        <input
+                            type="number" step="0.01"
+                            value={st.discStr}
+                            onChange={e => handleDiscStrChange(prod.CodArticulo, e.target.value)}
+                            className={`${CAMPO_TABLA} ${BORDE_NORMAL} pl-3 pr-7 font-bold`}
+                            placeholder="0"
+                        />
+                        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-black pointer-events-none">%</span>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+
+    // Nombre, código y "Activa" de un producto (o de la regla global)
+    const celdaProducto = (prod, { isActive, isGlobal }) => (
+        <div className="flex items-center gap-2 min-w-0">
+            {!isGlobal && <div className="w-4 h-4 border-b border-l border-zinc-300 ml-1 mr-1 rounded-bl shrink-0"></div>}
+            <div className="min-w-0">
+                <div className={`font-bold break-words ${isGlobal ? 'text-brand-cyan flex items-center gap-2' : 'text-zinc-800'}`}>
+                    {isGlobal && <Globe size={16} className="shrink-0" />}
+                    {prod.Descripcion}
+                </div>
+                <div className="flex gap-2 items-center mt-1 flex-wrap">
+                    <span className="font-mono text-[11px] text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded">{prod.CodArticulo}</span>
+                    {isActive && (
+                        <div className="flex items-center gap-1.5">
+                            <span className={`${CHIP} ${CHIP_CIAN}`}>Activa</span>
+                            <button
+                                onClick={() => handleRemoveRule(prod.CodArticulo)}
+                                className={BTN_ICONO_CHICO}
+                                title="Eliminar regla"
+                            >
+                                <Trash2 size={13} />
+                            </button>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+
+    const precioBaseFila = (prod) => (prod.Precio > 0 ? fmtPrecio(prod.Moneda, prod.Precio) : '—');
+
+    // Los tres campos de un producto: precio fijo, descuento en % y descuento por importe (borde cian = el tipo activo)
+    const inputPrecio = (prod, { st, isActive, isGlobal }) => (
+        <div className="relative">
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-bold pointer-events-none">{simboloMoneda(prod.Moneda)}</span>
+            <input
+                type="number"
+                step="0.01"
+                value={st.customStr}
+                onChange={e => handlePriceStrChange(prod.CodArticulo, e.target.value)}
+                className={`${CAMPO_TABLA} pl-10 pr-2 ${isActive && st.tipoRegla === 'fixed' ? BORDE_ACTIVO : BORDE_NORMAL}`}
+                placeholder="Base"
+                disabled={isGlobal}
+            />
+        </div>
+    );
+
+    const inputPct = (prod, { st, isActive }) => (
+        <div className="relative">
+            <input
+                type="number"
+                step="0.01"
+                value={st.discStr}
+                onChange={e => handleDiscStrChange(prod.CodArticulo, e.target.value)}
+                className={`${CAMPO_TABLA} pl-2.5 pr-7 ${isActive && st.tipoRegla === 'percentage' ? BORDE_ACTIVO : BORDE_NORMAL}`}
+                placeholder="0"
+            />
+            <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-bold pointer-events-none">%</span>
+        </div>
+    );
+
+    const inputImporte = (prod, { st, isActive }) => (
+        <div className="relative">
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-zinc-400 text-xs font-bold pointer-events-none">{simboloMoneda(prod.Moneda)}</span>
+            <input
+                type="number"
+                step="0.01"
+                value={st.amtStr || ''}
+                onChange={e => handleAmtStrChange(prod.CodArticulo, e.target.value)}
+                className={`${CAMPO_TABLA} pl-10 pr-2 ${isActive && st.tipoRegla === 'subtract' ? BORDE_ACTIVO : BORDE_NORMAL}`}
+                placeholder="0"
+                title="Descuento por importe fijo por unidad"
+            />
+        </div>
+    );
+
+    // Datos de contacto de un cliente en la tarjeta de la lista (igual que en Caja)
+    const datosCliente = (c) => (
+        (c.IDCliente || c.CioRuc || c.Email || c.TelefonoTrabajo || c.DireccionTrabajo) ? (
+            <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-0.5 text-[11px] border-t border-zinc-100 pt-2 mt-2.5">
+                {c.IDCliente && <><span className="text-zinc-400">IdCliente</span><span className="font-mono font-bold text-zinc-700 truncate">{c.IDCliente}</span></>}
+                {c.CioRuc && <><span className="text-zinc-400">RUC / CI</span><span className="font-mono font-bold text-zinc-700 truncate">{c.CioRuc}</span></>}
+                {c.Email && <><span className="text-zinc-400">Email</span><span className="font-mono text-zinc-600 truncate">{c.Email}</span></>}
+                {c.TelefonoTrabajo && <><span className="text-zinc-400">Teléfono</span><span className="font-mono text-zinc-600 truncate">{c.TelefonoTrabajo}</span></>}
+                {c.DireccionTrabajo && <><span className="text-zinc-400">Dirección</span><span className="text-zinc-600 truncate">{c.DireccionTrabajo}</span></>}
+            </div>
+        ) : null
+    );
+
+    // Aviso de "faltan más" al pie de una lista de a 50
+    const pieDeAPoco = (ref, cuantos, total) => (
+        <div ref={ref} className="flex items-center justify-center gap-2 py-3 text-xs text-zinc-400">
+            <Loader2 size={14} className="animate-spin text-brand-cyan" /> Mostrando {cuantos.toLocaleString('es-UY')} de {total.toLocaleString('es-UY')}…
+        </div>
+    );
+
     return (
-        <div className={`flex bg-slate-50 text-sm relative ${embebido ? 'min-h-[70vh] rounded-xl border border-slate-200 overflow-hidden' : 'h-full overflow-hidden'}`}>
+        <div className={embebido ? 'text-zinc-700 text-sm flex flex-col gap-4' : 'px-3 sm:px-6 py-5 min-h-full text-zinc-700 text-sm flex flex-col gap-4'}>
             <style>{`
                 @keyframes highlight-fade {
-                    0% { background-color: rgba(253, 224, 71, 0.4); }
+                    0% { background-color: rgba(0, 110, 151, 0.18); }
                     100% { background-color: transparent; }
                 }
                 .animate-highlight {
@@ -1300,11 +1682,11 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                 }
             `}</style>
 
-            <NewRuleDrawer 
-                isOpen={isDrawerOpen} 
-                onClose={() => { setIsDrawerOpen(false); setEditingRule(null); }} 
-                baseProducts={baseProducts} 
-                onAddRule={handleAddRuleFromDrawer} 
+            <NewRuleDrawer
+                isOpen={isDrawerOpen}
+                onClose={() => { setIsDrawerOpen(false); setEditingRule(null); }}
+                baseProducts={baseProducts}
+                onAddRule={handleAddRuleFromDrawer}
                 onRemoveRule={handleRemoveRule}
                 editingRule={editingRule}
                 rowStateMap={rowStateMap}
@@ -1318,797 +1700,718 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                 onApply={handleApplyProfiles}
             />
 
-            {/* SIDEBAR CLIENTES (no se muestra embebido en el Panel 360: el cliente ya está elegido) */}
-            {!embebido && (
-            <div className="w-72 bg-white border-r border-slate-200 flex flex-col flex-shrink-0 z-10 shadow-[2px_0_10px_rgba(0,0,0,0.02)]">
-                {/* Header */}
-                <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center gap-2">
-                    <span className="font-bold text-slate-700 flex items-center gap-2 text-base">
-                        <i className="fa-solid fa-user-tag text-indigo-500"></i> Clientes
-                    </span>
-                </div>
+            {ventanaConfirmar}
 
-                {/* Tabs */}
-                <div className="p-3 bg-white">
-                    <div className="flex bg-slate-100 p-1 rounded-xl">
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setSidebarTab('tarifas');
-                                if (dbSearchTerm) setFilterClient(dbSearchTerm);
-                            }}
-                            className={`flex-1 py-2 text-xs font-black rounded-lg transition-all flex flex-col items-center justify-center ${sidebarTab === 'tarifas' ? 'bg-[#1E1B4B] text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-                        >
-                            <span>Con Tarifas</span>
-                            <span className="text-[10px] opacity-75 font-normal">{clients.length} clientes</span>
-                        </button>
-                        <button
-                            type="button"
-                            onClick={() => {
-                                setSidebarTab('db');
-                                if (filterClient) setDbSearchTerm(filterClient);
-                            }}
-                            className={`flex-1 py-2 text-xs font-black rounded-lg transition-all flex flex-col items-center justify-center ${sidebarTab === 'db' ? 'bg-[#1E1B4B] text-white shadow-sm' : 'text-slate-500 hover:bg-slate-200'}`}
-                        >
-                            <span>Buscar en DB</span>
-                            <span className="text-[10px] opacity-75 font-normal">Base completa</span>
-                        </button>
+            {/* ENCABEZADO (embebido en el Panel 360 no va: lo pone esa pantalla) */}
+            {!embebido && (
+                <div className="flex flex-wrap items-center gap-3">
+                    <BadgePercent size={30} className="text-brand-cyan shrink-0" />
+                    <div className="min-w-[220px] flex-1">
+                        <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Precios especiales</h1>
+                        <p className="text-sm text-zinc-500 mt-1">Tarifas por cliente: excepciones por producto o familia, perfiles asignados y urgencia.</p>
                     </div>
                 </div>
-
-                {/* Search / Filter Input */}
-                <div className="px-3 pb-3 bg-white border-b border-slate-100">
-                    {sidebarTab === 'tarifas' ? (
-                        <div className="relative">
-                            <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400"></i>
-                            <input
-                                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all text-xs"
-                                placeholder="Buscar por nombre o ID..."
-                                value={filterClient}
-                                onChange={e => setFilterClient(e.target.value)}
-                            />
-                        </div>
-                    ) : (
-                        <div className="relative">
-                            <i className="fa-solid fa-search absolute left-3 top-3 text-slate-400"></i>
-                            <input
-                                className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-lg outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 transition-all text-xs"
-                                placeholder="Buscar por nombre o ID..."
-                                value={dbSearchTerm}
-                                onChange={e => setDbSearchTerm(e.target.value)}
-                                autoFocus
-                            />
-                            {loadingDbSearch && <i className="fa-solid fa-circle-notch fa-spin absolute right-3 top-3 text-slate-400"></i>}
-                        </div>
-                    )}
-                </div>
-
-                {/* Sidebar List */}
-                <div className="flex-1 overflow-y-auto p-3 space-y-2 bg-slate-50/50 custom-scrollbar">
-                    {sidebarTab === 'tarifas' ? (
-                        loading ? (
-                            <div className="p-4 text-slate-400 text-center"><i className="fa-solid fa-circle-notch fa-spin mr-2"></i>Cargando...</div>
-                        ) : filteredClients.length === 0 ? (
-                            <div className="p-4 flex flex-col items-center justify-center text-center mt-4">
-                                <span className="text-slate-400 mb-3 text-xs font-semibold">No se encontraron clientes con tarifas.</span>
-                                <button 
-                                    onClick={() => {
-                                        setSidebarTab('db');
-                                        setDbSearchTerm(filterClient);
-                                    }} 
-                                    className="w-full bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white border border-indigo-200 py-2 rounded-lg font-bold transition-all shadow-sm flex items-center justify-center gap-2 text-xs"
-                                >
-                                    <i className="fa-solid fa-database"></i> Buscar "{filterClient}" en DB
-                                </button>
-                            </div>
-                        ) : (
-                            filteredClients.map(c => {
-                                const isSelected = selClientId === c.ClienteID;
-                                const displayName = c.Nombre || c.NombreFantasia || `Cliente ${c.ClienteID}`;
-                                const words = displayName.split(' ').filter(Boolean);
-                                let initials = words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : displayName.substring(0, 2).toUpperCase();
-                                const avatarColor = ['#f43f5e','#ec4899','#d946ef','#8b5cf6','#3b82f6','#0ea5e9','#14b8a6','#10b981'][ (displayName.charCodeAt(0) || 0) % 8 ];
-
-                                return (
-                                    <div
-                                        key={c.ClienteID}
-                                        onClick={() => setSelClientId(c.ClienteID)}
-                                        className={`rounded-xl p-3 cursor-pointer transition-all border ${isSelected ? 'bg-white border-indigo-600 shadow-md ring-1 ring-indigo-600/35' : 'bg-white border-slate-100 hover:border-slate-300 shadow-sm'}`}
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-[10px] flex items-center justify-center text-white font-bold text-sm shadow-sm flex-shrink-0" style={{ backgroundColor: avatarColor }}>
-                                                {initials}
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="font-bold text-slate-800 text-sm truncate" title={displayName}>{displayName}</div>
-                                                <div className="flex gap-2 mt-1 text-[10px] font-mono">
-                                                    <span className="text-slate-400" title="ID del cliente">ID: {c.ClienteID}</span>
-                                                </div>
-                                            </div>
-                                            {c.CantReglas > 0 && (
-                                                <span className="bg-[#1E1B4B] text-white text-[10px] font-bold px-2.5 py-1 rounded-full shadow-sm whitespace-nowrap">
-                                                    {c.CantReglas} Reglas
-                                                </span>
-                                            )}
-                                        </div>
-                                        
-                                        {/* Detalle igual a Caja */}
-                                        <div className="flex flex-col gap-0.5 text-[10px] text-slate-500 font-medium border-t border-slate-100 pt-2 mt-2">
-                                            {c.IDCliente && <div>IdCliente: <span className="font-mono text-slate-700 font-bold">{c.IDCliente}</span></div>}
-                                            {c.CioRuc && <div>RUC / CI: <span className="font-mono font-bold text-slate-800">{c.CioRuc}</span></div>}
-                                            {c.Email && <div className="truncate">Email: <span className="font-mono text-slate-600">{c.Email}</span></div>}
-                                            {c.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-slate-600">{c.TelefonoTrabajo}</span></div>}
-                                            {c.DireccionTrabajo && <div className="leading-tight truncate">Dirección: <span className="text-slate-600">{c.DireccionTrabajo}</span></div>}
-                                        </div>
-                                    </div>
-                                );
-                            })
-                        )
-                    ) : (
-                        // DB Tab Search Results
-                        loadingDbSearch ? (
-                            <div className="p-4 text-slate-400 text-center"><i className="fa-solid fa-circle-notch fa-spin mr-2"></i>Buscando en la DB...</div>
-                        ) : dbSearchResults.length === 0 ? (
-                            <div className="p-4 text-slate-400 text-center text-xs">
-                                {dbSearchTerm.length < 2 ? 'Escribe al menos 2 letras para buscar...' : 'No se encontraron clientes en la base de datos.'}
-                            </div>
-                        ) : (
-                            dbSearchResults.map(c => {
-                                const displayName = c.Nombre || c.NombreFantasia || `Cliente ${c.CodCliente}`;
-                                const words = displayName.split(' ').filter(Boolean);
-                                let initials = words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : displayName.substring(0, 2).toUpperCase();
-                                const avatarColor = ['#f43f5e','#ec4899','#d946ef','#8b5cf6','#3b82f6','#0ea5e9','#14b8a6','#10b981'][ (displayName.charCodeAt(0) || 0) % 8 ];
-
-                                return (
-                                    <div
-                                        key={c.CodCliente}
-                                        onClick={() => {
-                                            handleCreateClient(c.CodCliente, displayName);
-                                            setSidebarTab('tarifas');
-                                            setFilterClient(displayName);
-                                            setDbSearchTerm('');
-                                            setDbSearchResults([]);
-                                        }}
-                                        className="rounded-xl p-3 cursor-pointer transition-all border bg-white border-slate-100 hover:border-indigo-300 hover:bg-indigo-50/20 shadow-sm group"
-                                    >
-                                        <div className="flex items-center gap-3">
-                                            <div className="w-10 h-10 rounded-[10px] flex items-center justify-center text-white font-bold text-sm shadow-sm flex-shrink-0" style={{ backgroundColor: avatarColor }}>
-                                                {initials}
-                                            </div>
-                                            <div className="flex-1 min-w-0">
-                                                <div className="font-bold text-slate-700 group-hover:text-indigo-800 text-sm truncate" title={displayName}>{displayName}</div>
-                                                <div className="flex gap-2 mt-1 text-[10px] font-mono">
-                                                    <span className="text-slate-400" title="ID del cliente">ID: {c.CodCliente}</span>
-                                                </div>
-                                            </div>
-                                            <span className="text-indigo-600 font-bold bg-indigo-50 px-2.5 py-0.5 rounded-full opacity-0 group-hover:opacity-100 transition-all flex items-center gap-1 text-[10px] whitespace-nowrap">
-                                                <i className="fa-solid fa-plus text-[8px]"></i> Agregar
-                                            </span>
-                                        </div>
-                                        
-                                        {/* Detalle igual a Caja */}
-                                        <div className="flex flex-col gap-0.5 text-[10px] text-slate-500 font-medium border-t border-slate-100 pt-2 mt-2">
-                                            {c.IDCliente && <div>IdCliente: <span className="font-mono text-slate-600 font-bold">{c.IDCliente}</span></div>}
-                                            {c.CioRuc && <div>RUC / CI: <span className="font-mono font-bold text-slate-700">{c.CioRuc}</span></div>}
-                                            {c.Email && <div className="truncate">Email: <span className="font-mono text-slate-600">{c.Email}</span></div>}
-                                            {c.TelefonoTrabajo && <div>Teléfono: <span className="font-mono text-slate-600">{c.TelefonoTrabajo}</span></div>}
-                                            {c.DireccionTrabajo && <div className="leading-tight truncate">Dirección: <span className="text-slate-600">{c.DireccionTrabajo}</span></div>}
-                                        </div>
-                                    </div>
-                                );
-                            })
-                        )
-                    )}
-                </div>
-            </div>
             )}
 
-            {/* MAIN CONTENT V2 (CRISTAL DASHBOARD) */}
-            <div className="flex-1 flex flex-col bg-[#F8FAFC]">
-                {selClientId ? (
-                    <>
-                        {/* HEADER DASHBOARD */}
-                        <div className="bg-white border-b border-slate-200 px-6 py-4 flex flex-col gap-3 shadow-[0_4px_20px_rgba(0,0,0,0.03)] z-10">
-                            <div className="flex justify-between items-start">
-                                <div className="flex-1">
-                                    <div className="flex items-center gap-3 flex-wrap">
-                                        <h2 className="text-2xl font-black text-slate-800 tracking-tight">
-                                            {clientData.client?.Nombre || clientData.client?.NombreCliente || `Cliente ID: ${selClientId}`}
-                                        </h2>
-                                        {clientData.client?.IDCliente && (
-                                            <span className="text-xs bg-slate-100 text-slate-600 px-2 py-0.5 rounded font-mono font-bold">
-                                                IDCLIENTE: {clientData.client.IDCliente}
-                                            </span>
-                                        )}
-                                    </div>
-
-                                    {/* Grid de Datos del Cliente */}
-                                    {(clientData.client?.CioRuc || clientData.client?.Email || clientData.client?.TelefonoTrabajo || clientData.client?.DireccionTrabajo) && (
-                                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 my-2.5 bg-slate-50 p-3 rounded-xl border border-slate-100 text-xs">
-                                            {clientData.client.CioRuc && (
-                                                <div>
-                                                    <span className="text-slate-400 font-black uppercase text-[10px] block">RUC / CI</span>
-                                                    <span className="font-mono font-bold text-slate-800">{clientData.client.CioRuc}</span>
-                                                </div>
-                                            )}
-                                            {clientData.client.Email && (
-                                                <div>
-                                                    <span className="text-slate-400 font-black uppercase text-[10px] block">Email</span>
-                                                    <span className="font-mono text-slate-700 truncate block" title={clientData.client.Email}>{clientData.client.Email}</span>
-                                                </div>
-                                            )}
-                                            {clientData.client.TelefonoTrabajo && (
-                                                <div>
-                                                    <span className="text-slate-400 font-black uppercase text-[10px] block">Teléfono</span>
-                                                    <span className="font-mono text-slate-700">{clientData.client.TelefonoTrabajo}</span>
-                                                </div>
-                                            )}
-                                            {clientData.client.DireccionTrabajo && (
-                                                <div>
-                                                    <span className="text-slate-400 font-black uppercase text-[10px] block">Dirección</span>
-                                                    <span className="text-slate-700 truncate block" title={clientData.client.DireccionTrabajo}>{clientData.client.DireccionTrabajo}</span>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-
-                                    <div className="flex items-center gap-3 mt-1.5 flex-wrap">
-                                        <span className="text-slate-500 font-medium text-sm">Mostrando todas las familias y productos.</span>
-                                        <span className="bg-indigo-50 border border-indigo-200 text-indigo-700 px-2.5 py-0.5 rounded font-bold text-xs uppercase tracking-wide">
-                                            {activeRulesCount} EXCEPCIONES CARGADAS
-                                        </span>
-                                        
-                                        {clientData.profiles && clientData.profiles.map((p, idx) => {
-                                            const name = p.NombrePerfil || '';
-                                            const nameLower = name.toLowerCase();
-                                            
-                                            // Configurar colores e íconos en base al perfil
-                                            let icon = "fa-solid fa-tag";
-                                            let bgClass = "bg-indigo-50 text-indigo-700 border-indigo-200";
-                                            
-                                            if (nameLower.includes("trabajador") || nameLower.includes("funcionario") || nameLower.includes("empleado")) {
-                                                icon = "fa-solid fa-briefcase";
-                                                bgClass = "bg-emerald-50 text-emerald-700 border-emerald-200";
-                                            } else if (nameLower.includes("estudiante") || nameLower.includes("alumno") || nameLower.includes("escolar") || nameLower.includes("colegio")) {
-                                                icon = "fa-solid fa-graduation-cap";
-                                                bgClass = "bg-sky-50 text-sky-700 border-sky-200";
-                                            } else if (nameLower.includes("mayorista") || nameLower.includes("distribuidor")) {
-                                                icon = "fa-solid fa-store";
-                                                bgClass = "bg-purple-50 text-purple-700 border-purple-200";
-                                            } else if (nameLower.includes("jubilado") || nameLower.includes("pensionista") || nameLower.includes("pasivo")) {
-                                                icon = "fa-solid fa-person-cane";
-                                                bgClass = "bg-amber-50 text-amber-700 border-amber-200";
-                                            }
-                                            
-                                            return (
-                                                <span 
-                                                    key={idx}
-                                                    className={`border px-2.5 py-0.5 rounded shadow-sm font-bold text-xs uppercase flex items-center gap-1.5 transition-all ${bgClass}`}
-                                                    title={`Perfil de precio general asignado: ${name}`}
-                                                >
-                                                    <i className={icon}></i>
-                                                    {name}
-                                                </span>
-                                            );
-                                        })}
-
-                                        {/* Badge Excepciones Urgencia */}
-                                        {(() => {
-                                            const hasTotal = urgExcForClient.some(e => e.ProIdProducto === null && e.CodArea === null);
-                                            const hasPartial = urgExcForClient.filter(e => e.ProIdProducto !== null || e.CodArea !== null);
-                                            if (urgExcForClient.length === 0) return (
-                                                <button
-                                                    onClick={() => setUrgExcPanelOpen(p => !p)}
-                                                    className="bg-sky-50 border border-sky-300 text-sky-600 hover:bg-orange-50 hover:border-orange-400 hover:text-orange-600 px-2.5 py-0.5 rounded font-semibold text-xs flex items-center gap-1.5 transition-all"
-                                                    title="Configurar excepciones de urgencia para este cliente"
-                                                >
-                                                    <i className="fa-solid fa-ban text-[10px]"></i> Sin exc. urgencia
-                                                </button>
-                                            );
-                                            return (
-                                                <button
-                                                    onClick={() => setUrgExcPanelOpen(p => !p)}
-                                                    className="bg-orange-50 border border-orange-300 text-orange-700 hover:bg-orange-100 px-2.5 py-0.5 rounded font-bold text-xs uppercase flex items-center gap-1.5 transition-all shadow-sm"
-                                                    title="Ver excepciones de urgencia activas"
-                                                >
-                                                    <i className="fa-solid fa-ban"></i>
-                                                    {hasTotal ? 'Exento Urgencia (Todo)' : `Sin Urgencia (${hasPartial.length} servicio${hasPartial.length !== 1 ? 's' : ''})`}
-                                                </button>
-                                            );
-                                        })()}
-
-                                        {isDirtyMap && (
-                                            <span className="text-amber-600 font-bold text-xs animate-pulse flex items-center gap-1">
-                                                <i className="fa-solid fa-circle text-[8px]"></i> Cambios sin guardar
-                                            </span>
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="flex gap-3">
-                                    <button 
-                                        onClick={() => setIsProfileModalOpen(true)}
-                                        className="bg-slate-50 border border-slate-300 text-slate-700 hover:bg-slate-100 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-sm"
-                                    >
-                                        <i className="fa-solid fa-user-gear text-slate-500"></i> Gestionar Perfiles
+            <div className={embebido ? 'flex flex-col gap-4' : 'flex flex-col lg:flex-row lg:items-start gap-4'}>
+                {/* LISTA DE CLIENTES (no se muestra embebido en el Panel 360: el cliente ya está elegido). En la compu va
+                    al costado y queda fija al bajar; en el celular va arriba y se pliega al elegir un cliente. */}
+                {!embebido && (mostrarLista ? (
+                    <div className={`${CARD} w-full lg:w-80 shrink-0 flex flex-col overflow-hidden lg:sticky lg:top-4 lg:max-h-[calc(100dvh-12.5rem)]`}>
+                        <div className="p-3 border-b border-zinc-100 flex flex-col gap-3">
+                            <div className="flex items-center justify-between gap-2">
+                                <span className={`${ROTULO} inline-flex items-center gap-1.5`}>
+                                    <Users size={14} className="text-brand-cyan" /> Clientes
+                                </span>
+                                {!conTabla && selClientId && (
+                                    <button type="button" onClick={() => setListaAbiertaCelular(false)} className="inline-flex items-center gap-1 text-xs font-bold text-zinc-500 hover:text-zinc-800">
+                                        Ocultar lista <ChevronUp size={14} />
                                     </button>
-                                    <button 
-                                        onClick={() => setIsDrawerOpen(true)}
-                                        className="bg-indigo-50 border border-indigo-200 text-indigo-700 hover:bg-indigo-100 px-4 py-2 rounded-lg font-bold flex items-center gap-2 transition-colors shadow-sm"
-                                    >
-                                        <i className="fa-solid fa-plus-circle text-indigo-600"></i> Nueva Excepción
-                                    </button>
-                                    <button onClick={handleDeleteClient} className="px-4 py-2 text-slate-500 hover:bg-slate-100 hover:text-red-500 rounded font-semibold transition-colors" title="Eliminar este cliente y todas sus reglas de la lista de precios especiales">
-                                        <i className="fa-solid fa-trash mr-2"></i> Quitar Cliente
-                                    </button>
-                                    <button onClick={handleSaveRules} className="bg-indigo-600 hover:bg-indigo-700 border-indigo-700 text-white shadow-lg shadow-indigo-200 px-6 py-2 rounded-lg font-bold flex items-center gap-2 transition-transform active:scale-95">
-                                        <i className="fa-solid fa-floppy-disk"></i> Guardar Tarifa
-                                    </button>
-                                </div>
+                                )}
                             </div>
 
-                            {/* PANEL EXCEPCIONES URGENCIA */}
-                            {urgExcPanelOpen && (
-                                <div className="bg-orange-50 border border-orange-200 rounded-xl p-4 mb-1">
-                                    <div className="flex items-center justify-between mb-1">
-                                        <h4 className="font-bold text-orange-700 text-sm flex items-center gap-2">
-                                            <i className="fa-solid fa-ban"></i> Excepciones de Urgencia
-                                        </h4>
-                                        <button onClick={() => setUrgExcPanelOpen(false)} className="text-slate-400 hover:text-slate-600 p-1">
-                                            <i className="fa-solid fa-xmark text-xs"></i>
-                                        </button>
-                                    </div>
-                                    <p className="text-xs text-slate-500 mb-3">
-                                        Tildá los servicios que <strong>NO cobrarán urgencia</strong> a este cliente. Solo aparecen los que tienen urgencia activa en el sistema.
-                                    </p>
+                            {/* Pestañas */}
+                            <div className="grid grid-cols-2 rounded-xl border border-zinc-200 bg-white p-1 gap-1">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSidebarTab('tarifas');
+                                        if (dbSearchTerm) setFilterClient(dbSearchTerm);
+                                    }}
+                                    className={`${PESTANA} flex flex-col items-center justify-center ${sidebarTab === 'tarifas' ? PESTANA_SI : PESTANA_NO}`}
+                                >
+                                    <span>Con tarifas</span>
+                                    <span className="text-[10px] opacity-75 font-medium">{clients.length} clientes</span>
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setSidebarTab('db');
+                                        if (filterClient) setDbSearchTerm(filterClient);
+                                    }}
+                                    className={`${PESTANA} flex flex-col items-center justify-center ${sidebarTab === 'db' ? PESTANA_SI : PESTANA_NO}`}
+                                >
+                                    <span>Buscar en la base</span>
+                                    <span className="text-[10px] opacity-75 font-medium">Base completa</span>
+                                </button>
+                            </div>
 
-                                    {urgExcAreas.length === 0 ? (
-                                        <div className="text-xs text-slate-400 text-center py-4">Cargando servicios...</div>
-                                    ) : (
-                                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                                            {urgExcAreas.map(area => {
-                                                const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
-                                                const excArea  = urgExcForClient.find(e => e.CodArea === area.CodArea);
-                                                const isExento = !!(excTotal || excArea);
-
-                                                return (
-                                                    <button
-                                                        key={area.CodArea}
-                                                        onClick={() => {
-                                                            if (excTotal) return;
-                                                            if (isExento && excArea) handleDeleteUrgExc(excArea.ID);
-                                                            else if (!isExento) handleAddUrgExcArea(area);
-                                                        }}
-                                                        disabled={!!excTotal}
-                                                        title={excTotal ? 'Exento por regla global' : isExento ? 'Clic para volver a cobrar urgencia' : 'Clic para eximir urgencia'}
-                                                        className={`flex items-center gap-2 px-3 py-2.5 rounded-lg border text-left transition-all text-xs font-medium
-                                                            ${excTotal
-                                                                ? 'bg-orange-100 border-orange-200 text-orange-600 opacity-70 cursor-default'
-                                                                : isExento
-                                                                    ? 'bg-orange-100 border-orange-400 text-orange-700 shadow-sm'
-                                                                    : 'bg-white border-slate-200 text-slate-600 hover:border-orange-300 hover:bg-orange-50'
-                                                            }`}
-                                                    >
-                                                        <span className={`w-4 h-4 rounded border-2 flex items-center justify-center flex-shrink-0 transition-all
-                                                            ${isExento ? 'bg-orange-500 border-orange-500' : 'border-slate-300 bg-white'}`}>
-                                                            {isExento && <i className="fa-solid fa-check text-white" style={{fontSize:'8px'}}></i>}
-                                                        </span>
-                                                        <span className="truncate">{area.AreaNombre || area.CodArea}</span>
-                                                    </button>
-                                                );
-                                            })}
-                                        </div>
-                                    )}
-
-                                    <div className="mt-3 pt-3 border-t border-orange-200 flex items-center gap-3">
-                                        {(() => {
-                                            const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
-                                            return excTotal ? (
-                                                <>
-                                                    <span className="text-xs bg-orange-500 text-white font-bold px-2 py-0.5 rounded-full flex items-center gap-1">
-                                                        <i className="fa-solid fa-asterisk text-[9px]"></i> Exento en TODO
-                                                    </span>
-                                                    <span className="text-xs text-slate-500 flex-1">No se cobra urgencia en ningún servicio.</span>
-                                                    <button onClick={() => handleDeleteUrgExc(excTotal.ID)}
-                                                        className="text-xs text-red-500 hover:text-red-700 font-semibold border border-red-200 hover:bg-red-50 px-2 py-1 rounded transition">
-                                                        <i className="fa-solid fa-xmark mr-1"></i>Quitar
-                                                    </button>
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <span className="text-xs text-slate-400 flex-1">¿Eximir de urgencia en <strong>todos</strong> los servicios?</span>
-                                                    <button onClick={() => handleAddUrgExcArea(null)}
-                                                        className="text-xs text-orange-600 hover:text-orange-800 font-semibold border border-orange-300 hover:bg-orange-100 px-2 py-1 rounded transition">
-                                                        <i className="fa-solid fa-ban mr-1"></i>Eximir todo
-                                                    </button>
-                                                </>
-                                            );
-                                        })()}
-                                    </div>
+                            {/* Buscador */}
+                            {sidebarTab === 'tarifas' ? (
+                                <div className="relative">
+                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                                    <input
+                                        className={CAMPO}
+                                        placeholder="Buscar por nombre o ID..."
+                                        value={filterClient}
+                                        onChange={e => setFilterClient(e.target.value)}
+                                    />
+                                </div>
+                            ) : (
+                                <div className="relative">
+                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                                    <input
+                                        className={CAMPO_CON_X}
+                                        placeholder="Buscar por nombre o ID..."
+                                        value={dbSearchTerm}
+                                        onChange={e => setDbSearchTerm(e.target.value)}
+                                        autoFocus
+                                    />
+                                    {loadingDbSearch && <Loader2 size={16} className="absolute right-3 top-1/2 -translate-y-1/2 animate-spin text-brand-cyan" />}
                                 </div>
                             )}
+                        </div>
 
-                            {/* EXCEL-LIKE TOOLBAR */}
-                            <div className="flex items-center justify-between bg-slate-50 p-2 border border-slate-200 rounded-lg">
-                                <div className="flex gap-3 flex-1 items-center">
-                                    {/* Vista Selector Toggle */}
-                                    <button
-                                        onClick={() => setShowAllProducts(prev => !prev)}
-                                        className={`px-3 py-1.5 rounded-lg border font-bold text-xs flex items-center gap-2 transition-all ${!showAllProducts ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50 shadow-sm' : 'bg-indigo-600 border-indigo-600 text-white hover:bg-indigo-700 shadow-md shadow-indigo-100'}`}
-                                    >
-                                        <i className={`fa-solid ${!showAllProducts ? 'fa-border-all' : 'fa-list-check'}`}></i>
-                                        {!showAllProducts ? 'Ver Catálogo Completo' : 'Ver Reglas Asignadas'}
-                                    </button>
+                        {/* Lista */}
+                        <div className="p-3 space-y-2 lg:flex-1 lg:min-h-0 lg:overflow-y-auto custom-scrollbar">
+                            {sidebarTab === 'tarifas' ? (
+                                loading ? (
+                                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-zinc-400"><Loader2 size={18} className="animate-spin text-brand-cyan" /> Cargando...</div>
+                                ) : filteredClients.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center text-center py-6 px-2">
+                                        <SearchX size={40} className="mb-3 text-brand-cyan" />
+                                        <span className="text-sm font-bold text-zinc-700">No se encontraron clientes con tarifas.</span>
+                                        <button
+                                            onClick={() => {
+                                                setSidebarTab('db');
+                                                setDbSearchTerm(filterClient);
+                                            }}
+                                            className={`${BTN_SECUNDARIO} w-full mt-4`}
+                                        >
+                                            <Database size={15} className="text-brand-cyan" /> Buscar «{filterClient}» en la base
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {filteredClients.slice(0, cuantosTarifas).map(c => {
+                                            const isSelected = selClientId === c.ClienteID;
+                                            const displayName = c.Nombre || c.NombreFantasia || `Cliente ${c.ClienteID}`;
+                                            const words = displayName.split(' ').filter(Boolean);
+                                            let initials = words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : displayName.substring(0, 2).toUpperCase();
 
-                                    {showAllProducts && (
-                                        <>
-                                            <select 
-                                                value={filterCategory} 
-                                                onChange={(e)=>setFilterCategory(e.target.value)}
-                                                className="bg-white border border-slate-300 rounded px-3 py-1.5 font-medium text-slate-700 outline-none focus:ring-2 focus:ring-indigo-100 max-w-sm truncate text-xs"
-                                            >
-                                                {categoriasDropdown.map(cat => {
-                                                    if (cat === "TODAS" || cat === "ACTIVAS") {
-                                                        return <option key={cat} value={cat}>{cat === "ACTIVAS" ? "⭐ VER SOLO CON REGLAS" : `Familia: ${cat}`}</option>;
-                                                    }
-                                                    const groupProd = baseProducts.find(p => p.CodArticulo === `GRUPO:${cat}`);
-                                                    const desc = groupProd ? groupProd.Descripcion : cat;
-                                                    return <option key={cat} value={cat}>Familia: {desc}</option>;
-                                                })}
-                                            </select>
-                                            
-                                            <div className="relative w-64">
-                                                <i className="fa-solid fa-search absolute left-3 top-2 text-slate-400 text-xs"></i>
-                                                <input
-                                                    className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-300 rounded outline-none focus:border-indigo-400 text-xs"
-                                                    placeholder="Buscar producto o código..."
-                                                    value={filterSearch}
-                                                    onChange={e => setFilterSearch(e.target.value)}
-                                                />
+                                            return (
+                                                <div
+                                                    key={c.ClienteID}
+                                                    data-tarjeta-cliente
+                                                    onClick={() => setSelClientId(c.ClienteID)}
+                                                    className={`rounded-xl p-3 cursor-pointer transition-colors border ${isSelected ? 'bg-brand-cyan/5 border-brand-cyan ring-1 ring-brand-cyan/30' : 'bg-white border-zinc-200 hover:border-zinc-300'}`}
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <div className={`w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm shrink-0 ${isSelected ? 'bg-brand-cyan text-white' : 'bg-zinc-100 text-zinc-600'}`}>
+                                                            {initials}
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="font-bold text-zinc-800 text-sm truncate" title={displayName}>{displayName}</div>
+                                                            <div className="text-[11px] font-mono text-zinc-400 mt-0.5" title="ID del cliente">ID: {c.ClienteID}</div>
+                                                        </div>
+                                                        {c.CantReglas > 0 && (
+                                                            <span className={`${CHIP} ${CHIP_CIAN}`}>
+                                                                {c.CantReglas} {c.CantReglas === 1 ? 'regla' : 'reglas'}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    {datosCliente(c)}
+                                                </div>
+                                            );
+                                        })}
+                                        {cuantosTarifas < filteredClients.length && pieDeAPoco(centinelaTarifas, cuantosTarifas, filteredClients.length)}
+                                    </>
+                                )
+                            ) : (
+                                // Resultados de la búsqueda en la base
+                                loadingDbSearch ? (
+                                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-zinc-400"><Loader2 size={18} className="animate-spin text-brand-cyan" /> Buscando en la base...</div>
+                                ) : dbSearchResults.length === 0 ? (
+                                    <div className="flex flex-col items-center justify-center text-center py-6 px-2">
+                                        <Search size={40} className="mb-3 text-brand-cyan" />
+                                        <span className="text-sm font-bold text-zinc-700">
+                                            {dbSearchTerm.length < 2 ? 'Escribí al menos 2 letras para buscar...' : 'No se encontraron clientes en la base de datos.'}
+                                        </span>
+                                    </div>
+                                ) : (
+                                    <>
+                                        {dbSearchResults.slice(0, cuantosBase).map(c => {
+                                            const displayName = c.Nombre || c.NombreFantasia || `Cliente ${c.CodCliente}`;
+                                            const words = displayName.split(' ').filter(Boolean);
+                                            let initials = words.length > 1 ? (words[0][0] + words[1][0]).toUpperCase() : displayName.substring(0, 2).toUpperCase();
+
+                                            return (
+                                                <div
+                                                    key={c.CodCliente}
+                                                    data-tarjeta-cliente
+                                                    onClick={() => {
+                                                        handleCreateClient(c.CodCliente, displayName);
+                                                        setSidebarTab('tarifas');
+                                                        setFilterClient(displayName);
+                                                        setDbSearchTerm('');
+                                                        setDbSearchResults([]);
+                                                    }}
+                                                    className="group rounded-xl p-3 cursor-pointer transition-colors border bg-white border-zinc-200 hover:border-brand-cyan/50 hover:bg-brand-cyan/5"
+                                                >
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-10 h-10 rounded-xl flex items-center justify-center font-black text-sm shrink-0 bg-zinc-100 text-zinc-600">
+                                                            {initials}
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <div className="font-bold text-zinc-800 text-sm truncate" title={displayName}>{displayName}</div>
+                                                            <div className="text-[11px] font-mono text-zinc-400 mt-0.5" title="ID del cliente">ID: {c.CodCliente}</div>
+                                                        </div>
+                                                        <span className={`${CHIP} ${CHIP_CIAN} lg:opacity-0 lg:group-hover:opacity-100 transition-opacity`}>
+                                                            <Plus size={11} /> Agregar
+                                                        </span>
+                                                    </div>
+                                                    {datosCliente(c)}
+                                                </div>
+                                            );
+                                        })}
+                                        {cuantosBase < dbSearchResults.length && pieDeAPoco(centinelaBase, cuantosBase, dbSearchResults.length)}
+                                    </>
+                                )
+                            )}
+                        </div>
+                    </div>
+                ) : (
+                    // Celular con un cliente elegido: la lista plegada
+                    <button type="button" onClick={() => setListaAbiertaCelular(true)} className={`${CARD} w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-zinc-50 transition-colors`}>
+                        <Users size={18} className="text-brand-cyan shrink-0" />
+                        <span className="flex-1 min-w-0">
+                            <span className="block text-sm font-bold text-zinc-800">Cambiar de cliente</span>
+                            <span className="block text-xs text-zinc-400">{clients.length} clientes con tarifa · buscar en la base</span>
+                        </span>
+                        <ChevronDown size={18} className="text-zinc-400 shrink-0" />
+                    </button>
+                ))}
+
+                {/* DETALLE DEL CLIENTE */}
+                <div className="flex-1 min-w-0 w-full flex flex-col gap-4">
+                    {selClientId ? (
+                        <>
+                            {/* FICHA DEL CLIENTE */}
+                            <div className={`${CARD} p-4 sm:p-5 flex flex-col gap-4`}>
+                                <div className="flex flex-wrap items-start gap-3">
+                                    <div className="min-w-[220px] flex-1">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <h2 className="text-lg sm:text-xl font-black text-zinc-900 tracking-tight leading-tight">
+                                                {clientData.client?.Nombre || clientData.client?.NombreCliente || `Cliente ID: ${selClientId}`}
+                                            </h2>
+                                            {clientData.client?.IDCliente && (
+                                                <span className={`${CHIP} ${CHIP_ZINC} font-mono normal-case`}>
+                                                    IdCliente: {clientData.client.IDCliente}
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                    <div className="grid grid-cols-2 sm:flex sm:flex-wrap gap-2 w-full sm:w-auto sm:ml-auto">
+                                        <button
+                                            onClick={() => setIsProfileModalOpen(true)}
+                                            className={`${BTN_SECUNDARIO} ${BTN_FICHA}`}
+                                        >
+                                            <UserCog size={15} className="text-brand-cyan shrink-0" />
+                                            <span className="sm:hidden">Perfiles</span><span className="hidden sm:inline">Gestionar perfiles</span>
+                                        </button>
+                                        <button
+                                            onClick={() => setIsDrawerOpen(true)}
+                                            className={`${BTN_SECUNDARIO} ${BTN_FICHA}`}
+                                        >
+                                            <PlusCircle size={15} className="text-brand-cyan shrink-0" /> Nueva excepción
+                                        </button>
+                                        <button onClick={handleDeleteClient} className={`${BTN_PELIGRO} ${BTN_FICHA}`} title="Eliminar este cliente y todas sus reglas de la lista de precios especiales">
+                                            <Trash2 size={15} className="shrink-0" /> Quitar cliente
+                                        </button>
+                                        <button onClick={handleSaveRules} className={`${BTN_PRINCIPAL} ${BTN_FICHA}`}>
+                                            <Save size={15} className="shrink-0" /> Guardar tarifa
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* Datos del cliente */}
+                                {(clientData.client?.CioRuc || clientData.client?.Email || clientData.client?.TelefonoTrabajo || clientData.client?.DireccionTrabajo) && (
+                                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-zinc-50 p-3 rounded-xl border border-zinc-100">
+                                        {clientData.client.CioRuc && (
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>RUC / CI</span>
+                                                <span className="font-mono font-bold text-zinc-800 truncate block">{clientData.client.CioRuc}</span>
                                             </div>
-                                        </>
+                                        )}
+                                        {clientData.client.Email && (
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Email</span>
+                                                <span className="font-mono text-zinc-700 truncate block" title={clientData.client.Email}>{clientData.client.Email}</span>
+                                            </div>
+                                        )}
+                                        {clientData.client.TelefonoTrabajo && (
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Teléfono</span>
+                                                <span className="font-mono text-zinc-700 truncate block">{clientData.client.TelefonoTrabajo}</span>
+                                            </div>
+                                        )}
+                                        {clientData.client.DireccionTrabajo && (
+                                            <div className="min-w-0">
+                                                <span className={ETIQUETA}>Dirección</span>
+                                                <span className="text-zinc-700 truncate block" title={clientData.client.DireccionTrabajo}>{clientData.client.DireccionTrabajo}</span>
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+
+                                {/* Estado: excepciones, perfiles, urgencia y cambios sin guardar */}
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <span className="text-zinc-500 text-sm mr-1">Mostrando todas las familias y productos.</span>
+                                    <span className={`${CHIP} ${CHIP_CIAN}`}>
+                                        {activeRulesCount} excepciones cargadas
+                                    </span>
+
+                                    {clientData.profiles && clientData.profiles.map((p, idx) => {
+                                        const name = p.NombrePerfil || '';
+                                        const nameLower = name.toLowerCase();
+
+                                        // Ícono según el perfil (antes, además, un color por tipo: ahora todos en cian)
+                                        let Icono = Tag;
+                                        if (nameLower.includes("trabajador") || nameLower.includes("funcionario") || nameLower.includes("empleado")) {
+                                            Icono = Briefcase;
+                                        } else if (nameLower.includes("estudiante") || nameLower.includes("alumno") || nameLower.includes("escolar") || nameLower.includes("colegio")) {
+                                            Icono = GraduationCap;
+                                        } else if (nameLower.includes("mayorista") || nameLower.includes("distribuidor")) {
+                                            Icono = Store;
+                                        } else if (nameLower.includes("jubilado") || nameLower.includes("pensionista") || nameLower.includes("pasivo")) {
+                                            Icono = PersonStanding;
+                                        }
+
+                                        return (
+                                            <span
+                                                key={idx}
+                                                className={`${CHIP} ${CHIP_CIAN}`}
+                                                title={`Perfil de precio general asignado: ${name}`}
+                                            >
+                                                <Icono size={12} />
+                                                {name}
+                                            </span>
+                                        );
+                                    })}
+
+                                    {/* Excepciones de urgencia (ámbar si el cliente tiene alguna) */}
+                                    {(() => {
+                                        const hasTotal = urgExcForClient.some(e => e.ProIdProducto === null && e.CodArea === null);
+                                        const hasPartial = urgExcForClient.filter(e => e.ProIdProducto !== null || e.CodArea !== null);
+                                        if (urgExcForClient.length === 0) return (
+                                            <button
+                                                onClick={() => setUrgExcPanelOpen(p => !p)}
+                                                className={`${CHIP} ${CHIP_ZINC} hover:text-brand-cyan hover:border-brand-cyan/30 hover:bg-brand-cyan/5 transition-colors`}
+                                                title="Configurar excepciones de urgencia para este cliente"
+                                            >
+                                                <Ban size={11} /> Sin exc. urgencia
+                                            </button>
+                                        );
+                                        return (
+                                            <button
+                                                onClick={() => setUrgExcPanelOpen(p => !p)}
+                                                className={`${CHIP} ${CHIP_AMBAR} hover:bg-amber-100 transition-colors`}
+                                                title="Ver excepciones de urgencia activas"
+                                            >
+                                                <Ban size={11} />
+                                                {hasTotal ? 'Exento de urgencia (todo)' : `Sin urgencia (${hasPartial.length} servicio${hasPartial.length !== 1 ? 's' : ''})`}
+                                            </button>
+                                        );
+                                    })()}
+
+                                    {isDirtyMap && (
+                                        <span className="inline-flex items-center gap-1.5 text-amber-700 font-bold text-xs">
+                                            <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse"></span> Cambios sin guardar
+                                        </span>
                                     )}
                                 </div>
 
-                                {/* BULK ACCION MASIVA */}
-                                {showAllProducts && (
-                                    <div className="flex items-center gap-3 pl-4 border-l border-slate-300 animate-in fade-in duration-200">
-                                        <span className="text-slate-600 font-medium">Masivo ({selectedRows.size}):</span>
-                                        <div className="relative">
-                                            <input 
-                                                type="number"
-                                                value={bulkDiscountPct}
-                                                onChange={e => setBulkDiscountPct(e.target.value)}
-                                                placeholder="10"
-                                                className="w-20 pl-3 pr-6 py-1.5 bg-white border border-slate-300 rounded font-mono outline-none focus:border-emerald-500 text-xs"
-                                            />
-                                            <span className="absolute right-2 top-2 text-slate-400 font-bold text-xs">%</span>
+                                {/* PANEL EXCEPCIONES URGENCIA */}
+                                {urgExcPanelOpen && (
+                                    <div className="rounded-xl border border-zinc-200 bg-zinc-50 p-4">
+                                        <div className="flex items-center justify-between gap-2 mb-1">
+                                            <h4 className="font-black text-zinc-800 text-sm flex items-center gap-2">
+                                                <Ban size={16} className="text-brand-cyan" /> Excepciones de urgencia
+                                            </h4>
+                                            <button onClick={() => setUrgExcPanelOpen(false)} title="Cerrar" aria-label="Cerrar" className="w-7 h-7 rounded-lg flex items-center justify-center text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100 transition-colors">
+                                                <X size={15} />
+                                            </button>
                                         </div>
-                                        <button 
-                                            onClick={applyBulkDiscount}
-                                            className="bg-emerald-500 hover:bg-emerald-600 text-white px-4 py-1.5 rounded font-bold shadow-sm flex items-center gap-2 text-xs"
-                                        >
-                                            <i className="fa-solid fa-bolt"></i> Aplicar
-                                        </button>
+                                        <p className="text-xs text-zinc-500 mb-3">
+                                            Tildá los servicios que <strong className="text-zinc-700">NO cobrarán urgencia</strong> a este cliente. Solo aparecen los que tienen urgencia activa en el sistema.
+                                        </p>
+
+                                        {urgExcAreas.length === 0 ? (
+                                            <div className="flex items-center justify-center gap-2 text-xs text-zinc-400 py-4"><Loader2 size={14} className="animate-spin text-brand-cyan" /> Cargando servicios...</div>
+                                        ) : (
+                                            <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-2">
+                                                {urgExcAreas.map(area => {
+                                                    const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
+                                                    const excArea  = urgExcForClient.find(e => e.CodArea === area.CodArea);
+                                                    const isExento = !!(excTotal || excArea);
+
+                                                    return (
+                                                        <button
+                                                            key={area.CodArea}
+                                                            onClick={() => {
+                                                                if (excTotal) return;
+                                                                if (isExento && excArea) handleDeleteUrgExc(excArea.ID);
+                                                                else if (!isExento) handleAddUrgExcArea(area);
+                                                            }}
+                                                            disabled={!!excTotal}
+                                                            title={excTotal ? 'Exento por regla global' : isExento ? 'Clic para volver a cobrar urgencia' : 'Clic para eximir urgencia'}
+                                                            className={`flex items-center gap-2 px-3 py-2.5 rounded-xl border text-left transition-colors text-sm font-medium
+                                                                ${excTotal
+                                                                    ? 'bg-amber-50 border-amber-200 text-amber-700 opacity-70 cursor-default'
+                                                                    : isExento
+                                                                        ? 'bg-amber-50 border-amber-300 text-amber-800'
+                                                                        : 'bg-white border-zinc-200 text-zinc-700 hover:border-zinc-300'
+                                                                }`}
+                                                        >
+                                                            <span className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors
+                                                                ${isExento ? 'bg-amber-500 border-amber-500 text-white' : 'border-zinc-300 bg-white'}`}>
+                                                                {isExento && <Check size={11} strokeWidth={3} />}
+                                                            </span>
+                                                            <span className="truncate">{area.AreaNombre || area.CodArea}</span>
+                                                        </button>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        <div className="mt-3 pt-3 border-t border-zinc-200 flex flex-wrap items-center gap-2 sm:gap-3">
+                                            {(() => {
+                                                const excTotal = urgExcForClient.find(e => e.ProIdProducto === null && e.CodArea === null);
+                                                return excTotal ? (
+                                                    <>
+                                                        <span className={`${CHIP} ${CHIP_AMBAR}`}>
+                                                            <Asterisk size={11} /> Exento en todo
+                                                        </span>
+                                                        <span className="text-xs text-zinc-500 flex-1 min-w-[160px]">No se cobra urgencia en ningún servicio.</span>
+                                                        <button onClick={() => handleDeleteUrgExc(excTotal.ID)}
+                                                            className={`${BTN_PELIGRO} text-xs px-2.5 py-1.5`}>
+                                                            <X size={13} /> Quitar
+                                                        </button>
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <span className="text-xs text-zinc-500 flex-1 min-w-[160px]">¿Eximir de urgencia en <strong className="text-zinc-700">todos</strong> los servicios?</span>
+                                                        <button onClick={() => handleAddUrgExcArea(null)}
+                                                            className={`${BTN_SECUNDARIO} text-xs px-2.5 py-1.5`}>
+                                                            <Ban size={13} className="text-brand-cyan" /> Eximir todo
+                                                        </button>
+                                                    </>
+                                                );
+                                            })()}
+                                        </div>
                                     </div>
                                 )}
                             </div>
-                        </div>
 
-                        {/* DATA GRID */}
-                        <div className="flex-1 overflow-auto p-6 pt-2 custom-scrollbar relative">
-                            {loadingRules ? (
-                                <div className="flex justify-center mt-20"><i className="fa-solid fa-circle-notch fa-spin text-3xl text-indigo-400"></i></div>
-                            ) : !showAllProducts ? (
-                                activeRules.length === 0 ? (
-                                    <div className="text-center py-20 bg-white border border-slate-200 rounded-xl shadow-sm animate-in fade-in duration-300">
-                                        <div className="w-16 h-16 bg-indigo-50 rounded-full flex items-center justify-center text-indigo-500 text-xl mx-auto mb-4">
-                                            <i className="fa-solid fa-list-check"></i>
-                                        </div>
-                                        <h3 className="font-bold text-slate-800 text-base mb-1">Sin excepciones de precios</h3>
-                                        <p className="text-xs text-slate-400 max-w-xs mx-auto mb-6">Este cliente está operando con la tarifa base del sistema. Comienza asignando su primera excepción.</p>
-                                        <div className="flex justify-center gap-3">
-                                            <button
-                                                onClick={() => setIsDrawerOpen(true)}
-                                                className="bg-indigo-600 hover:bg-indigo-700 text-white font-bold px-4 py-2 rounded-lg text-xs shadow-md shadow-indigo-100 flex items-center gap-1.5 transition-colors"
-                                            >
-                                                <i className="fa-solid fa-plus-circle"></i> Nueva Excepción
-                                            </button>
-                                            <button
-                                                onClick={() => setShowAllProducts(true)}
-                                                className="bg-slate-50 border border-slate-300 hover:bg-slate-100 text-slate-700 font-semibold px-4 py-2 rounded-lg text-xs transition-colors"
-                                            >
-                                                Ver Catálogo Completo
-                                            </button>
-                                        </div>
+                            {/* REGLAS / CATÁLOGO */}
+                            <div className={`${CARD} overflow-hidden`}>
+                                {/* Barra: vista, familia, búsqueda y descuento masivo */}
+                                <div className="p-3 border-b border-zinc-200 flex flex-col xl:flex-row xl:items-center gap-3">
+                                    <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
+                                        {/* Vista Selector Toggle */}
+                                        <button
+                                            onClick={() => setShowAllProducts(prev => !prev)}
+                                            className={`${!showAllProducts ? BTN_SECUNDARIO : BTN_ELEGIDO} h-[42px]`}
+                                        >
+                                            {!showAllProducts ? <LayoutGrid size={15} className="text-brand-cyan" /> : <ListChecks size={15} />}
+                                            {!showAllProducts ? 'Ver catálogo completo' : 'Ver reglas asignadas'}
+                                        </button>
+
+                                        {showAllProducts && (
+                                            <>
+                                                <Selector
+                                                    value={filterCategory}
+                                                    onChange={(e)=>setFilterCategory(e.target.value)}
+                                                    className="sm:w-72"
+                                                    anchoLista={320}
+                                                    aria-label="Familia"
+                                                >
+                                                    {categoriasDropdown.map(cat => {
+                                                        if (cat === "TODAS" || cat === "ACTIVAS") {
+                                                            return <option key={cat} value={cat}>{cat === "ACTIVAS" ? "Solo los que tienen regla" : `Familia: ${cat}`}</option>;
+                                                        }
+                                                        const groupProd = baseProducts.find(p => p.CodArticulo === `GRUPO:${cat}`);
+                                                        const desc = groupProd ? groupProd.Descripcion : cat;
+                                                        return <option key={cat} value={cat}>Familia: {desc}</option>;
+                                                    })}
+                                                </Selector>
+
+                                                <div className="relative w-full sm:w-64">
+                                                    <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" />
+                                                    <input
+                                                        className={CAMPO}
+                                                        placeholder="Buscar producto o código..."
+                                                        value={filterSearch}
+                                                        onChange={e => setFilterSearch(e.target.value)}
+                                                    />
+                                                </div>
+                                            </>
+                                        )}
                                     </div>
-                                ) : (
-                                    <table className="w-full text-left bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm animate-in fade-in duration-300">
-                                        <thead className="bg-[#f8fafc] border-b border-slate-200 text-xs text-slate-500 uppercase font-black">
-                                            <tr>
-                                                <th className="p-3 w-16 text-center">Tipo</th>
-                                                <th className="p-3">Excepción / Referencia</th>
-                                                <th className="p-3 w-32 border-l border-slate-100">Precio Base</th>
-                                                <th className="p-3 w-44 bg-indigo-50/20 text-indigo-800">Tarifa Especial</th>
-                                                <th className="p-3 w-28 text-center">Acciones</th>
-                                            </tr>
-                                        </thead>
-                                        <tbody className="divide-y divide-slate-100">
+
+                                    {/* BULK ACCION MASIVA */}
+                                    {showAllProducts && (
+                                        <div className="flex flex-wrap items-center gap-2 xl:pl-3 xl:border-l xl:border-zinc-200">
+                                            <span className="text-zinc-600 font-bold text-xs whitespace-nowrap">Masivo ({selectedRows.size}):</span>
+                                            <div className="relative">
+                                                <input
+                                                    type="number"
+                                                    value={bulkDiscountPct}
+                                                    onChange={e => setBulkDiscountPct(e.target.value)}
+                                                    placeholder="10"
+                                                    aria-label="Descuento masivo (%)"
+                                                    className={`${CAMPO_NUM} w-24 pl-3 pr-8`}
+                                                />
+                                                <span className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 font-bold text-sm pointer-events-none">%</span>
+                                            </div>
+                                            <button
+                                                onClick={applyBulkDiscount}
+                                                className={`${BTN_PRINCIPAL} h-[42px]`}
+                                            >
+                                                <Zap size={15} /> Aplicar
+                                            </button>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* DATOS */}
+                                {loadingRules ? (
+                                    <div className="flex items-center justify-center gap-2 py-16 text-sm text-zinc-400"><Loader2 size={20} className="animate-spin text-brand-cyan" /> Cargando reglas...</div>
+                                ) : !showAllProducts ? (
+                                    activeRules.length === 0 ? (
+                                        <div className="flex flex-col items-center justify-center text-center px-6 py-14 animate-in fade-in duration-300">
+                                            <ListChecks size={40} className="mb-3 text-brand-cyan" />
+                                            <span className="text-sm font-bold text-zinc-700">Sin excepciones de precios</span>
+                                            <span className="text-xs text-zinc-400 mt-1 max-w-xs">Este cliente está operando con la tarifa base del sistema. Empezá asignando su primera excepción.</span>
+                                            <div className="flex flex-wrap justify-center gap-2 mt-5">
+                                                <button
+                                                    onClick={() => setIsDrawerOpen(true)}
+                                                    className={BTN_PRINCIPAL}
+                                                >
+                                                    <PlusCircle size={15} /> Nueva excepción
+                                                </button>
+                                                <button
+                                                    onClick={() => setShowAllProducts(true)}
+                                                    className={BTN_SECUNDARIO}
+                                                >
+                                                    <LayoutGrid size={15} className="text-brand-cyan" /> Ver catálogo completo
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : conTabla ? (
+                                        <div className="overflow-x-auto animate-in fade-in duration-300">
+                                            <table className="w-full text-left">
+                                                <thead className="bg-zinc-50 border-b border-zinc-200">
+                                                    <tr>
+                                                        <th className={`${TH} w-16 text-center`}>Tipo</th>
+                                                        <th className={`${TH} text-left`}>Excepción / referencia</th>
+                                                        <th className={`${TH} w-40 text-right`}>Precio base</th>
+                                                        <th className={`${TH} w-64 text-left`}>Tarifa especial</th>
+                                                        <th className={`${TH} w-28 text-center`}>Acciones</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-zinc-100">
+                                                    {activeRules.map(rule => {
+                                                        const { codArticulo, descripcion, tipoSimbolo, precioBase, moneda, state } = rule;
+                                                        const tarifa = tarifaDeRegla(precioBase, moneda, state);
+                                                        const tipo = tipoDeRegla(codArticulo);
+
+                                                        return (
+                                                            <tr key={codArticulo} className="hover:bg-zinc-50 transition-colors">
+                                                                <td className="px-4 py-3 text-center" title={tipo.texto}>
+                                                                    <tipo.Icono size={18} className="text-brand-cyan inline-block" />
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    <div className="font-bold text-zinc-800">{descripcion}</div>
+                                                                    <div className="text-[11px] font-mono text-zinc-400 mt-0.5">Ref: {codArticulo}</div>
+                                                                </td>
+                                                                <td className="px-4 py-3 font-mono text-zinc-500 text-right whitespace-nowrap">
+                                                                    {precioBase > 0 ? fmtPrecio(moneda, precioBase) : '—'}
+                                                                </td>
+                                                                <td className="px-4 py-3">
+                                                                    {celdaTarifa(tarifa, moneda)}
+                                                                </td>
+                                                                <td className="px-4 py-3 text-center">
+                                                                    {accionesRegla(codArticulo, state)}
+                                                                </td>
+                                                            </tr>
+                                                        );
+                                                    })}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    ) : (
+                                        // Celular: una tarjeta por excepción
+                                        <div className="divide-y divide-zinc-100 animate-in fade-in duration-300">
                                             {activeRules.map(rule => {
                                                 const { codArticulo, descripcion, tipoSimbolo, precioBase, moneda, state } = rule;
-                                                
-                                                let reglaAplicadaText = "";
-                                                if (state.tipoRegla === 'percentage') {
-                                                    const discPct = parseFloat(state.discStr) || 0;
-                                                    if (precioBase > 0) {
-                                                        const calculatedPrice = precioBase * (1 - discPct / 100);
-                                                        reglaAplicadaText = `${moneda} ${calculatedPrice.toFixed(2)} (${discPct}% OFF)`;
-                                                    } else {
-                                                        reglaAplicadaText = `${discPct}% OFF`;
+                                                const tarifa = tarifaDeRegla(precioBase, moneda, state);
+                                                const tipo = tipoDeRegla(codArticulo);
+
+                                                return (
+                                                    <div key={codArticulo} className="p-4 flex flex-col gap-3">
+                                                        <div className="flex items-start gap-3">
+                                                            <span className="mt-0.5 shrink-0" title={tipo.texto}><tipo.Icono size={18} className="text-brand-cyan" /></span>
+                                                            <div className="min-w-0 flex-1">
+                                                                <div className="font-bold text-zinc-800 break-words">{descripcion}</div>
+                                                                <div className="text-[11px] font-mono text-zinc-400 mt-0.5">Ref: {codArticulo}</div>
+                                                            </div>
+                                                            <div className="shrink-0">{accionesRegla(codArticulo, state)}</div>
+                                                        </div>
+                                                        <div className="grid grid-cols-2 gap-3 bg-zinc-50 rounded-xl px-3 py-2.5">
+                                                            <div className="min-w-0">
+                                                                <span className={ETIQUETA}>Precio base</span>
+                                                                <span className="font-mono text-zinc-600">{precioBase > 0 ? fmtPrecio(moneda, precioBase) : '—'}</span>
+                                                            </div>
+                                                            <div className="min-w-0">
+                                                                <span className={ETIQUETA}>Tarifa especial</span>
+                                                                {celdaTarifa(tarifa, moneda)}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                );
+                                            })}
+                                        </div>
+                                    )
+                                ) : conTabla ? (
+                                    <div className="overflow-x-auto animate-in fade-in duration-300">
+                                        <table className="w-full text-left">
+                                            <thead className="bg-zinc-50 border-b border-zinc-200">
+                                                <tr>
+                                                    <th className={`${TH} w-12 text-center`}>{chkTodos()}</th>
+                                                    <th className={`${TH} text-left`}>Producto / código</th>
+                                                    <th className={`${TH} w-36 text-right`}>Precio base</th>
+                                                    <th className={`${TH} w-40 text-left`}>Nuevo precio</th>
+                                                    <th className={`${TH} w-32 text-left`}>Desc. (%)</th>
+                                                    <th className={`${TH} w-36 text-left`} title="Descuento por importe fijo por unidad (bonificación en $). Excluyente con el % y con el precio fijo.">Desc. ($)</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-zinc-100">
+                                                {visibleProducts.map(prod => {
+                                                    const d = datosFila(prod);
+
+                                                    // Fila del Grupo (Arbolito)
+                                                    if (d.isGroupRow) {
+                                                        return (
+                                                            <tr
+                                                                key={prod.CodArticulo}
+                                                                id={`row-${prod.CodArticulo}`}
+                                                                className={`border-t-2 border-zinc-200 transition-colors ${d.isHidden ? 'bg-zinc-50 opacity-60' : d.isActive ? 'bg-brand-cyan/5' : 'bg-zinc-100/70'}`}
+                                                            >
+                                                                <td className="px-3 py-2.5 text-center">{chkGrupo(prod, d)}</td>
+                                                                <td colSpan="5" className="px-3 py-2.5">{cabezaGrupo(prod, d)}</td>
+                                                            </tr>
+                                                        );
                                                     }
-                                                } else {
-                                                    const fixedPrice = parseFloat(state.customStr) || 0;
-                                                    if (precioBase > 0) {
-                                                        const discPct = ((precioBase - fixedPrice) / precioBase) * 100;
-                                                        reglaAplicadaText = `${moneda} ${fixedPrice.toFixed(2)} (${discPct.toFixed(1)}% OFF)`;
-                                                    } else {
-                                                        reglaAplicadaText = `${moneda} ${fixedPrice.toFixed(2)}`;
-                                                    }
+
+                                                    // Filas normales (Productos) o Regla Total
+                                                    return (
+                                                        <tr
+                                                            key={prod.CodArticulo}
+                                                            id={`row-${prod.CodArticulo}`}
+                                                            className={`hover:bg-zinc-50 transition-colors ${d.isSelected ? 'bg-brand-cyan/5' : d.isActive ? 'bg-brand-cyan/[0.03]' : ''}`}
+                                                        >
+                                                            <td className="px-3 py-2.5 text-center">{chkProducto(prod, d)}</td>
+                                                            <td className="px-3 py-2.5">{celdaProducto(prod, d)}</td>
+                                                            <td className="px-3 py-2.5 font-mono text-zinc-500 text-right whitespace-nowrap">{precioBaseFila(prod)}</td>
+                                                            <td className="px-2 py-2">{inputPrecio(prod, d)}</td>
+                                                            <td className="px-2 py-2">{inputPct(prod, d)}</td>
+                                                            <td className="px-2 py-2">{inputImporte(prod, d)}</td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                ) : (
+                                    // Celular: el catálogo en tarjetas (familias como cabeza, productos con sus tres campos)
+                                    <div className="animate-in fade-in duration-300">
+                                        {visibleProducts.length > 0 && (
+                                            <label className="flex items-center gap-2 px-4 py-2.5 bg-zinc-50 border-b border-zinc-200 text-xs font-bold text-zinc-500 cursor-pointer">
+                                                {chkTodos()} Elegir todas las filas visibles
+                                            </label>
+                                        )}
+                                        <div className="divide-y divide-zinc-100">
+                                            {visibleProducts.map(prod => {
+                                                const d = datosFila(prod);
+
+                                                if (d.isGroupRow) {
+                                                    return (
+                                                        <div
+                                                            key={prod.CodArticulo}
+                                                            id={`row-${prod.CodArticulo}`}
+                                                            className={`px-3 py-3 flex items-start gap-3 border-t-2 border-zinc-200 ${d.isHidden ? 'bg-zinc-50 opacity-60' : d.isActive ? 'bg-brand-cyan/5' : 'bg-zinc-100/70'}`}
+                                                        >
+                                                            <div className="pt-1.5">{chkGrupo(prod, d)}</div>
+                                                            <div className="min-w-0 flex-1">{cabezaGrupo(prod, d)}</div>
+                                                        </div>
+                                                    );
                                                 }
 
                                                 return (
-                                                    <tr key={codArticulo} className="hover:bg-slate-50 transition-colors">
-                                                        <td className="p-3 text-center text-lg select-none" title={tipoSimbolo === '📦' ? 'Producto' : tipoSimbolo === '📁' ? 'Familia' : 'Global'}>
-                                                            {tipoSimbolo}
-                                                        </td>
-                                                        <td className="p-3">
-                                                            <div className="font-bold text-slate-800">{descripcion}</div>
-                                                            <div className="text-[11px] font-mono text-slate-400 mt-0.5">Ref: {codArticulo}</div>
-                                                        </td>
-                                                        <td className="p-3 font-mono text-slate-500 border-l border-slate-100">
-                                                            {precioBase > 0 ? `${moneda} ${Number(precioBase).toFixed(2)}` : '--'}
-                                                        </td>
-                                                        <td className="p-3 font-mono bg-indigo-50/10 text-indigo-700 font-bold">
-                                                            {reglaAplicadaText}
-                                                        </td>
-                                                        <td className="p-3 text-center">
-                                                            <div className="flex items-center justify-center gap-2">
-                                                                <button
-                                                                    onClick={() => {
-                                                                        setEditingRule({ codArticulo, state });
-                                                                        setIsDrawerOpen(true);
-                                                                    }}
-                                                                    className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-200 hover:border-indigo-300 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-center transition-colors text-slate-500"
-                                                                    title="Editar excepción"
-                                                                >
-                                                                    <i className="fa-solid fa-pencil text-xs"></i>
-                                                                </button>
-                                                                <button
-                                                                    onClick={() => handleRemoveRule(codArticulo)}
-                                                                    className="w-8 h-8 rounded-lg bg-slate-50 border border-slate-200 hover:border-red-300 hover:bg-red-50 hover:text-red-500 flex items-center justify-center transition-colors text-slate-500"
-                                                                    title="Eliminar excepción"
-                                                                >
-                                                                    <i className="fa-solid fa-trash-can text-xs"></i>
-                                                                </button>
+                                                    <div
+                                                        key={prod.CodArticulo}
+                                                        id={`row-${prod.CodArticulo}`}
+                                                        className={`px-3 py-3 flex flex-col gap-3 ${d.isSelected ? 'bg-brand-cyan/5' : d.isActive ? 'bg-brand-cyan/[0.03]' : ''}`}
+                                                    >
+                                                        <div className="flex items-start gap-3">
+                                                            <div className="pt-1">{chkProducto(prod, d)}</div>
+                                                            <div className="min-w-0 flex-1">{celdaProducto(prod, d)}</div>
+                                                            <div className="text-right shrink-0">
+                                                                <span className={ETIQUETA}>Base</span>
+                                                                <span className="font-mono text-xs text-zinc-600 whitespace-nowrap">{precioBaseFila(prod)}</span>
                                                             </div>
-                                                        </td>
-                                                    </tr>
+                                                        </div>
+                                                        <div className="grid grid-cols-3 gap-2">
+                                                            <div className="min-w-0"><span className={ETIQUETA}>Precio</span>{inputPrecio(prod, d)}</div>
+                                                            <div className="min-w-0"><span className={ETIQUETA}>Desc. %</span>{inputPct(prod, d)}</div>
+                                                            <div className="min-w-0"><span className={ETIQUETA}>Desc. $</span>{inputImporte(prod, d)}</div>
+                                                        </div>
+                                                    </div>
                                                 );
                                             })}
-                                        </tbody>
-                                    </table>
-                                )
-                            ) : (
-                                <table className="w-full text-left bg-white border border-slate-200 rounded-lg overflow-hidden shadow-sm animate-in fade-in duration-300">
-                                    <thead className="bg-[#f8fafc] border-b border-slate-200">
-                                        <tr>
-                                            <th className="p-3 w-12 text-center text-slate-400">
-                                                <input 
-                                                    type="checkbox" 
-                                                    onChange={() => toggleSelectAll(visibleProducts)} 
-                                                    checked={selectedRows.size > 0 && selectedRows.size >= visibleProducts.length && visibleProducts.length > 0}
-                                                />
-                                            </th>
-                                            <th className="p-3 font-semibold text-slate-600">Producto / Código</th>
-                                            <th className="p-3 font-semibold text-slate-600 w-32 border-l border-slate-100">Precio Base</th>
-                                            <th className="p-3 font-semibold text-indigo-700 w-40 bg-indigo-50/30">Nuevo Precio ($)</th>
-                                            <th className="p-3 font-semibold text-emerald-700 w-32 bg-emerald-50/30">Desc. (%)</th>
-                                            <th className="p-3 font-semibold text-amber-700 w-32 bg-amber-50/30" title="Descuento por importe fijo por unidad (bonificación en $). Excluyente con el % y con el precio fijo.">Desc. ($)</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-slate-100">
-                                        {visibleProducts.map(prod => {
-                                            const st = rowStateMap[prod.CodArticulo] || {};
-                                            const isSelected = selectedRows.has(prod.CodArticulo);
-                                            const isActive = st.isActive;
-                                            const isGroupRow = prod.ProIdProducto === null && prod.CodArticulo.startsWith('GRUPO:');
-                                            const isGlobal = prod.ProIdProducto === 0;
-                                            const isExpanded = expandedGroups.has(prod.Grupo);
-                                            const isHidden = hiddenGroups.has(prod.Grupo);
-                                            
-                                            // Estilos para la fila del Grupo (Arbolito)
-                                            if (isGroupRow) {
-                                                return (
-                                                    <tr 
-                                                        key={prod.CodArticulo} 
-                                                        id={`row-${prod.CodArticulo}`}
-                                                        className={`border-t-2 border-slate-200 transition-all ${isHidden ? 'bg-slate-50 opacity-60 grayscale' : 'bg-slate-100'} ${isActive && !isHidden ? 'bg-indigo-50/20' : ''}`}
-                                                    >
-                                                        <td className="p-3 text-center">
-                                                            <input 
-                                                                type="checkbox" 
-                                                                checked={isSelected}
-                                                                onChange={() => toggleRowSelect(prod.CodArticulo)}
-                                                                className="w-4 h-4 text-indigo-600 cursor-pointer"
-                                                                disabled={isHidden}
-                                                            />
-                                                        </td>
-                                                        <td colSpan="4" className="p-3">
-                                                            <div className="flex items-center gap-3 w-full cursor-pointer select-none" onClick={() => { if(!isHidden) toggleGroupNode(prod.Grupo); }}>
-                                                                {/* OJO TOGGLE */}
-                                                                <button 
-                                                                    onClick={(e) => { e.stopPropagation(); toggleHideGroupNode(prod.Grupo); }}
-                                                                    className={`w-7 h-7 flex items-center justify-center rounded-full transition-colors ${isHidden ? 'bg-slate-200 text-slate-500 hover:bg-slate-300' : 'bg-white text-slate-400 hover:text-red-500 shadow-sm border border-slate-200'}`}
-                                                                    title={isHidden ? "Mostrar esta familia" : "Ocultar esta familia e ignorarla"}
-                                                                >
-                                                                    <i className={`fa-solid ${isHidden ? 'fa-eye-slash' : 'fa-eye'}`}></i>
-                                                                </button>
-                                                                
-                                                                <button disabled={isHidden} className={`w-6 h-6 flex items-center justify-center bg-white border border-slate-300 rounded shadow-sm text-slate-500 ${!isHidden && 'hover:text-indigo-600 hover:border-indigo-400 transition-colors'}`}>
-                                                                    <i className={`fa-solid ${isExpanded && !isHidden ? 'fa-minus' : 'fa-plus'} text-xs`}></i>
-                                                                </button>
-                                                                <i className={`fa-solid ${isExpanded && !isHidden ? 'fa-folder-open text-indigo-500' : 'fa-folder text-slate-400'} text-lg`}></i>
-                                                                <span className={`font-black tracking-wide ${isHidden ? 'text-slate-500 line-through' : 'text-slate-800'}`}>
-                                                                    {prod.Descripcion.toUpperCase()}
-                                                                </span>
-                                                                
-                                                                {/* Si el Grupo en sí tiene un % de descuento guardado (Regla a nivel raíz de familia) */}
-                                                                {isActive && !isHidden && (
-                                                                    <div className="ml-4 flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
-                                                                        <span className="bg-indigo-100 text-indigo-800 text-[10px] font-bold px-2 py-0.5 rounded shadow-sm">
-                                                                            REGLA ENTERA FAMILIA: {st.discStr}% OFF
-                                                                        </span>
-                                                                        <button 
-                                                                            onClick={() => handleRemoveRule(prod.CodArticulo)}
-                                                                            className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 w-5 h-5 rounded flex items-center justify-center transition-colors text-[10px]"
-                                                                            title="Eliminar regla de familia"
-                                                                        >
-                                                                            <i className="fa-solid fa-trash-can"></i>
-                                                                        </button>
-                                                                    </div>
-                                                                )}
-                                                                
-                                                                {/* Inputs rápidos en la misma fila del grupo para descuento global de familia */}
-                                                                {!isHidden && (
-                                                                    <div className="ml-auto flex items-center gap-2 pr-6" onClick={(e) => e.stopPropagation()}>
-                                                                        <span className="text-xs font-semibold text-slate-400 uppercase">Tarifa Familia:</span>
-                                                                        <div className="relative w-28">
-                                                                            <input 
-                                                                                type="number" step="0.01"
-                                                                                value={st.discStr}
-                                                                                onChange={e => handleDiscStrChange(prod.CodArticulo, e.target.value)}
-                                                                                className="w-full pl-3 pr-7 py-1 bg-white border border-slate-300 text-slate-800 rounded outline-none h-7 text-xs font-mono font-bold focus:border-indigo-500 shadow-sm"
-                                                                                placeholder="0"
-                                                                            />
-                                                                            <span className="absolute right-2 top-1.5 text-slate-400 text-[10px] font-black">%</span>
-                                                                        </div>
-                                                                    </div>
-                                                                )}
-                                                            </div>
-                                                        </td>
-                                                    </tr>
-                                                );
-                                            }
-
-                                            // Filas normales (Productos) o Regla Total
-                                            return (
-                                                <tr 
-                                                    key={prod.CodArticulo} 
-                                                    id={`row-${prod.CodArticulo}`}
-                                                    className={`hover:bg-slate-50 transition-colors ${isSelected ? 'bg-indigo-50/50' : isActive ? 'bg-amber-50/10' : ''} ${!isGlobal ? 'pl-8' : ''}`}
-                                                >
-                                                    <td className="p-3 text-center">
-                                                        <input 
-                                                            type="checkbox" 
-                                                            checked={isSelected}
-                                                            onChange={() => toggleRowSelect(prod.CodArticulo)}
-                                                            className="w-4 h-4 text-indigo-600 cursor-pointer"
-                                                        />
-                                                    </td>
-                                                    <td className="p-3">
-                                                        <div className="flex items-center gap-2">
-                                                            {!isGlobal && <div className="w-4 border-b border-l border-slate-300 h-4 ml-2 mr-2 opacity-50 rounded-bl"></div>}
-                                                            <div>
-                                                                <div className={`font-bold ${isGlobal ? 'text-indigo-600 text-base flex items-center gap-2' : 'text-slate-700'}`}>
-                                                                    {isGlobal && <i className="fa-solid fa-earth-americas"></i>}
-                                                                    {prod.Descripcion}
-                                                                </div>
-                                                                <div className="flex gap-2 items-center mt-0.5">
-                                                                    <span className="font-mono text-[11px] text-slate-400 bg-slate-100 px-1 py-0.5 rounded">{prod.CodArticulo}</span>
-                                                                    {isActive && (
-                                                                        <div className="flex items-center gap-1.5">
-                                                                            <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-1.5 py-0.5 rounded uppercase shadow-sm">Activa</span>
-                                                                            <button 
-                                                                                onClick={() => handleRemoveRule(prod.CodArticulo)}
-                                                                                className="text-red-500 hover:text-red-700 bg-red-50 hover:bg-red-100 w-5 h-5 rounded flex items-center justify-center transition-colors text-[10px]"
-                                                                                title="Eliminar regla"
-                                                                            >
-                                                                                <i className="fa-solid fa-trash-can"></i>
-                                                                            </button>
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-3 font-mono text-slate-500 border-l border-slate-100">
-                                                        {prod.Precio > 0 ? `${prod.Moneda} ${Number(prod.Precio).toFixed(2)}` : '--'}
-                                                    </td>
-                                                    <td className="p-2 bg-indigo-50/10">
-                                                        <div className="relative">
-                                                            <span className="absolute left-3 top-2 text-slate-400 text-xs font-bold">{prod.Moneda !== 'UYU' ? prod.Moneda : '$'}</span>
-                                                            <input 
-                                                                type="number"
-                                                                step="0.01"
-                                                                value={st.customStr}
-                                                                onChange={e => handlePriceStrChange(prod.CodArticulo, e.target.value)}
-                                                                className={`w-full pl-7 pr-3 py-1.5 border rounded font-mono outline-none transition-all ${isActive && st.tipoRegla === 'fixed' ? 'border-indigo-400 bg-white shadow-[0_0_0_2px_rgba(99,102,241,0.1)]' : 'border-slate-300 bg-white/50 focus:bg-white focus:border-indigo-400'}`}
-                                                                placeholder="Base"
-                                                                disabled={isGlobal}
-                                                            />
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-2 bg-emerald-50/10">
-                                                        <div className="relative">
-                                                            <input 
-                                                                type="number"
-                                                                step="0.01"
-                                                                value={st.discStr}
-                                                                onChange={e => handleDiscStrChange(prod.CodArticulo, e.target.value)}
-                                                                className={`w-full pl-3 pr-7 py-1.5 border rounded font-mono outline-none transition-all ${isActive && st.tipoRegla === 'percentage' ? 'border-emerald-400 bg-white shadow-[0_0_0_2px_rgba(16,185,129,0.1)]' : 'border-slate-300 bg-white/50 focus:bg-white focus:border-emerald-400'}`}
-                                                                placeholder="0"
-                                                            />
-                                                            <span className="absolute right-3 top-1.5 text-slate-400 text-sm font-bold">%</span>
-                                                        </div>
-                                                    </td>
-                                                    <td className="p-2 bg-amber-50/10">
-                                                        <div className="relative">
-                                                            <span className="absolute left-3 top-2 text-slate-400 text-xs font-bold">{prod.Moneda !== 'UYU' ? prod.Moneda : '$'}</span>
-                                                            <input
-                                                                type="number"
-                                                                step="0.01"
-                                                                value={st.amtStr || ''}
-                                                                onChange={e => handleAmtStrChange(prod.CodArticulo, e.target.value)}
-                                                                className={`w-full pl-7 pr-3 py-1.5 border rounded font-mono outline-none transition-all ${isActive && st.tipoRegla === 'subtract' ? 'border-amber-400 bg-white shadow-[0_0_0_2px_rgba(245,158,11,0.1)]' : 'border-slate-300 bg-white/50 focus:bg-white focus:border-amber-400'}`}
-                                                                placeholder="0"
-                                                                title="Descuento por importe fijo por unidad"
-                                                            />
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                </table>
-                            )}
-                            {showAllProducts && visibleProducts.length === 0 && !loadingRules && (
-                                <div className="text-center py-12 text-slate-400 animate-in fade-in duration-200">
-                                    <i className="fa-solid fa-box-open text-4xl mb-3 opacity-50"></i>
-                                    <p>No se encontraron productos con los filtros actuales.</p>
-                                </div>
-                            )}
+                                        </div>
+                                    </div>
+                                )}
+                                {showAllProducts && visibleProducts.length === 0 && !loadingRules && (
+                                    <div className="flex flex-col items-center justify-center text-center py-12 animate-in fade-in duration-200">
+                                        <PackageOpen size={40} className="mb-3 text-brand-cyan" />
+                                        <span className="text-sm font-bold text-zinc-700">No se encontraron productos con los filtros actuales.</span>
+                                        <span className="text-xs text-zinc-400 mt-1">Probá con otra familia u otra búsqueda.</span>
+                                    </div>
+                                )}
+                            </div>
+                        </>
+                    ) : (conTabla || embebido) && (
+                        <div className={`${CARD} flex flex-col items-center justify-center text-center px-6 py-20`}>
+                            <Tags size={40} className="mb-3 text-brand-cyan" />
+                            <span className="text-sm font-bold text-zinc-700">Elegí un cliente</span>
+                            <span className="text-xs text-zinc-400 mt-1 max-w-sm">
+                                Elegilo de la lista o buscalo en la base para empezar a personalizar su tabla de tarifas y descuentos.
+                            </span>
                         </div>
-                    </>
-                ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center text-slate-400 bg-slate-50/50">
-                        <div className="w-24 h-24 bg-white rounded-full flex items-center justify-center shadow-sm mb-6">
-                            <i className="fa-solid fa-tags text-4xl text-indigo-200"></i>
-                        </div>
-                        <h2 className="text-xl font-bold text-slate-700 mb-2">Selecciona un cliente</h2>
-                        <p className="text-slate-500 max-w-sm text-center">
-                            Elige de la lista lateral o crea uno nuevo para comenzar a personalizar su tabla de tarifas y descuentos.
-                        </p>
-                    </div>
-                )}
+                    )}
+                </div>
             </div>
         </div>
     );

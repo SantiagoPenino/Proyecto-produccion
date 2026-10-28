@@ -1,10 +1,31 @@
 import React, { useState, useEffect, useRef } from 'react';
 import api from '../../services/apiClient';
-import { BookOpen, Calendar, DollarSign, Search, Loader2, X, Filter, ChevronDown, ChevronUp } from 'lucide-react';
+import { BookOpen, Calendar, DollarSign, Search, Loader2, X, Filter, ChevronDown, ChevronUp, AlertTriangle } from 'lucide-react';
+import Selector from '../ui/Selector';
+import SelectorFecha from '../ui/SelectorFecha';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 const PAGE_SIZE = 50;
+
+// Estética nueva (28/10/2026): encabezado con ícono brand-cyan sin fondo, tarjetas blancas con borde, filtros con
+// Selector/SelectorFecha (antes el calendario del navegador, en mm/dd/yyyy), naranja e índigo → brand-cyan, montos en
+// negro (el color queda para el descuadre), «$»/«US$» en vez de UYU/USD, horas de 24 h y la ventana de la OP en z-[6000].
+const CARD = 'bg-white rounded-2xl border border-zinc-200';
+const BTN_PRINCIPAL = 'inline-flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-brand-cyan text-white text-sm font-bold hover:bg-brand-cyan/90 transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+const BTN_SECUNDARIO = 'inline-flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl border border-zinc-200 bg-white text-sm font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50';
+const CAMPO = 'w-full pl-9 pr-9 py-2.5 bg-white border border-zinc-200 rounded-xl text-sm text-zinc-800 placeholder:text-zinc-400 focus:outline-none focus:border-brand-cyan focus:ring-2 focus:ring-brand-cyan/15';
+const ETIQUETA = 'flex items-center gap-1 text-[10px] font-black uppercase tracking-widest text-zinc-400 mb-1.5';
+const ROTULO = 'text-[10px] font-black uppercase tracking-widest text-zinc-400';
+const CHIP = 'inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded-full border uppercase tracking-wide whitespace-nowrap';
+const TH = 'px-4 py-3 text-[10px] font-black uppercase tracking-wide text-zinc-400 whitespace-nowrap';
+
+const fechaHora = (f) => {
+  const d = new Date(f);
+  return `${d.toLocaleDateString('es-UY')} ${d.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })}`;
+};
+// En pantalla, «$» y «US$» (la base guarda U$S en algunas monedas)
+const simbolo = (s) => (s === 'U$S' || s === 'USD' ? 'US$' : (s || '$'));
 
 export default function LibroMayorView() {
   const [asientos, setAsientos] = useState([]);
@@ -130,45 +151,47 @@ export default function LibroMayorView() {
   const hayFiltros = searchTerm || fechaDesde || fechaHasta || filtroConcepto;
 
   return (
-    <div className="h-full bg-[#f1f5f9] p-8 overflow-y-auto font-sans text-slate-800">
-      <div className="max-w-6xl mx-auto flex flex-col gap-6">
+    <div className="px-3 sm:px-6 py-5 min-h-full text-zinc-700 flex flex-col gap-4">
 
         {/* ENCABEZADO */}
-        <div className="flex justify-between items-start bg-white p-8 rounded-[2rem] shadow-sm border border-slate-200">
-          <div>
-            <h1 className="text-3xl font-black text-slate-800 flex items-center gap-4 tracking-tight">
-              <BookOpen className="text-amber-500" size={36} /> Libro Diario / Mayor
-            </h1>
-            <p className="text-slate-500 font-bold uppercase tracking-widest text-[10px] mt-2">Auditoría contable bimonetaria · Mostrando <span className="text-indigo-600">{asientos.length}</span> de {total} asientos</p>
+        <div className="flex flex-wrap items-center gap-3">
+          <BookOpen size={30} className="text-brand-cyan shrink-0" />
+          <div className="min-w-[220px] flex-1">
+            <h1 className="text-xl sm:text-2xl font-black uppercase tracking-tight text-zinc-900 leading-none">Libro Diario / Mayor</h1>
+            <p className="text-sm text-zinc-500 mt-1">
+              Auditoría contable bimonetaria · mostrando <b className="text-zinc-700">{asientos.length.toLocaleString('es-UY')}</b> de <b className="text-zinc-700">{total.toLocaleString('es-UY')}</b> asientos
+            </p>
           </div>
           {/* Total cuadre — de TODOS los asientos del filtro, no sólo de los mostrados */}
           {total > 0 && (
-            <div className="text-right bg-slate-50 border border-slate-100 rounded-2xl px-6 py-4 shadow-inner">
-              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Total Debe / Haber (UYU) · los {total} asientos del filtro</p>
-              <p className="text-2xl font-black text-emerald-600 font-mono tracking-tighter">
-                $ {fmt(totalDebeFiltro)} / $ {fmt(totalHaberFiltro)}
+            <div className={`${CARD} px-4 py-2.5 w-full sm:w-auto sm:ml-auto sm:text-right`}>
+              <p className={ROTULO}>Total debe / haber ($) · los {total.toLocaleString('es-UY')} asientos del filtro</p>
+              <p className="text-lg sm:text-xl font-black text-zinc-900 font-mono tabular-nums mt-0.5">
+                <span className="whitespace-nowrap">$ {fmt(totalDebeFiltro)}</span> / <span className="whitespace-nowrap">$ {fmt(totalHaberFiltro)}</span>
               </p>
             </div>
           )}
         </div>
 
         {/* BARRA DE BÚSQUEDA Y FILTROS */}
-        <div className="bg-white border border-slate-200 shadow-sm rounded-[2rem] p-6 flex flex-wrap gap-4 items-end">
+        <div className={`${CARD} p-4 grid grid-cols-2 gap-3 lg:flex lg:flex-wrap lg:items-end`}>
 
           {/* Búsqueda libre */}
-          <div className="flex-1 min-w-[200px] flex flex-col gap-2">
-            <label className="text-[10px] uppercase font-black text-slate-400 tracking-widest flex items-center gap-1 px-1"><Search size={14} className="text-indigo-400"/> Buscar Asiento</label>
+          <div className="min-w-0 col-span-2 lg:flex-1 lg:min-w-[240px]">
+            <span className={ETIQUETA}><Search size={12} className="text-brand-cyan" /> Buscar asiento</span>
             <div className="relative">
-              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400 pointer-events-none" size={15} />
               <input
                 type="text"
                 placeholder="Concepto, cuenta, N° asiento u OP..."
                 value={searchTerm}
                 onChange={e => setSearchTerm(e.target.value)}
-                className="w-full bg-slate-50/50 border-2 border-slate-100 pl-12 pr-4 py-3 rounded-2xl text-slate-800 font-bold text-sm outline-none focus:border-amber-500 focus:bg-white shadow-inner transition-all"
+                aria-label="Buscar asiento"
+                className={CAMPO}
               />
               {searchTerm && (
-                <button onClick={() => setSearchTerm('')} className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 bg-white shadow-sm p-1 rounded-lg border border-slate-200">
+                <button onClick={() => setSearchTerm('')} title="Borrar la búsqueda" aria-label="Borrar la búsqueda"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-lg text-zinc-400 hover:text-zinc-700 hover:bg-zinc-100">
                   <X size={14}/>
                 </button>
               )}
@@ -176,73 +199,62 @@ export default function LibroMayorView() {
           </div>
 
           {/* Desde */}
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] uppercase font-black text-slate-400 tracking-widest flex items-center gap-1 px-1"><Calendar size={14} className="text-indigo-400"/> Desde</label>
-            <input
-              type="date"
-              value={fechaDesde}
-              onChange={e => setFechaDesde(e.target.value)}
-              className="bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 font-bold text-sm text-slate-800 outline-none focus:border-amber-500 focus:bg-white shadow-inner transition-all"
-            />
+          <div className="min-w-0 lg:w-40">
+            <span className={ETIQUETA}><Calendar size={12} className="text-brand-cyan" /> Desde</span>
+            <SelectorFecha filtro vaciable className="w-full" value={fechaDesde} placeholder="Desde" aria-label="Fecha desde"
+              onChange={e => setFechaDesde(e.target.value)} />
           </div>
 
           {/* Hasta */}
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] uppercase font-black text-slate-400 tracking-widest px-1">Hasta</label>
-            <input
-              type="date"
-              value={fechaHasta}
-              onChange={e => setFechaHasta(e.target.value)}
-              className="bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 font-bold text-sm text-slate-800 outline-none focus:border-amber-500 focus:bg-white shadow-inner transition-all"
-            />
+          <div className="min-w-0 lg:w-40">
+            <span className={ETIQUETA}>Hasta</span>
+            <SelectorFecha filtro vaciable className="w-full" value={fechaHasta} placeholder="Hasta" aria-label="Fecha hasta"
+              onChange={e => setFechaHasta(e.target.value)} />
           </div>
 
           {/* Tipo de asiento */}
-          <div className="flex flex-col gap-2">
-            <label className="text-[10px] uppercase font-black text-slate-400 tracking-widest flex items-center gap-1 px-1"><Filter size={14} className="text-indigo-400"/> Origen</label>
-            <select
-              value={filtroConcepto}
-              onChange={e => setFiltroConcepto(e.target.value)}
-              className="bg-slate-50/50 border-2 border-slate-100 rounded-2xl px-4 py-3 font-bold text-sm text-slate-800 outline-none focus:border-amber-500 focus:bg-white shadow-inner transition-all cursor-pointer"
-            >
+          <div className="min-w-0 col-span-2 lg:col-span-1 lg:w-52">
+            <span className={ETIQUETA}><Filter size={12} className="text-brand-cyan" /> Origen</span>
+            <Selector filtro className="w-full" value={filtroConcepto} aria-label="Origen"
+              onChange={e => setFiltroConcepto(e.target.value)}>
               <option value="">Todos los orígenes</option>
               {origenes.map(t => <option key={t} value={t}>{t}</option>)}
-            </select>
+            </Selector>
           </div>
 
           {/* Botón Filtrar — aplica SOLO el rango de fechas; la búsqueda y el origen se aplican solos */}
           <button
             onClick={aplicarFiltroFechas}
             title="Aplica el rango de fechas. La búsqueda y el origen se aplican solos, sin apretar este botón."
-            className="flex items-center gap-2 px-8 py-3 rounded-2xl bg-amber-500 hover:bg-black text-white text-sm font-black transition-all self-end shadow-xl hover:shadow-2xl hover:-translate-y-0.5 active:scale-95"
+            className={`${BTN_PRINCIPAL} ${hayFiltros ? '' : 'col-span-2'} lg:col-span-1`}
           >
-            <Search size={18}/> FILTRAR POR FECHA
+            <Search size={15}/> Filtrar por fecha
           </button>
 
           {/* Limpiar */}
           {hayFiltros && (
-            <button onClick={limpiarFiltros} className="flex items-center gap-2 px-6 py-3 rounded-2xl bg-rose-50 hover:bg-rose-100 text-rose-600 text-sm font-black transition-all self-end shadow-sm">
-              <X size={18}/> LIMPIAR
+            <button onClick={limpiarFiltros} className={BTN_SECUNDARIO}>
+              <X size={15} className="text-zinc-400"/> Limpiar
             </button>
           )}
         </div>
 
         {/* LISTA DE ASIENTOS */}
         {loading ? (
-          <div className="py-20 bg-white border border-slate-200 rounded-[2.5rem] text-center flex flex-col items-center gap-4">
-            <Loader2 className="animate-spin text-amber-500" size={48}/>
-            <p className="font-black text-slate-400 uppercase tracking-widest text-sm">Cargando libro mayor...</p>
+          <div className={`${CARD} py-16 text-center flex flex-col items-center gap-3`}>
+            <Loader2 className="animate-spin text-brand-cyan" size={32}/>
+            <p className="text-sm text-zinc-400">Cargando el libro mayor...</p>
           </div>
         ) : asientos.length === 0 ? (
-          <div className="py-20 bg-white border border-slate-200 rounded-[2.5rem] text-center flex flex-col items-center gap-4">
-            <BookOpen size={48} className="text-slate-300"/>
-            <p className="font-black text-slate-400 uppercase tracking-widest text-sm">Sin resultados para los filtros aplicados</p>
+          <div className={`${CARD} py-16 px-4 text-center flex flex-col items-center gap-2`}>
+            <BookOpen size={40} className="text-brand-cyan"/>
+            <p className="text-sm font-bold text-zinc-700">Sin resultados para los filtros aplicados</p>
+            <p className="text-xs text-zinc-400">Probá con otro rango de fechas, otro origen o menos palabras.</p>
           </div>
         ) : (
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2.5">
             {asientos.map(asi => {
               const isOpen = expandedIds.has(asi.AsiId);
-              const dateObj = new Date(asi.AsiFecha);
               // Los totales vienen sumados del servidor: la tarjeta cerrada no
               // necesita las líneas, y así no hay que traerlas para todo el libro.
               const totalDebe = Number(asi.TotalDebe || 0);
@@ -250,89 +262,93 @@ export default function LibroMayorView() {
               const cuadra = Math.abs(totalDebe - totalHaber) < 0.01;
               const lineas = lineasPorAsiento[asi.AsiId];
               return (
-                <div key={asi.AsiId} className={`bg-white border-2 hover:border-amber-300 rounded-[1.5rem] shadow-sm hover:shadow-xl transition-all overflow-hidden ${isOpen ? 'border-amber-300 shadow-md ring-4 ring-amber-50' : 'border-slate-100'}`}>
+                <div key={asi.AsiId} className={`${CARD} overflow-hidden transition-colors ${isOpen ? 'border-zinc-300' : 'hover:border-zinc-300'}`}>
 
                   {/* CABECERA — siempre visible, clickeable para expandir */}
                   <div
-                    className="flex justify-between items-center px-8 py-5 cursor-pointer select-none bg-white hover:bg-slate-50 transition-colors"
+                    className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 sm:px-5 py-3.5 cursor-pointer select-none hover:bg-zinc-50 transition-colors"
                     onClick={() => toggleExpand(asi.AsiId)}
                   >
-                    <div className="flex items-center gap-5 flex-wrap">
-                      <span className="text-amber-700 font-black font-mono text-sm bg-amber-100 border border-amber-200 px-3 py-1 rounded-xl shadow-sm">#{asi.AsiId}</span>
-                      <div>
-                        <p className="font-black text-slate-800 text-lg tracking-tight leading-none">{asi.AsiConcepto}</p>
-                        <div className="flex items-center gap-3 mt-2 text-[10px] uppercase text-slate-400 font-black tracking-widest">
-                          <span className="flex items-center gap-1.5"><Calendar size={14} className="text-indigo-400"/> {dateObj.toLocaleDateString('es-UY')} {dateObj.toLocaleTimeString('es-UY', { hour: '2-digit', minute: '2-digit' })}</span>
-                          {asi.AsiOrigen && <span className="bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-lg text-slate-500">{asi.AsiOrigen}</span>}
+                    <div className="flex items-start gap-3 min-w-0 flex-1 basis-[280px]">
+                      <span className="shrink-0 font-mono text-xs font-bold text-zinc-600 bg-zinc-50 border border-zinc-200 px-2 py-0.5 rounded-lg mt-0.5">#{asi.AsiId}</span>
+                      <div className="min-w-0">
+                        <p className="font-bold text-zinc-900 text-sm sm:text-base leading-snug">{asi.AsiConcepto}</p>
+                        <div className="flex items-center gap-2 mt-1.5 flex-wrap text-xs text-zinc-500">
+                          <span className="inline-flex items-center gap-1.5"><Calendar size={13} className="text-brand-cyan"/> {fechaHora(asi.AsiFecha)}</span>
+                          {asi.AsiOrigen && <span className={`${CHIP} bg-zinc-50 text-zinc-500 border-zinc-200`}>{asi.AsiOrigen}</span>}
                           {asi.TcaIdTransaccion && (
                             <button
                               onClick={e => { e.stopPropagation(); handleViewOP(asi.TcaIdTransaccion); }}
-                              className="bg-indigo-50 text-indigo-600 hover:bg-indigo-600 hover:text-white px-2.5 py-0.5 rounded-lg border border-indigo-200 transition-all font-black"
+                              className={`${CHIP} bg-brand-cyan/10 text-brand-cyan border-brand-cyan/20 hover:bg-brand-cyan hover:text-white transition-colors`}
                             >
-                              VER OP #{asi.TcaIdTransaccion}
+                              Ver OP #{asi.TcaIdTransaccion}
                             </button>
                           )}
                         </div>
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-6">
-                      <div className="text-right hidden sm:block">
-                        <p className="text-[10px] font-black uppercase text-slate-400 mb-0.5 tracking-widest">Debe / Haber (UYU)</p>
-                        <p className={`font-black font-mono text-base ${cuadra ? 'text-emerald-600' : 'text-rose-600'}`}>
-                          $ {fmt(totalDebe)} / $ {fmt(totalHaber)}
-                          {!cuadra && <span className="ml-2 text-rose-500 font-sans tracking-normal">⚠ DESCUADRE</span>}
+                    <div className="flex items-center gap-3 ml-auto">
+                      <div className="text-right">
+                        <p className={ROTULO}>Debe / Haber ($)</p>
+                        <p className={`font-bold font-mono text-sm sm:text-base tabular-nums ${cuadra ? 'text-zinc-900' : 'text-brand-magenta'}`}>
+                          <span className="whitespace-nowrap">$ {fmt(totalDebe)}</span> / <span className="whitespace-nowrap">$ {fmt(totalHaber)}</span>
                         </p>
+                        {!cuadra && (
+                          <span className={`${CHIP} mt-1 bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20`}>
+                            <AlertTriangle size={11}/> Descuadre
+                          </span>
+                        )}
                       </div>
-                      <div className={`p-2 rounded-xl transition-colors ${isOpen ? 'bg-amber-100 text-amber-600' : 'bg-slate-100 text-slate-400'}`}>
-                        {isOpen ? <ChevronUp size={20}/> : <ChevronDown size={20}/>}
+                      <div className={`p-1.5 rounded-lg transition-colors ${isOpen ? 'bg-brand-cyan/10 text-brand-cyan' : 'bg-zinc-100 text-zinc-400'}`}>
+                        {isOpen ? <ChevronUp size={18}/> : <ChevronDown size={18}/>}
                       </div>
                     </div>
                   </div>
 
                   {/* DETALLE — sólo visible cuando está expandido */}
                   {isOpen && !lineas && (
-                    <div className="border-t border-slate-100 bg-slate-50/50 px-8 py-8 flex items-center justify-center gap-3">
-                      {cargandoLineas === asi.AsiId && <Loader2 className="animate-spin text-amber-500" size={20}/>}
-                      <span className="font-black text-slate-400 uppercase tracking-widest text-[11px]">
+                    <div className="border-t border-zinc-100 bg-zinc-50/60 px-5 py-6 flex items-center justify-center gap-2.5">
+                      {cargandoLineas === asi.AsiId && <Loader2 className="animate-spin text-brand-cyan" size={18}/>}
+                      <span className="text-sm text-zinc-400">
                         {cargandoLineas === asi.AsiId ? 'Cargando el detalle del asiento...' : 'No se pudo traer el detalle de este asiento'}
                       </span>
                     </div>
                   )}
 
                   {isOpen && lineas && (
-                    <div className="border-t border-slate-100 bg-slate-50/50 px-8 pb-6 pt-5">
-                      <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-8 gap-y-3 text-sm">
-                        <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2">Cuenta Contable</div>
-                        <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2 text-right">Monto Original</div>
-                        <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2 text-right w-36">Debe (UYU)</div>
-                        <div className="font-black text-[10px] tracking-widest uppercase text-slate-400 mb-2 border-b border-slate-200 pb-2 text-right w-36">Haber (UYU)</div>
+                    <div className="border-t border-zinc-100 bg-zinc-50/60 px-4 sm:px-5 pb-4 pt-3 overflow-x-auto">
+                      <div className="grid grid-cols-[1fr_auto_auto_auto] gap-x-6 gap-y-2 text-sm min-w-[560px]">
+                        <div className={`${ROTULO} border-b border-zinc-200 pb-2`}>Cuenta contable</div>
+                        <div className={`${ROTULO} border-b border-zinc-200 pb-2 text-right`}>Monto original</div>
+                        <div className={`${ROTULO} border-b border-zinc-200 pb-2 text-right w-32`}>Debe ($)</div>
+                        <div className={`${ROTULO} border-b border-zinc-200 pb-2 text-right w-32`}>Haber ($)</div>
 
                         {lineas.map((l, i) => (
                           <React.Fragment key={i}>
-                            <div className="flex items-center gap-3 py-1">
-                              <span className="text-indigo-700 font-black font-mono text-xs bg-indigo-100 border border-indigo-200 px-2 py-0.5 rounded-lg shadow-sm">{l.CueCodigo}</span>
-                              <span className="font-bold text-slate-700">{l.CueNombre}</span>
+                            <div className="flex items-center gap-2.5 py-0.5 min-w-0">
+                              <span className="shrink-0 font-mono text-[11px] font-bold text-zinc-600 bg-white border border-zinc-200 px-1.5 py-0.5 rounded-md">{l.CueCodigo}</span>
+                              <span className="font-semibold text-zinc-800 truncate">{l.CueNombre}</span>
                             </div>
-                            <div className="text-right text-slate-500 font-mono text-sm py-1 flex justify-end font-bold items-center">
+                            <div className="text-right text-zinc-500 font-mono text-sm py-0.5 flex justify-end items-center tabular-nums">
                               {l.MonedaId === 2
-                                ? <span className="text-emerald-600 bg-emerald-50 px-2 rounded-md">USD {fmt(l.ImporteOriginal)}</span>
+                                ? <span className="text-brand-cyan bg-brand-cyan/10 px-1.5 rounded-md font-bold">US$ {fmt(l.ImporteOriginal)}</span>
                                 : <span>$ {fmt(l.ImporteOriginal)}</span>
                               }
                             </div>
-                            <div className={`text-right font-black font-mono text-base py-1 ${l.DebeUYU > 0 ? 'text-slate-800' : 'text-slate-300'}`}>
+                            <div className={`text-right font-bold font-mono py-0.5 tabular-nums ${l.DebeUYU > 0 ? 'text-zinc-900' : 'text-zinc-300'}`}>
                               {l.DebeUYU > 0 ? `$ ${fmt(l.DebeUYU)}` : '-'}
                             </div>
-                            <div className={`text-right font-black font-mono text-base py-1 ${l.HaberUYU > 0 ? 'text-slate-800' : 'text-slate-300'}`}>
+                            <div className={`text-right font-bold font-mono py-0.5 tabular-nums ${l.HaberUYU > 0 ? 'text-zinc-900' : 'text-zinc-300'}`}>
                               {l.HaberUYU > 0 ? `$ ${fmt(l.HaberUYU)}` : '-'}
                             </div>
                           </React.Fragment>
                         ))}
 
                         {/* TOTALES */}
-                        <div className="col-span-2 text-right pt-4 mt-2 border-t-2 border-slate-200 font-black text-slate-500 uppercase tracking-widest text-[10px] pb-1">Total Cuadre UYU:</div>
-                        <div className="text-right pt-4 mt-2 border-t-2 border-slate-200 font-black text-emerald-600 font-mono text-lg pb-1">$ {fmt(totalDebe)}</div>
-                        <div className="text-right pt-4 mt-2 border-t-2 border-slate-200 font-black text-emerald-600 font-mono text-lg pb-1">$ {fmt(totalHaber)}</div>
+                        <div className={`${ROTULO} col-span-2 text-right pt-3 mt-1 border-t border-zinc-300`}>Total del asiento ($)</div>
+                        <div className={`text-right pt-3 mt-1 border-t border-zinc-300 font-black font-mono tabular-nums ${cuadra ? 'text-zinc-900' : 'text-brand-magenta'}`}>$ {fmt(totalDebe)}</div>
+                        <div className={`text-right pt-3 mt-1 border-t border-zinc-300 font-black font-mono tabular-nums ${cuadra ? 'text-zinc-900' : 'text-brand-magenta'}`}>$ {fmt(totalHaber)}</div>
                       </div>
                     </div>
                   )}
@@ -345,83 +361,90 @@ export default function LibroMayorView() {
               <button
                 onClick={() => cargarPagina(aplicado, pagina + 1)}
                 disabled={cargandoMas}
-                className="self-center mt-2 mb-4 flex items-center gap-3 px-10 py-4 rounded-2xl bg-white border-2 border-slate-200 hover:border-amber-400 text-slate-700 text-sm font-black uppercase tracking-widest shadow-sm hover:shadow-lg transition-all disabled:opacity-50"
+                className={`${BTN_SECUNDARIO} self-center mt-1 mb-2 px-5`}
               >
                 {cargandoMas
-                  ? <><Loader2 className="animate-spin text-amber-500" size={18}/> Cargando...</>
-                  : <>Cargar {Math.min(PAGE_SIZE, total - asientos.length)} asientos más (quedan {total - asientos.length})</>}
+                  ? <><Loader2 className="animate-spin text-brand-cyan" size={15}/> Cargando...</>
+                  : <>Cargar {Math.min(PAGE_SIZE, total - asientos.length)} asientos más (quedan {(total - asientos.length).toLocaleString('es-UY')})</>}
               </button>
             ) : (
-              <p className="self-center mt-2 mb-4 font-black text-slate-400 uppercase tracking-widest text-[10px]">
-                Fin del listado · {total} asientos
+              <p className={`${ROTULO} self-center mt-1 mb-2`}>
+                Fin del listado · {total.toLocaleString('es-UY')} asientos
               </p>
             )}
           </div>
         )}
-      </div>
 
       {/* Modal OP */}
       {selectedOP && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60  p-4 animate-in fade-in" onClick={e => e.target === e.currentTarget && setSelectedOP(null)}>
-          <div className="bg-white border border-slate-200 rounded-[2.5rem] w-full max-w-3xl max-h-[90vh] flex flex-col shadow-2xl overflow-hidden animate-in zoom-in-95">
-            <div className="px-8 py-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-              <h2 className="text-xl font-black text-slate-800 flex items-center gap-3 tracking-tight"><BookOpen size={24} className="text-indigo-600"/> Transacción de Caja <span className="text-indigo-600">#{selectedOP.TcaIdTransaccion}</span></h2>
-              <button onClick={() => setSelectedOP(null)} className="text-slate-400 hover:text-rose-600 bg-white hover:bg-rose-50 p-2 border border-slate-200 shadow-sm rounded-xl transition-all"><X size={20}/></button>
+        <div className="fixed inset-0 z-[6000] flex items-center justify-center bg-black/40 p-4" onClick={e => e.target === e.currentTarget && setSelectedOP(null)}>
+          <div className="bg-white border border-zinc-200 rounded-2xl w-full max-w-3xl max-h-[90vh] flex flex-col shadow-xl overflow-hidden">
+            <div className="px-5 sm:px-6 py-4 border-b border-zinc-100 flex justify-between items-center gap-3">
+              <h2 className="text-lg font-black text-zinc-900 flex items-center gap-2.5 min-w-0">
+                <BookOpen size={22} className="text-brand-cyan shrink-0"/>
+                <span className="truncate">Transacción de caja <span className="font-mono text-brand-cyan">#{selectedOP.TcaIdTransaccion}</span></span>
+              </h2>
+              <button onClick={() => setSelectedOP(null)} title="Cerrar" aria-label="Cerrar" className="p-1.5 rounded-lg text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700 transition-colors"><X size={20}/></button>
             </div>
-            <div className="flex-1 overflow-auto p-10 flex flex-col gap-10">
-              <div className="flex justify-between items-end border-b-2 border-slate-100 pb-6">
-                <div>
-                  <h3 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">Cliente Vinculado</h3>
-                  <p className="text-2xl font-black text-slate-800 tracking-tight">{selectedOP.NombreCliente}</p>
-                  <p className="text-xs font-bold text-slate-500 mt-2 uppercase tracking-widest flex items-center gap-1.5"><Calendar size={14}/> {new Date(selectedOP.TcaFecha).toLocaleString('es-UY')}</p>
+            <div className="flex-1 overflow-auto p-5 sm:p-6 flex flex-col gap-6">
+              <div className="flex flex-wrap justify-between items-end gap-4 pb-5 border-b border-zinc-100">
+                <div className="min-w-0">
+                  <h3 className={`${ROTULO} mb-1`}>Cliente vinculado</h3>
+                  <p className="text-xl font-black text-zinc-900">{selectedOP.NombreCliente}</p>
+                  <p className="text-xs text-zinc-500 mt-1.5 flex items-center gap-1.5"><Calendar size={13} className="text-brand-cyan"/> {new Date(selectedOP.TcaFecha).toLocaleString('es-UY', { hourCycle: 'h23' })}</p>
                 </div>
                 <div className="text-right">
-                  <h3 className="text-[10px] font-black text-emerald-600 uppercase tracking-widest mb-1">Total Cobrado (Base UYU)</h3>
-                  <p className="text-4xl font-black text-emerald-600 font-mono tracking-tighter">${fmt(selectedOP.TcaTotalCobrado)}</p>
+                  <h3 className={`${ROTULO} mb-1`}>Total cobrado ($)</h3>
+                  <p className="text-3xl font-black text-zinc-900 font-mono tabular-nums">$ {fmt(selectedOP.TcaTotalCobrado)}</p>
                 </div>
               </div>
 
               {selectedOP.detalle?.length > 0 && (
                 <div>
-                  <h4 className="text-[10px] font-black text-slate-400 mb-4 tracking-widest uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-slate-300"></div> Comprobantes Aplicados</h4>
-                  <div className="bg-white border rounded-[1.5rem] shadow-sm border-slate-200 overflow-hidden">
-                    <table className="w-full text-sm text-slate-700">
-                      <thead className="bg-slate-50 text-[10px] uppercase font-black text-slate-400 tracking-widest border-b border-slate-200">
-                        <tr><th className="px-5 py-4 text-left">Referencia</th><th className="px-5 py-4 text-left">Ref ID</th><th className="px-5 py-4 text-right">Monto Original</th><th className="px-5 py-4 text-right">Ajuste</th><th className="px-5 py-4 text-right">Final</th></tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {selectedOP.detalle.map((d, i) => (
-                          <tr key={i} className="hover:bg-slate-50 transition-colors">
-                            <td className="px-5 py-4 font-bold">{d.TdeCodigoReferencia || '-'}</td>
-                            <td className="px-5 py-4 font-mono font-bold text-slate-500">{d.TdeReferenciaId}</td>
-                            <td className="px-5 py-4 text-right"><span className="font-black font-mono text-slate-400">${fmt(d.TdeImporteOriginal)}</span></td>
-                            <td className="px-5 py-4 text-right font-black font-mono text-amber-500">{d.TdeAjuste !== 0 ? `$${fmt(d.TdeAjuste)}` : '-'}</td>
-                            <td className="px-5 py-4 text-right font-black font-mono text-slate-800 text-lg">${fmt(d.TdeImporteFinal)}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                  <h4 className={`${ROTULO} mb-2`}>Comprobantes aplicados</h4>
+                  <div className="border border-zinc-200 rounded-xl overflow-hidden">
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm text-zinc-700">
+                        <thead className="bg-zinc-50 border-b border-zinc-200">
+                          <tr><th className={`${TH} text-left`}>Referencia</th><th className={`${TH} text-left`}>Ref ID</th><th className={`${TH} text-right`}>Monto original</th><th className={`${TH} text-right`}>Ajuste</th><th className={`${TH} text-right`}>Final</th></tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100">
+                          {selectedOP.detalle.map((d, i) => {
+                            // Los importes del comprobante van en la moneda de la orden (antes siempre «$»,
+                            // aunque fuera en dólares: la OP 22563 mostraba «$ 63,58» por US$ 63,58)
+                            const s = simbolo(d.RefMonedaSimbolo);
+                            return (
+                            <tr key={i} className="hover:bg-zinc-50 transition-colors">
+                              <td className="px-4 py-3 font-semibold text-zinc-800">{d.TdeCodigoReferencia || '-'}</td>
+                              <td className="px-4 py-3 font-mono text-zinc-500">{d.TdeReferenciaId}</td>
+                              <td className="px-4 py-3 text-right font-mono text-zinc-400 tabular-nums whitespace-nowrap">{s} {fmt(d.TdeImporteOriginal)}</td>
+                              <td className="px-4 py-3 text-right font-mono font-bold text-amber-600 tabular-nums whitespace-nowrap">{d.TdeAjuste !== 0 ? `${s} ${fmt(d.TdeAjuste)}` : '-'}</td>
+                              <td className="px-4 py-3 text-right font-mono font-black text-zinc-900 tabular-nums whitespace-nowrap">{s} {fmt(d.TdeImporteFinal)}</td>
+                            </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
               )}
 
               {selectedOP.pagos?.length > 0 && (
                 <div>
-                  <h4 className="text-[10px] font-black text-slate-400 mb-4 tracking-widest uppercase flex items-center gap-2"><div className="w-2 h-2 rounded-full bg-slate-300"></div> Métodos de Pago</h4>
-                  <div className="flex flex-col gap-3">
+                  <h4 className={`${ROTULO} mb-2`}>Métodos de pago</h4>
+                  <div className="flex flex-col gap-2">
                     {selectedOP.pagos.map((p, i) => (
-                      <div key={i} className="flex justify-between items-center bg-white border border-slate-200 shadow-sm hover:shadow-md transition-shadow rounded-2xl p-4 px-6">
-                        <div className="flex items-center gap-4">
-                          <div className="bg-indigo-50 p-2 rounded-xl border border-indigo-100 text-indigo-600">
-                              <DollarSign size={20}/>
-                          </div>
-                          <span className="font-black text-slate-800">{p.MPaDescripcionMetodo}</span>
+                      <div key={i} className="flex flex-wrap justify-between items-center gap-3 border border-zinc-200 rounded-xl px-4 py-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <DollarSign size={18} className="text-brand-cyan shrink-0"/>
+                          <span className="font-bold text-zinc-800">{p.MPaDescripcionMetodo}</span>
                         </div>
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-3 ml-auto">
                           {p.PagCotizacion && p.PagCotizacion !== 1 && (
-                            <span className="text-xs text-slate-400 font-black uppercase tracking-widest border border-slate-200 px-2 py-0.5 rounded-lg bg-slate-50">TC: x{fmt(p.PagCotizacion)}</span>
+                            <span className={`${CHIP} bg-zinc-50 text-zinc-500 border-zinc-200`}>TC x{fmt(p.PagCotizacion)}</span>
                           )}
-                          <span className="font-black text-emerald-600 font-mono text-2xl tracking-tighter">{p.MonSimbolo || '$'} {fmt(p.PagMontoPago)}</span>
+                          <span className="font-black text-zinc-900 font-mono text-lg tabular-nums">{simbolo(p.MonSimbolo)} {fmt(p.PagMontoPago)}</span>
                         </div>
                       </div>
                     ))}
