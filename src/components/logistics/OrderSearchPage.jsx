@@ -89,7 +89,8 @@ const OrderSearchPage = () => {
         obsOrdenes.current.observe(nodo);
     }, []);
     const conTabla = useConTabla();
-    const [vista, setVista] = useState(() => { try { return localStorage.getItem('buscarOrdenes.vista') || 'tarjetas'; } catch (_) { return 'tarjetas'; } });
+    // Por defecto, filas (28/10, pedido de Santiago); si el navegador ya eligió una, queda esa.
+    const [vista, setVista] = useState(() => { try { return localStorage.getItem('buscarOrdenes.vista') || 'filas'; } catch (_) { return 'filas'; } });
     const cambiarVista = (v) => { setVista(v); try { localStorage.setItem('buscarOrdenes.vista', v); } catch (_) { /* nada */ } };
     const enFilas = conTabla && vista === 'filas';
     const [selectedOrders, setSelectedOrders] = useState(new Set());
