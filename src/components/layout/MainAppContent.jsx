@@ -106,6 +106,7 @@ const ClienteVista360            = lazyWithRetry(() => import('../pages/ClienteV
 const VendedorCliente360         = lazyWithRetry(() => import('../pages/VendedorCliente360'));
 const VendedorVentasMensuales    = lazyWithRetry(() => import('../pages/VendedorVentasMensuales'));
 const PreciosPorCantidad         = lazyWithRetry(() => import('../pages/PreciosPorCantidad'));
+const ListaPreciosDinamica       = lazyWithRetry(() => import('../pages/ListaPreciosDinamica'));
 const VentasSalonPage            = lazyWithRetry(() => import('../pages/ventas/VentasSalonPage'));
 const VentasSalonComisiones      = lazyWithRetry(() => import('../pages/ventas/VentasSalonComisiones'));
 const VentasDashboard            = lazyWithRetry(() => import('../pages/ventas/VentasDashboard'));
@@ -1188,6 +1189,8 @@ const DynamicRouter = ({ menuItems }) => {
     if (menuItem.Ruta === '/vendedores/ventas')                 return <VendedorVentasMensuales />;
     // 19/10/2026: solo por menú (sin <Route> fija), así cada rol entra solo si tiene la entrada
     if (menuItem.Ruta === '/vendedores/precios-cantidad')       return <PreciosPorCantidad />;
+    // 29/10/2026: Lista de precios dinámica, solo por menú (backend/scripts/lista_precios_dinamica.sql)
+    if (menuItem.Ruta === '/admin/lista-precios-dinamica')      return <ListaPreciosDinamica />;
     if (menuItem.Ruta === '/vendedores/salon')                  return <VentasSalonPage />;
     if (menuItem.Ruta === '/vendedores/salon-comisiones')       return <VentasSalonComisiones />;
     // 23/10/2026: Dashboard de ventas, también solo por menú (backend/scripts/menu_dashboard_ventas.sql)

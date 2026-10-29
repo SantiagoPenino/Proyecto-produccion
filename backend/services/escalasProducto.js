@@ -17,6 +17,9 @@
 // un precio fijo solo gana si es más bajo que la lista (y mayor que 0); el descuento es % sobre la lista.
 // ─────────────────────────────────────────────────────────────────────────────
 const { sql } = require('../config/db');
+// Historial de perfiles (ver services/historialPrecios.js): las escalas viven en el perfil PRODUCTOS ESCALONADOS.
+// Quién lo hizo no llega hasta acá (las llama el configurador sin el usuario): queda la fecha y el producto.
+const { leerPerfil, registrarCambioPerfil } = require('./historialPrecios');
 
 const TIPOS = ['fixed_price', 'percentage_discount'];
 const FALTA_SQL = 'Para guardar escalas falta correr backend/scripts/configurador_precios_escalonados.sql en esta base (crea el perfil «PRODUCTOS ESCALONADOS»).';
@@ -80,6 +83,7 @@ async function guardar(cx, proId, codArticulo, { tipo, filas }, moneda) {
         if (filas.length) throw fallo(409, FALTA_SQL);
         return;
     }
+    const antes = await leerPerfil(cx, perfil, proId);
     await req(cx).input('Perfil', sql.Int, perfil).input('P', sql.Int, proId)
         .query('DELETE FROM dbo.PerfilesItems WHERE PerfilID = @Perfil AND ProIdProducto = @P');
     const monId = String(moneda || 'UYU').trim().toUpperCase() === 'USD' ? 2 : 1;
@@ -90,12 +94,14 @@ async function guardar(cx, proId, codArticulo, { tipo, filas }, moneda) {
             .query(`INSERT INTO dbo.PerfilesItems (PerfilID, ProIdProducto, CodArticulo, CodGrupo, TipoRegla, Valor, MonIdMoneda, Moneda, CantidadMinima)
                     VALUES (@Perfil, @P, @Cod, NULL, @Tipo, @Valor, @Mon, @MonTxt, @Desde)`);
     }
+    await registrarCambioPerfil(cx, { perfilId: perfil, origen: 'ESCALAS', user: null, antes, proId });
 }
 
 // Las escalas de un producto pasan a otro (variante nueva, copia o «copiar de nuevo del padre»): reemplaza las suyas.
 async function copiar(cx, deProId, aProId, aCodArticulo) {
     const perfil = await perfilId(cx);
     if (!perfil) return 0;
+    const antes = await leerPerfil(cx, perfil, aProId);
     await req(cx).input('Perfil', sql.Int, perfil).input('A', sql.Int, aProId)
         .query('DELETE FROM dbo.PerfilesItems WHERE PerfilID = @Perfil AND ProIdProducto = @A');
     const r = await req(cx).input('Perfil', sql.Int, perfil).input('De', sql.Int, deProId).input('A', sql.Int, aProId)
@@ -104,6 +110,7 @@ async function copiar(cx, deProId, aProId, aCodArticulo) {
             SELECT PerfilID, @A, @Cod, CodGrupo, TipoRegla, Valor, MonIdMoneda, Moneda, CantidadMinima
             FROM dbo.PerfilesItems WHERE PerfilID = @Perfil AND ProIdProducto = @De
             ORDER BY CantidadMinima`);
+    await registrarCambioPerfil(cx, { perfilId: perfil, origen: 'ESCALAS', user: null, antes, proId: aProId });
     return r.rowsAffected[0] || 0;
 }
 

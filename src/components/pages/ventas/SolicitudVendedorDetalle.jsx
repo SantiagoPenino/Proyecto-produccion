@@ -629,7 +629,7 @@ export function ProductoTab({ s, p, n, id, user, perfil, busy, abierta, puedeVen
                     <div className="min-w-0">
                         <h2 className="truncate text-sm font-black text-slate-800">Producto {n}: {p.TipoFabricacion === 'PRODUCTO_TERMINADO' ? (p.ProductoNombre || `Producto ${p.ProIdProducto}`) : 'Producto personalizado del cliente'}</h2>
                         {p.Catalogo && (p.Catalogo.codigo || p.Catalogo.familia) ? <p className="text-[11px] text-slate-400">{[p.Catalogo.codigo, p.Catalogo.familia].filter(Boolean).join(' · ')}</p> : null}
-                        <p className="text-xs text-slate-600">{onCantidad && !editor ? <CantidadAuto p={p} onGuardar={onCantidad} /> : <><b>{p.Cantidad}</b> prendas</>}{p.Catalogo?.precio != null ? <> · {p.Catalogo.moneda === 'USD' ? 'US$' : '$'} {Number(p.Catalogo.precio).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u <span className="text-slate-400">(catálogo{p.Catalogo.escalaDesde ? `, precio desde ${p.Catalogo.escalaDesde}; lista ${p.Catalogo.moneda === 'USD' ? 'US$' : '$'} ${Number(p.Catalogo.lista).toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : ''})</span></> : null}</p>
+                        <p className="text-xs text-slate-600">{onCantidad && !editor ? <CantidadAuto p={p} onGuardar={onCantidad} /> : <><b>{p.Cantidad}</b> prendas</>}{p.Catalogo?.precio != null ? <> · {p.Catalogo.moneda === 'USD' ? 'US$' : '$'} {Number(p.Catalogo.precio).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u <span className="text-slate-400">(catálogo{p.Catalogo.escalaDesde ? `, precio desde ${p.Catalogo.escalaDesde}; lista ${p.Catalogo.moneda === 'USD' ? 'US$' : '$'} ${Number(p.Catalogo.lista).toLocaleString('es-UY', { maximumFractionDigits: 2 })}` : ''})</span></> : null}{p.Catalogo?.dinamica ? <> · <span title={p.Catalogo.dinamica.detalle}>{p.Catalogo.dinamica.moneda === 'USD' ? 'US$' : '$'} {Number(p.Catalogo.dinamica.precio).toLocaleString('es-UY', { maximumFractionDigits: 2 })} c/u</span> <span className="text-slate-400">(lista dinámica, {p.Catalogo.dinamica.tela})</span></> : null}</p>
                     </div>
                 </div>
                 <span className="flex items-center gap-2">
@@ -2181,6 +2181,13 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
     const pactado = Number(f.PrecioPactado) || 0;
     const mismaMoneda = conCatalogo && Number(f.MonIdMoneda) === monedaCat;
     const dif = mismaMoneda && (pactado > 0 || esCero(f)) ? r2(totalCat - pactado) : null;   // > 0 descuento · < 0 recargo
+    // [LISTA DINÁMICA 29/10] El otro precio de referencia: tela × consumo + corte y costura + margen (Lista de precios
+    // dinámica), al lado del de catálogo. Se puede usar como pactado igual que el de catálogo.
+    const monDin = (p) => ((p.Catalogo?.dinamica?.moneda || '').toUpperCase() === 'USD' ? 2 : 1);
+    const algunaDin = prods.some(p => Number(p.Catalogo?.dinamica?.precio) > 0);
+    const conDinamica = prods.length > 0 && prods.every(p => Number(p.Catalogo?.dinamica?.precio) > 0) && new Set(prods.map(monDin)).size === 1;
+    const monedaDin = conDinamica ? monDin(prods[0]) : null;
+    const totalDin = conDinamica ? r2(prods.reduce((t, p) => t + Number(p.Catalogo.dinamica.precio) * Number(p.Cantidad), 0)) : null;
     const unico = prods.length === 1 ? prods[0] : null;
     const porPrendaDe = (x) => (unico && Number(x) > 0 ? String(r2(Number(x) / Number(unico.Cantidad))) : '');
     const [porPrenda, setPorPrenda] = useState(() => porPrendaDe(f.PrecioPactado));
@@ -2190,93 +2197,142 @@ function PrecioSena({ s, puede, busy, hacer, autoGuardar }) {
         if (Number(porPrenda) > 0) guardar({ PrecioPactado: String(r2(Number(porPrenda) * Number(unico.Cantidad))) });
     };
 
+    // [CÓMO SE COBRA 29/10] Una grilla con las cuatro formas y una sola elegida (pedido de la usuaria): por área, precio de
+    // catálogo, lista dinámica o un precio pactado a mano, cada una con su cantidad, precio por prenda y total. Catálogo y
+    // dinámica son un precio establecido con ESE total (se guarda el número, como hacía «Usar el precio de catálogo»);
+    // cuál está elegida se deduce del precio guardado. «Pactado» es el que se escribe (también el sin cargo).
+    const [elegida, setElegida] = useState(null);   // 'PACTADO' al tocarlo: queda en pactado aunque el número coincida
+    const cantTotal = prods.reduce((t, p) => t + Number(p.Cantidad), 0);
+    const opcion = !f.ModoCobro ? null : f.ModoCobro === 'POR_AREA' ? 'AREA'
+        : elegida === 'PACTADO' ? 'PACTADO'
+        : conCatalogo && Number(f.MonIdMoneda) === monedaCat && pactado === totalCat ? 'CATALOGO'
+        : conDinamica && Number(f.MonIdMoneda) === monedaDin && pactado === totalDin ? 'DINAMICA' : 'PACTADO';
+    const elegir = (op) => {
+        if (!puede || busy || op === opcion) return;
+        setElegida(op === 'PACTADO' ? 'PACTADO' : null);
+        if (op === 'AREA') guardar({ ModoCobro: 'POR_AREA' });
+        else if (op === 'CATALOGO') guardar({ ModoCobro: 'PRECIO_ESTABLECIDO', PrecioPactado: String(totalCat), MonIdMoneda: monedaCat });
+        else if (op === 'DINAMICA') guardar({ ModoCobro: 'PRECIO_ESTABLECIDO', PrecioPactado: String(totalDin), MonIdMoneda: monedaDin });
+        else guardar({ ModoCobro: 'PRECIO_ESTABLECIDO' });
+    };
+    const fila = (op, disponible) => ({
+        className: `border-t border-slate-100 ${opcion === op ? 'bg-brand-cyan/5' : ''} ${puede && disponible && opcion !== op ? 'cursor-pointer hover:bg-slate-50' : ''}`,
+        onClick: () => { if (disponible) elegir(op); },
+    });
+    const marca = (op, disponible, nombre) => (
+        <td className="px-2 py-2 text-center align-top">
+            <input type="radio" name={`cobro-${s.SolicitudID}`} checked={opcion === op} disabled={!puede || busy || !disponible}
+                onChange={() => elegir(op)} onClick={e => e.stopPropagation()}   // el clic en la fila ya elige: sin esto se guardaba dos veces
+                className="mt-0.5 w-4 h-4 accent-brand-cyan" aria-label={nombre} />
+        </td>
+    );
+    const titulo = (nombre, detalle) => (
+        <td className="px-2 py-2 align-top"><b className="text-slate-800">{nombre}</b>{detalle ? <span className="block text-[11px] text-slate-400">{detalle}</span> : null}</td>
+    );
+    const celdaCant = <td className="px-2 py-2 text-right align-top tabular-nums whitespace-nowrap">{cantTotal} prendas{prods.length > 1 ? <span className="block text-[10px] text-slate-400">{prods.map(p => p.Cantidad).join(' + ')}</span> : null}</td>;
+    // Precio por prenda de cada producto (con su nombre si son varios)
+    const porProducto = (precioDe, monDe, extra) => prods.map((p, i) => (
+        <span key={p.ProductoSolID} className="block" title={extra ? extra(p) : undefined}>
+            {prods.length > 1 ? <span className="text-slate-400">{p.ProductoNombre || `Producto ${i + 1}`}: </span> : null}{plata(precioDe(p), monDe(p))}
+        </span>
+    ));
+    const totalDe = (op) => (op === 'CATALOGO' ? plata(totalCat, monedaCat) : plata(totalDin, monedaDin));
+    const grillaCobro = (
+        <div className="space-y-2">
+            <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                <table className="w-full text-xs">
+                    <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wide text-slate-500">
+                        <tr><th className="w-8" /><th className="px-2 py-1.5 text-left">Cómo se cobra</th><th className="px-2 py-1.5 text-right">Cantidad</th><th className="px-2 py-1.5 text-right">Precio por prenda</th><th className="px-2 py-1.5 text-right">Total</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr {...fila('AREA', true)}>
+                            {marca('AREA', true, 'Por área')}
+                            {titulo('Por área', 'Cada área factura lo suyo con su lista (sublimación, corte, costura…)')}
+                            {celdaCant}
+                            <td className="px-2 py-2 text-right align-top text-slate-400">según cada área</td>
+                            <td className="px-2 py-2 text-right align-top text-slate-400">sale en el pedido</td>
+                        </tr>
+                        <tr {...fila('CATALOGO', conCatalogo)}>
+                            {marca('CATALOGO', conCatalogo, 'Precio de catálogo')}
+                            {titulo('Precio de catálogo', conCatalogo ? 'El precio de lista del producto, con sus escalas por cantidad' : 'Algún producto no tiene precio de catálogo (o están en monedas distintas)')}
+                            {celdaCant}
+                            <td className="px-2 py-2 text-right align-top tabular-nums">
+                                {conCatalogo ? porProducto(p => p.Catalogo.precio, monCat, p => (p.Catalogo.escalaDesde ? `Precio desde ${p.Catalogo.escalaDesde} (lista ${plata(p.Catalogo.lista, monCat(p))})` : undefined)) : '—'}
+                            </td>
+                            <td className="px-2 py-2 text-right align-top tabular-nums font-black text-slate-800">{conCatalogo ? totalDe('CATALOGO') : '—'}</td>
+                        </tr>
+                        <tr {...fila('DINAMICA', conDinamica)}>
+                            {marca('DINAMICA', conDinamica, 'Lista dinámica')}
+                            {titulo('Lista dinámica', conDinamica
+                                ? `Tela × consumo + corte y costura + margen${unico ? ` · ${unico.Catalogo.dinamica.tela}` : ''}`
+                                : algunaDin ? 'No todos los productos tienen consumo cargado (o están en monedas distintas)' : 'El producto no tiene consumo de tela cargado')}
+                            {celdaCant}
+                            <td className="px-2 py-2 text-right align-top tabular-nums">{conDinamica ? porProducto(p => p.Catalogo.dinamica.precio, monDin, p => p.Catalogo.dinamica.detalle) : '—'}</td>
+                            <td className="px-2 py-2 text-right align-top tabular-nums font-black text-slate-800">{conDinamica ? totalDe('DINAMICA') : '—'}</td>
+                        </tr>
+                        <tr {...fila('PACTADO', true)}>
+                            {marca('PACTADO', true, 'Precio pactado')}
+                            {titulo('Precio pactado', opcion === 'PACTADO' && dif != null && dif !== 0
+                                ? (dif > 0 ? `${r2(dif / totalCat * 100)} % menos que el de catálogo` : `${r2(-dif / totalCat * 100)} % más que el de catálogo`)
+                                : 'Un precio escrito a mano, todo incluido. 0 = sin cargo')}
+                            {celdaCant}
+                            <td className="px-2 py-2 text-right align-top tabular-nums">
+                                {opcion === 'PACTADO' && puede && unico
+                                    ? <input type="number" min="0" step="0.01" value={porPrenda} onChange={e => setPorPrenda(e.target.value)} onBlur={guardarPorPrenda} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                        className={`${INPUT} w-28 text-right`} aria-label={`Precio por prenda (${unico.Cantidad} prendas)`} />
+                                    : opcion === 'PACTADO' && unico && pactado > 0 ? plata(r2(pactado / Number(unico.Cantidad)), f.MonIdMoneda) : '—'}
+                            </td>
+                            <td className="px-2 py-2 text-right align-top tabular-nums">
+                                {opcion === 'PACTADO' && puede ? (
+                                    <span className="inline-flex items-center gap-1">
+                                        <Selector value={String(f.MonIdMoneda)} onChange={e => guardar({ MonIdMoneda: Number(e.target.value) })} claseBoton={claseSel('border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold')} aria-label="Moneda del precio pactado">
+                                            {Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                                        </Selector>
+                                        <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                                            className={`${INPUT} w-32 text-right`} aria-label="Precio de la solicitud entera" title="Para un trabajo sin cargo, poné 0 y escribí el motivo" />
+                                    </span>
+                                ) : opcion === 'PACTADO' ? (esCero(f) ? <b>Sin cargo</b> : <b>{plata(f.PrecioPactado, f.MonIdMoneda)}</b>) : '—'}
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+            {!f.ModoCobro && <p className="text-[11px] font-bold text-rose-600">Sin pactar: elegí cómo se cobra.</p>}
+            {opcion === 'PACTADO' && esCero(f) && (puede ? (
+                <Campo label="Motivo del sin cargo (obligatorio)">
+                    <input value={f.MotivoSinCargo} maxLength={300} placeholder="Ej.: canje con el club, garantía, regalo de la casa"
+                        onChange={e => setF(x => ({ ...x, MotivoSinCargo: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                        className={`${INPUT} min-w-[280px]`} />
+                </Campo>
+            ) : s.MotivoSinCargo ? <p className="text-xs text-slate-600">Motivo del sin cargo: {s.MotivoSinCargo}</p> : null)}
+        </div>
+    );
+
     return (
         <section className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3">
             <h2 className="text-[10px] font-black uppercase tracking-wide text-slate-500">Precio pactado y seña</h2>
 
+            {grillaCobro}
+
             {!puede ? (
                 <div className="grid grid-cols-2 gap-3 text-xs">
-                    <Info l="Cómo se cobra" v={!s.ModoCobro ? <span className="text-rose-600 font-bold">Sin pactar</span> : s.ModoCobro === 'POR_AREA' ? 'Se factura por cada área' : 'Precio establecido (todo incluido)'} />
-                    <Info l="Precio de la solicitud" v={s.ModoCobro !== 'PRECIO_ESTABLECIDO' ? '—' : esCero(desdeS()) ? <><b>Sin cargo</b>{s.MotivoSinCargo ? ` · ${s.MotivoSinCargo}` : ''}</> : <b>{plata(s.PrecioPactado, s.MonIdMoneda)}</b>} />
-                    {s.ModoCobro === 'PRECIO_ESTABLECIDO' && conCatalogo ? <Info l="Precio de catálogo" v={<>{prods.map(p => `${p.Cantidad} × ${plata(p.Catalogo.precio, monedaCat)}`).join(' + ')} = <b>{plata(totalCat, monedaCat)}</b>{dif > 0 ? ` · descuento ${r2(dif / totalCat * 100)} %` : dif < 0 ? ` · recargo ${r2(-dif / totalCat * 100)} %` : ''}</>} /> : null}
                     <Info l="Seña" v={!s.RequiereSena ? 'No requiere' : <>Requiere <b>{plata(s.SenaMontoRequerido, s.MonIdMoneda)}</b></>} />
                     {s.RequiereSena ? <Info l="Estado de la seña" v={s.SenaConfirmada ? <span className="text-emerald-700 font-bold">Confirmada</span> : <span className="text-rose-600 font-bold">Sin confirmar — frena la conversión a pedido</span>} /> : null}
                 </div>
             ) : (
                 <div className="space-y-2">
-                    <div className="grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-                        <Campo label="Cómo se cobra">
-                            <Selector value={f.ModoCobro} onChange={e => guardar({ ModoCobro: e.target.value })} claseBoton={claseSel(SEL_CAMPO)} anchoLista={320}>
-                                {!f.ModoCobro && <option value="">Sin pactar: elegí cómo se cobra</option>}
-                                <option value="PRECIO_ESTABLECIDO">Precio establecido (un total, todo incluido)</option>
-                                <option value="POR_AREA">Facturar por cada área</option>
-                            </Selector>
-                        </Campo>
-                        <Campo label="Moneda"><Selector value={String(f.MonIdMoneda)} onChange={e => guardar({ MonIdMoneda: Number(e.target.value) })} claseBoton={claseSel(SEL_CAMPO)}>{Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Selector></Campo>
-                    </div>
-                    {f.ModoCobro === 'PRECIO_ESTABLECIDO' && (<>
-                        {prods.length > 0 && (
-                            <div className="rounded-lg border border-slate-200 overflow-x-auto">
-                                <table className="w-full text-xs">
-                                    <thead className="bg-slate-50 text-[10px] font-black uppercase tracking-wide text-slate-500">
-                                        <tr><th className="px-2 py-1.5 text-left">Producto</th><th className="px-2 py-1.5 text-right">Cantidad</th><th className="px-2 py-1.5 text-right">Precio de catálogo c/u</th><th className="px-2 py-1.5 text-right">Subtotal de catálogo</th></tr>
-                                    </thead>
-                                    <tbody>
-                                        {prods.map((p, i) => {
-                                            const pc = Number(p.Catalogo?.precio) > 0 ? Number(p.Catalogo.precio) : null;
-                                            return (
-                                                <tr key={p.ProductoSolID} className="border-t border-slate-100">
-                                                    <td className="px-2 py-1.5 text-slate-800">{p.ProductoNombre || `Producto ${i + 1}`}</td>
-                                                    <td className="px-2 py-1.5 text-right">{p.Cantidad}</td>
-                                                    <td className="px-2 py-1.5 text-right">{pc != null ? <>{plata(pc, monCat(p))}{p.Catalogo.escalaDesde ? <span className="block text-[10px] text-slate-400">precio desde {p.Catalogo.escalaDesde} (lista {plata(p.Catalogo.lista, monCat(p))})</span> : null}</> : <span className="text-slate-400">sin precio de catálogo</span>}</td>
-                                                    <td className="px-2 py-1.5 text-right">{pc != null ? plata(r2(pc * Number(p.Cantidad)), monCat(p)) : '—'}</td>
-                                                </tr>
-                                            );
-                                        })}
-                                    </tbody>
-                                    {conCatalogo && prods.length > 1 && (
-                                        <tfoot><tr className="border-t border-slate-200 font-black text-slate-800"><td colSpan={3} className="px-2 py-1.5 text-right">Total de catálogo</td><td className="px-2 py-1.5 text-right">{plata(totalCat, monedaCat)}</td></tr></tfoot>
-                                    )}
-                                </table>
-                            </div>
-                        )}
-                        <div className="flex flex-wrap items-end gap-3">
-                            {unico && (
-                                <Campo label={`Precio por prenda (${unico.Cantidad} prendas)`}>
-                                    <input type="number" min="0" step="0.01" value={porPrenda} onChange={e => setPorPrenda(e.target.value)} onBlur={guardarPorPrenda} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />
-                                </Campo>
-                            )}
-                            <Campo label="Precio de la solicitud entera">
-                                <input type="number" min="0" step="0.01" value={f.PrecioPactado} onChange={e => setF(x => ({ ...x, PrecioPactado: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO}
-                                    title="Para un trabajo sin cargo, poné 0 y escribí el motivo" />
-                            </Campo>
-                            {esCero(f) && (
-                                <Campo label="Motivo del sin cargo (obligatorio)">
-                                    <input value={f.MotivoSinCargo} maxLength={300} placeholder="Ej.: canje con el club, garantía, regalo de la casa"
-                                        onChange={e => setF(x => ({ ...x, MotivoSinCargo: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-                                        className={`${INPUT} min-w-[280px]`} />
-                                </Campo>
-                            )}
-                        </div>
-                        {!esCero(f) && <p className="text-[11px] text-slate-400">Si el trabajo va sin cargo, poné 0 en el precio y escribí el motivo: en el pedido queda como descuento del 100 %.</p>}
-                        {conCatalogo && (
-                            <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                {dif == null ? (pactado > 0 && !mismaMoneda ? <span className="text-slate-500">El precio de catálogo está en {MONEDA[monedaCat]}: no se compara con el pactado.</span> : null)
-                                    : dif > 0 ? <span className="font-bold text-amber-700">Descuento de {plata(dif, monedaCat)} ({r2(dif / totalCat * 100)} %) sobre el precio de catálogo</span>
-                                    : dif < 0 ? <span className="font-bold text-sky-700">Recargo de {plata(-dif, monedaCat)} ({r2(-dif / totalCat * 100)} %) sobre el precio de catálogo</span>
-                                    : <span className="font-bold text-emerald-700">Es el precio de catálogo.</span>}
-                                {(!mismaMoneda || pactado !== totalCat) && (
-                                    <button type="button" disabled={busy} onClick={() => guardar({ PrecioPactado: String(totalCat), MonIdMoneda: monedaCat })} className="font-bold text-brand-cyan hover:underline">
-                                        Usar el precio de catálogo: {plata(totalCat, monedaCat)}
-                                    </button>
-                                )}
-                            </div>
-                        )}
-                    </>)}
                     <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
                         <input type="checkbox" checked={f.RequiereSena} disabled={!f.ModoCobro || (f.RequiereSena && !!s.SenaConfirmada)} onChange={e => guardar({ RequiereSena: e.target.checked })} />
                         Requiere seña inicial{f.RequiereSena && s.SenaConfirmada ? <span className="font-normal text-slate-400">(ya está confirmada: no se puede sacar)</span> : null}
                     </label>
+                    {/* Por área no hay precio en la grilla: la moneda de la seña se elige acá */}
+                    {f.RequiereSena && opcion === 'AREA' && (
+                        <Campo label="Moneda de la seña">
+                            <Selector value={String(f.MonIdMoneda)} onChange={e => guardar({ MonIdMoneda: Number(e.target.value) })} claseBoton={claseSel(SEL_CAMPO)}>
+                                {Object.entries(MONEDA).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                            </Selector>
+                        </Campo>
+                    )}
                     {f.RequiereSena && (
                         <Campo label="Monto de la seña requerida">
                             <input type="number" min="0" step="0.01" value={f.SenaMontoRequerido} onChange={e => setF(x => ({ ...x, SenaMontoRequerido: e.target.value }))} onBlur={() => guardar()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} className={MONTO} />

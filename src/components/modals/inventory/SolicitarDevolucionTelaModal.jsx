@@ -1,35 +1,56 @@
 import React, { useState } from "react";
 import { createPortal } from "react-dom";
-import { X, PackageCheck, Trash2, Undo2, Loader2, Send } from "lucide-react";
+import { X, PackageCheck, Trash2, Undo2, Loader2, AlertTriangle } from "lucide-react";
 import { toast } from "sonner";
 import { telaClienteService } from "../../../services/modules/telaClienteService";
+import { printLabels } from "../../../utils/labelPrinter";
 
 /**
- * Modal chico: pedir devolución o descarte del excedente de UNA bobina.
- * Solo pide la decisión (Devolver/Descartar) — cómo se la devolvemos (Retiro
- * en el local / Encomienda) y la dirección se definen recién cuando el
- * cliente la retira de verdad, por el circuito normal de retiros (portal,
- * tótem o WebRetirosPage), igual que cualquier otra orden.
+ * Modal chico: devolver o descartar el excedente de UNA bobina, en el momento.
+ * Desde el 29/10/2026 lo de adentro no pasa por la Bandeja de devoluciones:
+ *  - Devolver: aprueba y empaqueta de una — cierra la bobina, arma la orden DEV-<n> con su bulto e imprime la
+ *    etiqueta. Después el bulto va a depósito en un remito, como cualquier orden. Cómo se la devolvemos (Retiro
+ *    en el local / Encomienda) lo elige el cliente al retirar, por el circuito normal de retiros.
+ *  - Descartar: cierra la bobina en el momento, sin bulto ni entrega.
  * Usable desde la vista interna (TelaClienteInventarioPage). El portal usa su
- * propio flujo equivalente en RecursosView.jsx contra /web-recursos.
+ * propio flujo en RecursosView.jsx contra /web-recursos, que sí va a la bandeja.
  *
  * Estética nueva (22/10/2026): modal blanco redondeado encima de la barra de arriba (z-[6000]; antes z-50),
- * «Devolver» elegido en brand-cyan y «Descartar» en rojo, «Enviar a la bandeja» en brand-cyan.
+ * «Devolver» elegido en brand-cyan y «Descartar» en rojo.
  */
 const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess }) => {
     const [accion, setAccion] = useState("DEVOLVER");
     const [observaciones, setObservaciones] = useState("");
     const [loading, setLoading] = useState(false);
+    const metros = (parseFloat(bobina.MetrosRestantes) || 0).toFixed(2);
+    // Con la tela puesta en una máquina no se puede cerrar la bobina para empaquetarla (el servidor lo frena igual).
+    const enUso = accion === "DEVOLVER" && !["Disponible", "Pendiente"].includes(bobina.Estado);
 
     const submit = async () => {
         setLoading(true);
         try {
-            await telaClienteService.solicitarDevolucion(clienteId, bobina.BobinaID, { accion, observaciones });
-            toast.success(accion === "DEVOLVER" ? "Solicitud de devolución enviada a la bandeja." : "Solicitud de descarte enviada a la bandeja.");
+            const res = await telaClienteService.devolverDesdeInventario(clienteId, bobina.BobinaID, { accion, observaciones });
+            if (accion === "DEVOLVER") {
+                // Misma etiqueta que el «Empaquetar» de la bandeja
+                printLabels([{
+                    qrCode: res.qrString,
+                    orderCode: res.codigoOrden,
+                    orderPrefix: "",
+                    client: res.nombreCliente,
+                    job: res.descTrabajo,
+                    area: res.areaOrigen,
+                    bultoIndex: 1,
+                    totalBultos: 1,
+                    nextService: "DEPOSITO",
+                }]);
+                toast.success(`${res.codigoOrden} armado y etiqueta impresa. ${bobina.CodigoEtiqueta} quedó cerrada. Falta mandar el bulto a depósito en un remito.`, { duration: 10000 });
+            } else {
+                toast.success(`${bobina.CodigoEtiqueta} descartada: se cerró con ${metros} m como descarte.`, { duration: 8000 });
+            }
             onSuccess?.();
             onClose();
         } catch (err) {
-            toast.error(err?.response?.data?.error || "Error al enviar la solicitud");
+            toast.error(err?.response?.data?.error || (accion === "DEVOLVER" ? "Error al empaquetar la devolución" : "Error al descartar la tela"));
         } finally {
             setLoading(false);
         }
@@ -54,8 +75,8 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
 
                 <div className="p-5 space-y-4">
                     <p className="text-sm text-zinc-500">
-                        Quedan <b className="text-zinc-800 tabular-nums">{(parseFloat(bobina.MetrosRestantes) || 0).toFixed(2)} m</b> de {bobina.DescripcionTela || bobina.TipoTela}.
-                        ¿Qué querés pedir para el cliente?
+                        Quedan <b className="text-zinc-800 tabular-nums">{metros} m</b> de {bobina.DescripcionTela || bobina.TipoTela}.
+                        ¿Qué hacemos con esta tela?
                     </p>
 
                     <div className="grid grid-cols-2 gap-2">
@@ -79,15 +100,23 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
                         </button>
                     </div>
 
-                    {accion === "DEVOLVER" && (
+                    {accion === "DEVOLVER" && !enUso && (
                         <p className="text-xs text-zinc-500 bg-zinc-50 border border-zinc-200 rounded-xl px-3 py-2">
-                            Cómo se la devolvemos (retiro en el local o encomienda) y la dirección se definen recién cuando el cliente la retira, igual que cualquier otro pedido.
+                            Al tocar el botón se cierra la bobina, se arma la orden <b>DEV</b> con su bulto y se imprime la etiqueta. No pasa por la Bandeja de devoluciones.
+                            Después mandá el bulto a depósito en un remito, como cualquier orden. Cómo se la devolvemos (retiro en el local o encomienda) lo elige el cliente al retirar.
+                        </p>
+                    )}
+
+                    {enUso && (
+                        <p className="flex items-start gap-2 text-xs font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                            <span>La bobina está «{bobina.Estado}»: una orden la está usando. Esperá a que se libere para empaquetar la devolución.</span>
                         </p>
                     )}
 
                     {accion === "DESCARTAR" && (
                         <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
-                            Al aprobarse, la bobina se cierra directo — no genera bulto ni entrega. Dejá constancia de que el cliente autorizó el descarte abajo.
+                            Al tocar el botón la bobina se cierra en el momento, con los {metros} m como descarte. No genera bulto ni entrega y no se puede deshacer. Dejá constancia abajo de que el cliente autorizó el descarte.
                         </p>
                     )}
 
@@ -108,11 +137,14 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
                     <button
                         type="button"
                         onClick={submit}
-                        disabled={loading}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white bg-brand-cyan hover:bg-brand-cyan/90 transition-colors disabled:opacity-40"
+                        disabled={loading || enUso}
+                        className={`inline-flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                            accion === "DESCARTAR" ? "bg-rose-600 hover:bg-rose-700" : "bg-brand-cyan hover:bg-brand-cyan/90"}`}
                     >
-                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
-                        {loading ? "Enviando..." : "Enviar a la bandeja"}
+                        {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : accion === "DESCARTAR" ? <Trash2 className="w-4 h-4" /> : <PackageCheck className="w-4 h-4" />}
+                        {loading
+                            ? (accion === "DESCARTAR" ? "Descartando..." : "Empaquetando...")
+                            : (accion === "DESCARTAR" ? "Descartar y cerrar la bobina" : "Empaquetar e imprimir etiqueta")}
                     </button>
                 </div>
             </div>

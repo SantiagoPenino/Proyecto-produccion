@@ -72,6 +72,11 @@ const TransportView = ({ originArea, areaFilter } = {}) => {
     const [bultoMappings, setBultoMappings] = useState({}); // { [bultoId]: { checked: boolean, file: File | null } }
     const [activeBultoId, setActiveBultoId] = useState(null);
     const hiddenFileInputRef = useRef(null);
+    // Bulto de encomienda ya entregado sin foto (29/10/2026): se le adjunta el comprobante sin volver a
+    // confirmar la entrega (no cambia estados ni fechas).
+    const entregadoInputRef = useRef(null);
+    const entregadoDestinoRef = useRef(null);
+    const [subiendoEntregado, setSubiendoEntregado] = useState(null); // BultoID en curso
 
     const openUploadModal = async (transport) => {
         setLoading(true);
@@ -105,6 +110,25 @@ const TransportView = ({ originArea, areaFilter } = {}) => {
         }
         e.target.value = null; // reset
         setActiveBultoId(null);
+    };
+
+    const subirComprobanteEntregado = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = null;
+        const item = entregadoDestinoRef.current;
+        entregadoDestinoRef.current = null;
+        if (!file || !item) return;
+        setSubiendoEntregado(item.BultoID);
+        try {
+            await logisticsService.subirComprobanteEncomienda(item.RetiroAsociado, file, item.BultoID);
+            toast.success(`Comprobante de ${item.RetiroAsociado} guardado`);
+            const details = await logisticsService.getRemitoByCode(modalData.transport.CodigoRemito);
+            setModalData(prev => ({ ...prev, items: details.items }));
+        } catch (err) {
+            toast.error(err.response?.data?.error || 'No se pudo subir el comprobante');
+        } finally {
+            setSubiendoEntregado(null);
+        }
     };
 
     const handleConfirmDelivery = async () => {
@@ -495,6 +519,13 @@ const TransportView = ({ originArea, areaFilter } = {}) => {
                                         capture="environment"
                                         onChange={handleFileSelected}
                                     />
+                                    <input
+                                        type="file"
+                                        ref={entregadoInputRef}
+                                        style={{ display: 'none' }}
+                                        accept="image/*"
+                                        onChange={subirComprobanteEntregado}
+                                    />
 
                                     {/* BULTO CARDS */}
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -503,15 +534,30 @@ const TransportView = ({ originArea, areaFilter } = {}) => {
 
                                             if (isDelivered) {
                                                 const fname = item.ComprobantePath ? item.ComprobantePath.split('/').pop() : 'Sin archivo';
+                                                const puedeAdjuntar = !item.ComprobantePath && item.Tipocontenido === 'ENCOMIENDA' && item.RetiroAsociado;
                                                 return (
-                                                    <div key={item.BultoID} className="flex flex-col justify-between p-4 rounded-xl border border-zinc-200 bg-zinc-50 opacity-60">
+                                                    <div key={item.BultoID} className={`flex flex-col justify-between p-4 rounded-xl border border-zinc-200 bg-zinc-50 ${puedeAdjuntar ? '' : 'opacity-60'}`}>
                                                         <div>
                                                             <p className="font-bold text-zinc-500 text-sm">{item.RetiroAsociado || item.CodigoEtiqueta}</p>
                                                             <p className="text-xs text-zinc-400">{item.Descripcion || 'Sin desc'}</p>
                                                         </div>
                                                         <div className="flex flex-col items-start mt-2 gap-1.5">
                                                             <span className={`${CHIP} bg-emerald-50 text-emerald-700 border-emerald-200 uppercase`}>Ya Entregado</span>
-                                                            <span className="text-[11px] text-zinc-400 font-bold break-all flex items-center gap-1" title={fname}><File size={12} className="shrink-0 text-brand-cyan" /> {fname}</span>
+                                                            {puedeAdjuntar ? (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => { entregadoDestinoRef.current = item; entregadoInputRef.current?.click(); }}
+                                                                    disabled={subiendoEntregado !== null}
+                                                                    className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-zinc-200 bg-white text-xs font-bold text-zinc-700 hover:bg-zinc-50 transition-colors disabled:opacity-50"
+                                                                >
+                                                                    {subiendoEntregado === item.BultoID
+                                                                        ? <Loader2 size={13} className="animate-spin text-brand-cyan" />
+                                                                        : <Camera size={13} className="text-brand-cyan" />}
+                                                                    Adjuntar comprobante
+                                                                </button>
+                                                            ) : (
+                                                                <span className="text-[11px] text-zinc-400 font-bold break-all flex items-center gap-1" title={fname}><File size={12} className="shrink-0 text-brand-cyan" /> {fname}</span>
+                                                            )}
                                                         </div>
                                                     </div>
                                                 );

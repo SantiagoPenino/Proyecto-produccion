@@ -1,6 +1,59 @@
 const { sql, getPool } = require('../config/db');
 const logger = require('../utils/logger');
 
+// Historial: excepciones del cliente y asignación de perfiles (ver services/historialPrecios.js)
+const { leerReglasCliente, leerPerfilesCliente, guardarHistorialCliente, registrarAsignaciones } = require('../services/historialPrecios');
+
+// ── Validación de lo que llega (plan INF-SIS-2026-12, punto 2.2) ──────────────────────────────────
+// Frena el guardado entero (no se borra nada) si una regla no se puede aplicar bien. Los % negativos
+// SÍ valen: son recargos (5 clientes los tienen). Precio fijo 0 también vale: el motor lo acepta a
+// propósito en las excepciones de un cliente. La familia sin código solo se rechaza si es nueva:
+// hay reglas viejas así (clientes 28, 101, 347, 806) que la pantalla reenvía tal cual.
+const TIPOS_REGLA = ['percentage', 'percentage_discount', 'fixed', 'fixed_price', 'subtract'];
+const numUY = v => Number(v).toLocaleString('es-UY', { maximumFractionDigits: 4 });
+
+const validarReglas = (rules, reglasAntes) => {
+    const habiaFamiliaSinCodigo = reglasAntes.some(r => r.ProIdProducto == null && !(r.CodGrupo || '').trim());
+    const problemas = [];
+    (rules || []).forEach(rule => {
+        const cod = (rule.CodArticulo || '').toString();
+        const tipo = rule.TipoRegla || 'fixed';
+        const v = Number(rule.Valor);
+        const regla = { cod, proId: rule.ProIdProducto };
+        if (!TIPOS_REGLA.includes(tipo)) {
+            problemas.push({ ...regla, texto: `tiene un tipo de regla que el sistema no conoce («${tipo}»)`, solucion: 'volvé a cargarla como descuento, precio fijo o importe por unidad' });
+        } else if (rule.Valor === null || rule.Valor === undefined || rule.Valor === '' || !Number.isFinite(v)) {
+            problemas.push({ ...regla, texto: 'no tiene un valor numérico', solucion: 'cargá el porcentaje o el precio' });
+        } else if (tipo.includes('percentage') && v > 100) {
+            problemas.push({ ...regla, texto: `tiene un descuento de ${numUY(v)} %`, solucion: 'revisá el valor: un descuento va hasta 100 % (un % negativo es un recargo)' });
+        } else if ((tipo === 'fixed' || tipo === 'fixed_price') && v < 0) {
+            problemas.push({ ...regla, texto: `tiene un precio fijo negativo (${numUY(v)})`, solucion: 'el precio fijo va de 0 para arriba' });
+        } else if (tipo === 'subtract' && v < 0) {
+            problemas.push({ ...regla, texto: `tiene un descuento por unidad negativo (${numUY(v)})`, solucion: 'cargá un importe mayor a 0' });
+        }
+        if (cod.startsWith('GRUPO:') && !cod.replace('GRUPO:', '').trim() && !habiaFamiliaSinCodigo) {
+            problemas.push({ ...regla, texto: 'no tiene código de familia', solucion: 'elegí la familia de la lista' });
+        }
+    });
+    return problemas;
+};
+
+// «La regla de DTF textil COMUN tiene un descuento de 180 %. Solución: revisá el valor; …»
+const mensajeProblemas = async (transaction, problemas) => {
+    const ids = [...new Set(problemas.map(p => parseInt(p.proId, 10)).filter(n => Number.isInteger(n) && n > 0))];
+    const nombres = {};
+    if (ids.length) {
+        (await new sql.Request(transaction).query(`SELECT ProIdProducto, LTRIM(RTRIM(Descripcion)) AS Descripcion FROM Articulos WHERE ProIdProducto IN (${ids.join(',')})`))
+            .recordset.forEach(r => { nombres[r.ProIdProducto] = r.Descripcion; });
+    }
+    return problemas.map(p => {
+        const nombre = p.cod === 'TOTAL' ? 'la regla general'
+            : p.cod.startsWith('GRUPO:') ? (p.cod.replace('GRUPO:', '').trim() ? `la familia ${p.cod.replace('GRUPO:', '').trim()}` : 'una familia nueva')
+            : (nombres[parseInt(p.proId, 10)] || `el artículo ${p.cod}`);
+        return `La regla de ${nombre} ${p.texto}. Solución: ${p.solucion}.`;
+    }).join(' ');
+};
+
 // Obtener Lista de Clientes Especiales
 const getClients = async (req, res) => {
     try {
@@ -172,6 +225,18 @@ const saveClientProfile = async (req, res) => {
         await transaction.begin();
 
         try {
+            // Cómo estaba la tarifa antes de tocarla (para validar y para el historial)
+            const reglasAntes = await leerReglasCliente(transaction, targetCliId, targetCodCliente);
+            const perfilesAntes = await leerPerfilesCliente(transaction, targetCliId, targetCodCliente);
+
+            const problemas = validarReglas(rules, reglasAntes);
+            if (problemas.length > 0) {
+                const mensaje = await mensajeProblemas(transaction, problemas);
+                await transaction.rollback();
+                logger.warn(`[PRECIOS-ESP] Guardar tarifa del cliente ${targetCliId} frenado: ${mensaje}`);
+                return res.status(400).json({ error: mensaje, problemas });
+            }
+
             // 2. Determinar perfiles a asignar
             let finalPerfilesIDs = null;
             if (profileIds && Array.isArray(profileIds)) {
@@ -229,6 +294,7 @@ const saveClientProfile = async (req, res) => {
                 `);
 
             // 5. Insertar Nuevos Items bajo el targetCliId
+            const reglasDespues = [];
             if (rules && rules.length > 0) {
                 for (const rule of rules) {
                     const itemReq = new sql.Request(transaction);
@@ -246,23 +312,35 @@ const saveClientProfile = async (req, res) => {
                     }
 
                     if (finalProIdProducto !== null || finalCodGrupo !== null) {
+                        const tipo = rule.TipoRegla || 'fixed';
+                        const valor = rule.Valor || 0;
+                        const monIdMoneda = (rule.MonIdMoneda === 'USD' || rule.MonIdMoneda === 2 || rule.Moneda === 'USD') ? 2 : 1;
+                        const minCantidad = rule.MinCantidad || 0;
                         await itemReq
                             .input('CliId', sql.Int, targetCliId)
                             .input('CodCli', sql.Int, targetCodCliente)
                             .input('ProId', sql.Int, finalProIdProducto)
                             .input('CodArt', sql.NVarChar, codArtStr)
                             .input('Grupo', sql.VarChar, finalCodGrupo)
-                            .input('Tipo', sql.NVarChar, rule.TipoRegla || 'fixed')
-                            .input('Val', sql.Decimal(18, 4), rule.Valor || 0)
-                            .input('MonIdMoneda', sql.Int, (rule.MonIdMoneda === 'USD' || rule.MonIdMoneda === 2 || rule.Moneda === 'USD') ? 2 : 1)
-                            .input('Min', sql.Decimal(18, 2), rule.MinCantidad || 0)
+                            .input('Tipo', sql.NVarChar, tipo)
+                            .input('Val', sql.Decimal(18, 4), valor)
+                            .input('MonIdMoneda', sql.Int, monIdMoneda)
+                            .input('Min', sql.Decimal(18, 2), minCantidad)
                             .query(`
                                 INSERT INTO PreciosEspecialesItems (CliIdCliente, ClienteID, CodArticulo, ProIdProducto, CodGrupo, TipoRegla, Valor, MonIdMoneda, MinCantidad)
                                 VALUES (@CliId, @CodCli, @CodArt, @ProId, @Grupo, @Tipo, @Val, @MonIdMoneda, @Min)
                             `);
+                        reglasDespues.push({ CodArticulo: codArtStr.trim(), ProIdProducto: finalProIdProducto, CodGrupo: finalCodGrupo, TipoRegla: tipo, Valor: Number(valor), MonIdMoneda: monIdMoneda, MinCantidad: Number(minCantidad) });
                     }
                 }
             }
+
+            await guardarHistorialCliente(transaction, {
+                cliId: targetCliId, origen: 'GUARDAR_TARIFA', user: req.user,
+                antes: reglasAntes, despues: reglasDespues,
+                perfilesAntes, perfilesDespues: finalPerfilesIDs
+            });
+            await registrarAsignaciones(transaction, { cliId: targetCliId, perfilesAntes, perfilesDespues: finalPerfilesIDs, user: req.user, desde: 'Precios especiales' });
 
             await transaction.commit();
             res.json({ success: true, message: "Perfil guardado correctamente" });
@@ -299,6 +377,9 @@ const deleteClient = async (req, res) => {
         await transaction.begin();
 
         try {
+            const reglasAntes = await leerReglasCliente(transaction, targetCliId, targetCodCliente);
+            const perfilesAntes = await leerPerfilesCliente(transaction, targetCliId, targetCodCliente);
+
             await new sql.Request(transaction)
                 .input('CliId', sql.Int, targetCliId)
                 .input('CodCli', sql.Int, targetCodCliente)
@@ -308,6 +389,13 @@ const deleteClient = async (req, res) => {
                 .input('CliId', sql.Int, targetCliId)
                 .input('CodCli', sql.Int, targetCodCliente)
                 .query("DELETE FROM PreciosEspeciales WHERE CliIdCliente IN (@CliId, @CodCli) OR ClienteID IN (@CliId, @CodCli)");
+
+            await guardarHistorialCliente(transaction, {
+                cliId: targetCliId, origen: 'QUITAR_CLIENTE', user: req.user,
+                antes: reglasAntes, despues: [],
+                perfilesAntes, perfilesDespues: null
+            });
+            await registrarAsignaciones(transaction, { cliId: targetCliId, perfilesAntes, perfilesDespues: null, user: req.user, desde: 'Quitar cliente' });
 
             await transaction.commit();
             res.json({ success: true });

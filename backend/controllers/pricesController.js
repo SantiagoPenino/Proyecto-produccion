@@ -1,6 +1,8 @@
 const { getPool, sql } = require('../config/db');
 const PricingService = require('../services/pricingService');
 const logger = require('../utils/logger');
+// Historial de perfiles (ver services/historialPrecios.js): las reglas sueltas de la matriz también quedan registradas
+const { leerPerfil, registrarCambioPerfil } = require('../services/historialPrecios');
 
 // Obtener Precios Base (Lista Pagina o Filtrada)
 // Obtener Precios Base (Lista Pagina o Filtrada)
@@ -214,6 +216,16 @@ const saveTieredPricesBulk = async (req, res) => {
         await transaction.begin();
 
         try {
+            // Historial: qué perfiles toca este lote y cómo estaban antes
+            const idsItems = items.map(i => parseInt(i.id, 10)).filter(n => Number.isInteger(n) && n > 0);
+            const perfilesLote = new Set(items.filter(i => !i.id).map(i => parseInt(i.perfilId, 10)).filter(n => Number.isInteger(n) && n > 0));
+            if (idsItems.length) {
+                (await new sql.Request(transaction).query(`SELECT DISTINCT PerfilID FROM PerfilesItems WHERE ID IN (${idsItems.join(',')})`))
+                    .recordset.forEach(r => perfilesLote.add(r.PerfilID));
+            }
+            const antesPorPerfil = {};
+            for (const p of perfilesLote) antesPorPerfil[p] = await leerPerfil(transaction, p);
+
             for (const item of items) {
                 const request = new sql.Request(transaction);
                 const monIdMoneda = (item.moneda === 'USD' || item.moneda === 2 || item.Moneda === 'USD') ? 2 : 1;
@@ -266,6 +278,8 @@ const saveTieredPricesBulk = async (req, res) => {
                         `);
                 }
             }
+
+            for (const p of perfilesLote) await registrarCambioPerfil(transaction, { perfilId: p, origen: 'EDITAR_REGLAS', user: req.user, antes: antesPorPerfil[p] });
 
             await transaction.commit();
             res.json({ success: true, count: items.length });

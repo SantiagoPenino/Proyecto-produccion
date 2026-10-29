@@ -9,7 +9,43 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ## [Sin deployar]
 
-Nada por ahora.
+### Agregado
+- **Detalle de la orden (el ojito): fechas de la orden y del pedido, con semáforo de atraso (29/10).** Antes la ventana no mostraba ninguna fecha.
+  - **Franja arriba, siempre visible:** la fecha comprometida de esta orden, la fecha final del pedido si tiene varias áreas, y la fecha que necesita el cliente si el pedido salió de una Solicitud (en rojo si la fecha final queda después).
+  - **Pestaña «Fechas»:** ingreso, plan del área, comprometida, impresa, pronta y aprobación del cliente (TPU); una fila por área del pedido en el orden del recorrido; y el depósito (llegó, avisado, estado actual).
+  - **Semáforo:** A tiempo · Vence mañana · Vence hoy · Atrasada N días hábiles · Terminó a tiempo · Terminó N días tarde. Se mide contra la fecha comprometida (si falta, contra el plan), en días hábiles del área (horario laboral y feriados).
+  - **Fecha final del pedido:** la comprometida más tarde de sus órdenes, sin contar fallas (-F) ni canceladas. Cada área calcula su fecha desde el mismo ingreso, no desde que terminó la anterior.
+  - **Fecha del cliente:** vive solo en `SolicitudesVendedor.FechaEntrega` / `FechaEntregaHasta`; se lee por `SolicitudesVendedorProductos.PedidoNoDocERP`, no se copia a la orden.
+  - **Archivos:** ruta nueva `GET /api/orders/fechas/:id` (`services/fechasOrdenService.js`, `controllers/fechasOrdenController.js`, `routes/ordersRoutes.js`). Front: nuevo `production/components/FechasOrden.jsx` y `OrderDetailModal.jsx`.
+  - **Probado en local** (solo lectura) con los pedidos 31895, 31896 (con falla) y 31897 (de la Solicitud 2038: el cliente lo necesita 29/10 → 31/10 y la fecha final es 03/11), una orden terminada 3 días tarde, una sin pedido y una que no existe. **No probado:** la pantalla en el navegador (necesita sesión).
+
+### Cambiado
+- **Tela de cliente: la devolución que se hace desde el inventario sale de una, sin pasar por la Bandeja de devoluciones (29/10).** Antes, el botón ↶ de la bobina solo mandaba una solicitud a la bandeja, y ahí alguien tenía que «Aprobar» y después «Empaquetar».
+  - **Devolver:** un solo botón, «Empaquetar e imprimir etiqueta». Aprueba, cierra la bobina con un movimiento DEVOLUCION_FISICA_CLIENTE, arma la orden `DEV-<n>` con su bulto en el área de la bobina e imprime la etiqueta. Es lo mismo que hacían «Aprobar» y «Empaquetar».
+  - **El remito no cambia:** el bulto va a depósito en un remito, como cualquier orden. Al recibirlo en Depósito sale el WhatsApp y el cliente lo retira por el circuito de siempre.
+  - **Descartar:** «Descartar y cerrar la bobina» la cierra en el momento con un movimiento DESCARTE_CLIENTE, sin bulto.
+  - **Queda registrada** como una solicitud INTERNO ya aprobada por quien tocó el botón. En la bandeja aparece como «Empaquetada — esperando remito a depósito», con «Imprimir etiqueta» para reimprimir. Si la bobina tenía un aviso de excedente pendiente, se cierra solo.
+  - **Lo que frena:**
+    - Una bobina «En Uso» no se puede devolver: el modal lo avisa y apaga el botón, y el servidor contesta 409.
+    - Si el cliente ya la había pedido desde el portal, contesta 409 y se resuelve en la bandeja (ahí la tarjeta muestra «Devolución pedida», no ↶).
+    - El cliente del portal no puede usar la ruta nueva: 403.
+  - **Las solicitudes del portal no cambian:** siguen yendo a la bandeja para aprobar o rechazar.
+  - **Archivos:** ruta nueva `POST /api/tela-cliente/:clienteId/bobinas/:bobinaId/devolver-ahora`. En `services/telaClienteDevolucionFisicaService.js`, el «Empaquetar» y el descarte de la bandeja pasaron a funciones que se comparten con la ruta nueva; la bandeja hace lo mismo que antes. Front: `modals/inventory/SolicitarDevolucionTelaModal.jsx`, `services/modules/telaClienteService.js` y el texto del botón en `pages/TelaClienteInventarioPage.jsx`.
+  - **Probado en local**, en transacciones con rollback:
+    - Devolver BOB-234 (2,45 m) armó DEV-31 con su bulto en SB y su etiqueta, cerró la bobina y cerró su aviso.
+    - Descartar BOB-241 la cerró con −2,10 m.
+    - La solicitud del portal abierta, la bobina agotada, otro cliente, una acción inválida y «En Uso» frenan sin escribir. El cliente del portal recibe 403.
+    - Las cuentas de la base quedaron iguales que antes. La ruta responde en el backend local y Vite compila las tres pantallas.
+    - **No probado:** el botón en el navegador (necesita sesión) ni la impresión real de la etiqueta.
+
+### Notas de deploy
+- **Fechas en el detalle de la orden (29/10):** sin SQL. Backend y front juntos: con el front nuevo y el backend viejo, la franja no aparece y la pestaña «Fechas» dice que no se pudieron cargar.
+  - **Backend, con reinicio:** `services/fechasOrdenService.js`, `controllers/fechasOrdenController.js` y `routes/ordersRoutes.js`.
+  - **Front, en el build:** `production/components/FechasOrden.jsx` y `production/components/OrderDetailModal.jsx`.
+- **Devolución de tela desde el inventario, de una (29/10):** sin SQL. Backend y front juntos: con el front nuevo y el backend viejo, la ruta no existe y el botón da «Error al empaquetar la devolución».
+  - **Backend, con reinicio:** `services/telaClienteDevolucionFisicaService.js`, `controllers/telaClienteController.js` y `routes/telaClienteRoutes.js`.
+  - **Front, en el build:** `modals/inventory/SolicitarDevolucionTelaModal.jsx`, `services/modules/telaClienteService.js` y `pages/TelaClienteInventarioPage.jsx`.
+  - **Después del deploy:** avisarle a planta que el botón ↶ ya empaqueta e imprime la etiqueta en el momento, y que el bulto va a depósito en un remito como siempre.
 
 ## [2026-10-28] — deployado el 28/10 (cambios del 26/10 a la tarde al 28/10)
 

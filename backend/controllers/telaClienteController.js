@@ -242,6 +242,36 @@ exports.solicitarDevolucion = async (req, res) => {
     }
 };
 
+// POST /api/tela-cliente/:clienteId/bobinas/:bobinaId/devolver-ahora
+// Body: { accion: 'DEVOLVER'|'DESCARTAR', observaciones? }
+// Botón ↶ del inventario: sin pasar por la bandeja. DEVOLVER aprueba y empaqueta (DEV-<n>, bulto y etiqueta);
+// DESCARTAR cierra la bobina. Solo personal interno: el cliente pide desde el portal y eso va a la bandeja.
+exports.devolverDesdeInventario = async (req, res) => {
+    const { clienteId, bobinaId } = req.params;
+    const { accion, observaciones } = req.body || {};
+    const usuarioId = req.user?.id || null;
+
+    if (req.user?.role === 'WEB_CLIENT') {
+        return res.status(403).json({ error: 'Disponible solo para personal interno.' });
+    }
+    try {
+        const pool = await getPool();
+        const r = await devolucionSvc.devolverDesdeInventario(pool, {
+            clienteId, bobinaId, accion, observaciones, usuarioId,
+            userName: req.user?.name || req.user?.username,
+        });
+        logger.info(`[TELA-CLIENTE] ${r.codigoEtiqueta}: ${r.accion === 'DESCARTAR' ? 'descartada' : `devuelta (${r.codigoOrden})`} desde el inventario por el usuario ${usuarioId ?? '-'} (solicitud #${r.tevId}).`);
+        res.status(201).json({ success: true, ...r });
+    } catch (err) {
+        if (err.statusCode) {
+            logger.warn(`[TELA-CLIENTE] Devolución desde el inventario no aplicada (bobina ${bobinaId}, cliente ${clienteId}, usuario ${usuarioId ?? '-'}): ${err.message}`);
+            return res.status(err.statusCode).json({ error: err.message });
+        }
+        logger.error('[TELA-CLIENTE] Error devolverDesdeInventario:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 // GET /api/tela-cliente/bandeja?estado=PENDIENTE
 exports.getBandeja = async (req, res) => {
     try {

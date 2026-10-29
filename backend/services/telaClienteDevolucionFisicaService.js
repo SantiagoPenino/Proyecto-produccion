@@ -458,33 +458,7 @@ async function aprobarSolicitud(pool, { tevId, usuarioId }) {
         if (evt.Estado !== 'PENDIENTE') throw new Error('La solicitud ya no está pendiente.');
 
         if (evt.Accion === 'DESCARTAR') {
-            const bob = await new sql.Request(transaction)
-                .input('BID', sql.Int, evt.BobinaID)
-                .query(`SELECT MetrosRestantes, InsumoID FROM InventarioBobinas WITH (UPDLOCK, ROWLOCK) WHERE BobinaID = @BID`);
-            const metros = parseFloat(bob.recordset[0]?.MetrosRestantes) || 0;
-
-            await new sql.Request(transaction)
-                .input('BID', sql.Int, evt.BobinaID)
-                .query(`UPDATE InventarioBobinas SET Estado = 'Cerrado' WHERE BobinaID = @BID`);
-
-            await new sql.Request(transaction)
-                .input('IID', sql.Int, bob.recordset[0].InsumoID)
-                .input('BID', sql.Int, evt.BobinaID)
-                .input('Met', sql.Decimal(10, 2), -metros)
-                .input('Usr', sql.Int, usuarioId || 1)
-                .query(`
-                    INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID)
-                    VALUES (@IID, @BID, 'DESCARTE_CLIENTE', @Met, 'Descarte autorizado por el cliente', @Usr)
-                `);
-
-            await new sql.Request(transaction)
-                .input('TID', sql.Int, tevId)
-                .input('Usr', sql.Int, usuarioId || null)
-                .query(`
-                    UPDATE dbo.TelaClienteEventos
-                    SET Estado = 'RESUELTA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE()
-                    WHERE TevID = @TID
-                `);
+            await _descartarEnTx(transaction, { tevId, bobinaId: evt.BobinaID, usuarioId });
         } else {
             await new sql.Request(transaction)
                 .input('TID', sql.Int, tevId)
@@ -502,6 +476,39 @@ async function aprobarSolicitud(pool, { tevId, usuarioId }) {
         try { await transaction.rollback(); } catch (_) {}
         throw err;
     }
+}
+
+// Descarte: cierra la bobina con un movimiento DESCARTE_CLIENTE por lo que le quedaba y deja el evento RESUELTA.
+// Dentro de la transacción de quien llama: «Aprobar» un descarte en la bandeja y el descarte de una desde el inventario.
+async function _descartarEnTx(transaction, { tevId, bobinaId, usuarioId }) {
+    const bob = await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .query(`SELECT MetrosRestantes, InsumoID FROM InventarioBobinas WITH (UPDLOCK, ROWLOCK) WHERE BobinaID = @BID`);
+    const metros = parseFloat(bob.recordset[0]?.MetrosRestantes) || 0;
+
+    await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .query(`UPDATE InventarioBobinas SET Estado = 'Cerrado' WHERE BobinaID = @BID`);
+
+    await new sql.Request(transaction)
+        .input('IID', sql.Int, bob.recordset[0].InsumoID)
+        .input('BID', sql.Int, bobinaId)
+        .input('Met', sql.Decimal(10, 2), -metros)
+        .input('Usr', sql.Int, usuarioId || 1)
+        .query(`
+            INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID)
+            VALUES (@IID, @BID, 'DESCARTE_CLIENTE', @Met, 'Descarte autorizado por el cliente', @Usr)
+        `);
+
+    await new sql.Request(transaction)
+        .input('TID', sql.Int, tevId)
+        .input('Usr', sql.Int, usuarioId || null)
+        .query(`
+            UPDATE dbo.TelaClienteEventos
+            SET Estado = 'RESUELTA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE()
+            WHERE TevID = @TID
+        `);
+    return { metros };
 }
 
 // ============================================================
@@ -542,122 +549,217 @@ async function empaquetarDevolucion(pool, { tevId, usuarioId, userName }) {
         if (evt.Tipo !== 'SOLICITUD_CLIENTE' || evt.Accion !== 'DEVOLVER') throw new Error('Este evento no es una devolución aprobada.');
         if (evt.Estado !== 'APROBADA') throw new Error('La devolución todavía no está aprobada.');
 
-        const bob = await new sql.Request(transaction)
-            .input('BID', sql.Int, evt.BobinaID)
-            .query(`
-                SELECT ib.MetrosRestantes, ib.Estado, ib.InsumoID, ib.ClienteID, ib.AreaID,
-                       COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS TipoTela,
-                       COALESCE(ib.NombreCliente, ib.ClienteID) AS NombreCliente
-                FROM InventarioBobinas ib WITH (UPDLOCK, ROWLOCK)
-                JOIN Insumos ins ON ins.InsumoID = ib.InsumoID
-                WHERE ib.BobinaID = @BID
-            `);
-        const b = bob.recordset[0];
-        if (!b) throw new Error('Bobina no encontrada.');
-        if (!['Disponible', 'Pendiente'].includes(b.Estado)) {
-            throw new Error(`La tela todavía está "${b.Estado}" — hay que esperar a que se libere antes de empaquetar la devolución.`);
-        }
-
-        const metros = parseFloat(b.MetrosRestantes) || 0;
-
-        // 1. Cerrar la bobina
-        await new sql.Request(transaction)
-            .input('BID', sql.Int, evt.BobinaID)
-            .query(`UPDATE InventarioBobinas SET Estado = 'Cerrado' WHERE BobinaID = @BID`);
-
-        // 2. Ledger
-        await new sql.Request(transaction)
-            .input('IID', sql.Int, b.InsumoID)
-            .input('BID', sql.Int, evt.BobinaID)
-            .input('Met', sql.Decimal(10, 2), -metros)
-            .input('Usr', sql.Int, usuarioId || 1)
-            .query(`
-                INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID)
-                VALUES (@IID, @BID, 'DEVOLUCION_FISICA_CLIENTE', @Met, 'Devolución física de excedente al cliente', @Usr)
-            `);
-
-        // 3. Orden ancla (mismo espíritu que la VENTA_DIRECTA de tienda: existe para
-        //    poder imprimir la etiqueta y seguir el camino normal de depósito/retiro).
-        const codigoOrden = `DEV-${tevId}`;
-        const descTrabajo = `DEVOLUCIÓN TELA CLIENTE — ${b.TipoTela} (${metros.toFixed(2)}m)`;
-        const cliIdInt = parseInt(b.ClienteID, 10) || null;
-
-        const insOrden = await new sql.Request(transaction)
-            .input('Cliente', sql.NVarChar(400), b.NombreCliente || b.ClienteID)
-            .input('CliId', sql.Int, cliIdInt)
-            .input('Desc', sql.NVarChar(600), descTrabajo)
-            .input('Mat', sql.VarChar(255), b.TipoTela)
-            .input('Mag', sql.NVarChar(100), String(metros.toFixed(2)))
-            .input('Cod', sql.VarChar(100), codigoOrden)
-            .input('Modo', sql.VarChar(100), 'A DEFINIR AL RETIRAR')
-            .query(`
-                INSERT INTO Ordenes (
-                    AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
-                    FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden,
-                    Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
-                    EstadoDependencia, ModoRetiro
-                )
-                OUTPUT INSERTED.OrdenID
-                VALUES (
-                    'PRO', @Cliente, @CliId, @Desc, 'Normal',
-                    GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod,
-                    @Mag, 'DEPOSITO', 'm', 'Pendiente', 'Pendiente',
-                    'DEVOLUCION_TELA_CLIENTE', @Modo
-                )
-            `);
-        const ordenId = insOrden.recordset[0].OrdenID;
-
-        // 4. Etiqueta + bulto — nace "esperando remito" en el área REAL donde está
-        //    la bobina (ib.AreaID), NO directo en depósito — mismo patrón que
-        //    LabelGenerationService.addOneBulto para cualquier orden normal.
-        //    CodigoQR: mismo formato "$ * " que usa el resto del sistema para poder
-        //    reimprimir/resolver el bulto (ver rollsController.js).
-        const codigoEtiqueta = `${codigoOrden}/B1`;
-        const nombreClienteSafe = String(b.NombreCliente || b.ClienteID || '').replace(/\$\*/g, ' ');
-        const descSafe = descTrabajo.replace(/\$\*/g, ' ');
-        const matSafe = String(b.TipoTela || '').replace(/\$\*/g, ' ');
-        const qrString = `${codigoOrden} $ * 1 $ * ${nombreClienteSafe} $ * ${descSafe} $ * Normal $ * ${matSafe} $ * ${metros.toFixed(2)}m $ * ${codigoEtiqueta}`;
-        const areaOrigen = b.AreaID || 'DEPOSITO';
-        await new sql.Request(transaction)
-            .input('OID', sql.Int, ordenId)
-            .input('Num', sql.Int, 1)
-            .input('User', sql.VarChar(100), userName || 'Sistema')
-            .input('QR', sql.NVarChar(sql.MAX), qrString)
-            .query(`
-                INSERT INTO Etiquetas (OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario, CreadoPor)
-                VALUES (@OID, @Num, @Num, @QR, GETDATE(), @User, @User)
-            `);
-        await new sql.Request(transaction)
-            .input('Cod', sql.NVarChar(50), codigoEtiqueta)
-            .input('OID', sql.Int, ordenId)
-            .input('Desc', sql.NVarChar(255), descTrabajo)
-            .input('UID', sql.Int, usuarioId || 1)
-            .input('Area', sql.VarChar(20), areaOrigen)
-            .query(`
-                INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
-                VALUES (@Cod, 'DEV_TELA_CLIENTE', @OID, @Desc, @Area, 'EN_STOCK', @UID)
-            `);
-
-        // 5. Evento queda EMPAQUETADA — el bulto existe y se puede imprimir/mandar
-        //    por remito, pero el retiro y el aviso todavía NO se generaron.
-        await new sql.Request(transaction)
-            .input('TID', sql.Int, tevId)
-            .input('OID', sql.Int, ordenId)
-            .query(`
-                UPDATE dbo.TelaClienteEventos
-                SET Estado = 'EMPAQUETADA', OrdenGeneradaID = @OID
-                WHERE TevID = @TID
-            `);
+        const resultado = await _empaquetarEnTx(transaction, { tevId, bobinaId: evt.BobinaID, usuarioId, userName });
 
         await transaction.commit();
-        return {
-            ok: true, ordenId, codigoOrden, metros, areaOrigen,
-            qrString, descTrabajo, nombreCliente: nombreClienteSafe,
-        };
+        return resultado;
     } catch (err) {
         try { await transaction.rollback(); } catch (_) {}
         throw err;
     }
+}
+
+// Cierra la bobina, arma la orden DEV-<tevId> con su etiqueta y su bulto, y deja el evento EMPAQUETADA. Corre
+// dentro de la transacción de quien llama: el «Empaquetar» de la bandeja y la devolución de una desde el inventario.
+async function _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userName }) {
+    const bob = await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .query(`
+            SELECT ib.MetrosRestantes, ib.Estado, ib.InsumoID, ib.ClienteID, ib.AreaID,
+                   COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS TipoTela,
+                   COALESCE(ib.NombreCliente, ib.ClienteID) AS NombreCliente
+            FROM InventarioBobinas ib WITH (UPDLOCK, ROWLOCK)
+            JOIN Insumos ins ON ins.InsumoID = ib.InsumoID
+            WHERE ib.BobinaID = @BID
+        `);
+    const b = bob.recordset[0];
+    if (!b) throw new Error('Bobina no encontrada.');
+    if (!['Disponible', 'Pendiente'].includes(b.Estado)) {
+        throw new Error(`La tela todavía está "${b.Estado}" — hay que esperar a que se libere antes de empaquetar la devolución.`);
+    }
+
+    const metros = parseFloat(b.MetrosRestantes) || 0;
+
+    // 1. Cerrar la bobina
+    await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .query(`UPDATE InventarioBobinas SET Estado = 'Cerrado' WHERE BobinaID = @BID`);
+
+    // 2. Ledger
+    await new sql.Request(transaction)
+        .input('IID', sql.Int, b.InsumoID)
+        .input('BID', sql.Int, bobinaId)
+        .input('Met', sql.Decimal(10, 2), -metros)
+        .input('Usr', sql.Int, usuarioId || 1)
+        .query(`
+            INSERT INTO MovimientosInsumos (InsumoID, BobinaID, TipoMovimiento, Cantidad, Referencia, UsuarioID)
+            VALUES (@IID, @BID, 'DEVOLUCION_FISICA_CLIENTE', @Met, 'Devolución física de excedente al cliente', @Usr)
+        `);
+
+    // 3. Orden ancla (mismo espíritu que la VENTA_DIRECTA de tienda: existe para
+    //    poder imprimir la etiqueta y seguir el camino normal de depósito/retiro).
+    const codigoOrden = `DEV-${tevId}`;
+    const descTrabajo = `DEVOLUCIÓN TELA CLIENTE — ${b.TipoTela} (${metros.toFixed(2)}m)`;
+    const cliIdInt = parseInt(b.ClienteID, 10) || null;
+
+    const insOrden = await new sql.Request(transaction)
+        .input('Cliente', sql.NVarChar(400), b.NombreCliente || b.ClienteID)
+        .input('CliId', sql.Int, cliIdInt)
+        .input('Desc', sql.NVarChar(600), descTrabajo)
+        .input('Mat', sql.VarChar(255), b.TipoTela)
+        .input('Mag', sql.NVarChar(100), String(metros.toFixed(2)))
+        .input('Cod', sql.VarChar(100), codigoOrden)
+        .input('Modo', sql.VarChar(100), 'A DEFINIR AL RETIRAR')
+        .query(`
+            INSERT INTO Ordenes (
+                AreaID, Cliente, CliIdCliente, DescripcionTrabajo, Prioridad,
+                FechaIngreso, FechaEstimadaEntrega, Material, CodigoOrden,
+                Magnitud, ProximoServicio, UM, Estado, EstadoenArea,
+                EstadoDependencia, ModoRetiro
+            )
+            OUTPUT INSERTED.OrdenID
+            VALUES (
+                'PRO', @Cliente, @CliId, @Desc, 'Normal',
+                GETDATE(), DATEADD(day, 3, GETDATE()), @Mat, @Cod,
+                @Mag, 'DEPOSITO', 'm', 'Pendiente', 'Pendiente',
+                'DEVOLUCION_TELA_CLIENTE', @Modo
+            )
+        `);
+    const ordenId = insOrden.recordset[0].OrdenID;
+
+    // 4. Etiqueta + bulto — nace "esperando remito" en el área REAL donde está
+    //    la bobina (ib.AreaID), NO directo en depósito — mismo patrón que
+    //    LabelGenerationService.addOneBulto para cualquier orden normal.
+    //    CodigoQR: mismo formato "$ * " que usa el resto del sistema para poder
+    //    reimprimir/resolver el bulto (ver rollsController.js).
+    const codigoEtiqueta = `${codigoOrden}/B1`;
+    const nombreClienteSafe = String(b.NombreCliente || b.ClienteID || '').replace(/\$\*/g, ' ');
+    const descSafe = descTrabajo.replace(/\$\*/g, ' ');
+    const matSafe = String(b.TipoTela || '').replace(/\$\*/g, ' ');
+    const qrString = `${codigoOrden} $ * 1 $ * ${nombreClienteSafe} $ * ${descSafe} $ * Normal $ * ${matSafe} $ * ${metros.toFixed(2)}m $ * ${codigoEtiqueta}`;
+    const areaOrigen = b.AreaID || 'DEPOSITO';
+    await new sql.Request(transaction)
+        .input('OID', sql.Int, ordenId)
+        .input('Num', sql.Int, 1)
+        .input('User', sql.VarChar(100), userName || 'Sistema')
+        .input('QR', sql.NVarChar(sql.MAX), qrString)
+        .query(`
+            INSERT INTO Etiquetas (OrdenID, NumeroBulto, TotalBultos, CodigoQR, FechaGeneracion, Usuario, CreadoPor)
+            VALUES (@OID, @Num, @Num, @QR, GETDATE(), @User, @User)
+        `);
+    await new sql.Request(transaction)
+        .input('Cod', sql.NVarChar(50), codigoEtiqueta)
+        .input('OID', sql.Int, ordenId)
+        .input('Desc', sql.NVarChar(255), descTrabajo)
+        .input('UID', sql.Int, usuarioId || 1)
+        .input('Area', sql.VarChar(20), areaOrigen)
+        .query(`
+            INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador)
+            VALUES (@Cod, 'DEV_TELA_CLIENTE', @OID, @Desc, @Area, 'EN_STOCK', @UID)
+        `);
+
+    // 5. Evento queda EMPAQUETADA — el bulto existe y se puede imprimir/mandar
+    //    por remito, pero el retiro y el aviso todavía NO se generaron.
+    await new sql.Request(transaction)
+        .input('TID', sql.Int, tevId)
+        .input('OID', sql.Int, ordenId)
+        .query(`
+            UPDATE dbo.TelaClienteEventos
+            SET Estado = 'EMPAQUETADA', OrdenGeneradaID = @OID
+            WHERE TevID = @TID
+        `);
+
+    return {
+        ok: true, ordenId, codigoOrden, metros, areaOrigen,
+        qrString, descTrabajo, nombreCliente: nombreClienteSafe,
+    };
+}
+
+// ============================================================
+// 3b. DE UNA DESDE EL INVENTARIO (botón ↶ de la bobina)
+// ============================================================
+/**
+ * Lo pide alguien de adentro, así que no pasa por la bandeja (29-oct-2026, pedido del usuario): en una sola
+ * transacción se registra la solicitud ya aprobada y se ejecuta.
+ *  - DEVOLVER: lo mismo que «Aprobar» + «Empaquetar» de la bandeja — cierra la bobina, arma DEV-<n> con su
+ *    etiqueta y su bulto, y queda EMPAQUETADA. El remito a depósito sigue igual que hoy.
+ *  - DESCARTAR: lo mismo que «Aprobar» un descarte — cierra la bobina y queda RESUELTA.
+ * Las solicitudes del portal siguen yendo a la bandeja.
+ */
+async function devolverDesdeInventario(pool, opciones) {
+    await ensureSchema(pool);
+    const transaction = new sql.Transaction(pool);
+    await transaction.begin();
+    try {
+        const resultado = await devolverDesdeInventarioTx(transaction, opciones);
+        await transaction.commit();
+        return resultado;
+    } catch (err) {
+        try { await transaction.rollback(); } catch (_) {}
+        // Dos pedidos a la vez: el índice único de solicitud abierta frena el segundo.
+        if (err.number === 2601 || err.number === 2627) throw errorSolicitudRepetida('INTERNO', null);
+        throw err;
+    }
+}
+
+async function devolverDesdeInventarioTx(transaction, { clienteId, bobinaId, accion, usuarioId, userName, observaciones }) {
+    const accionNorm = String(accion || '').toUpperCase();
+    if (!ACCIONES_VALIDAS.includes(accionNorm)) {
+        throw errorControl(400, `Acción inválida: ${accion}. Debe ser DEVOLVER o DESCARTAR.`);
+    }
+
+    const bobina = await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .input('CLI', sql.NVarChar(255), clienteId)
+        .query(`SELECT BobinaID, CodigoEtiqueta, MetrosRestantes, Estado FROM InventarioBobinas WITH (UPDLOCK, ROWLOCK) WHERE BobinaID = @BID AND ClienteID = @CLI`);
+    const b = bobina.recordset[0];
+    if (!b) throw errorControl(404, 'Bobina no encontrada o no pertenece a este cliente.');
+    if (['Cerrado', 'Agotado'].includes(b.Estado)) {
+        throw errorControl(400, `Esa bobina ya está ${b.Estado} — no hay tela para ${accionNorm === 'DESCARTAR' ? 'descartar' : 'devolver'}.`);
+    }
+    // Mismo control que «Empaquetar»: con la tela puesta en una máquina no se puede cerrar la bobina.
+    if (accionNorm === 'DEVOLVER' && !['Disponible', 'Pendiente'].includes(b.Estado)) {
+        throw errorControl(409, `${b.CodigoEtiqueta} está "${b.Estado}": una orden la está usando. Solución: esperá a que se libere y volvé a tocar ↶.`);
+    }
+
+    // Si el cliente ya la pidió desde el portal, se resuelve en la bandeja (el botón ↶ no se ofrece en ese caso).
+    const abierta = await solicitudAbierta(new sql.Request(transaction), bobinaId);
+    if (abierta) throw errorSolicitudRepetida('INTERNO', abierta);
+
+    // La solicitud nace aprobada por quien tocó el botón: queda el rastro de quién y cuándo, igual que en la bandeja.
+    const ins = await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .input('CLI', sql.NVarChar(200), clienteId)
+        .input('Acc', sql.VarChar(12), accionNorm)
+        .input('Met', sql.Decimal(10, 2), b.MetrosRestantes)
+        .input('Obs', sql.NVarChar(500), observaciones || null)
+        .input('Usr', sql.Int, usuarioId || null)
+        .query(`
+            INSERT INTO dbo.TelaClienteEventos
+                (BobinaID, ClienteID, Tipo, Accion, Estado, MetrosInvolucrados, Origen, Observaciones,
+                 UsuarioSolicita, UsuarioResuelve, FechaResolucion)
+            OUTPUT INSERTED.TevID
+            VALUES (@BID, @CLI, 'SOLICITUD_CLIENTE', @Acc, 'APROBADA', @Met, 'INTERNO', @Obs, @Usr, @Usr, GETDATE())
+        `);
+    const tevId = ins.recordset[0].TevID;
+
+    // Igual que solicitarDevolucion: si había un aviso de excedente pendiente, ya quedó contestado.
+    await new sql.Request(transaction)
+        .input('BID', sql.Int, bobinaId)
+        .input('Usr', sql.Int, usuarioId || null)
+        .input('Obs', sql.NVarChar(500), `Resuelto: ${accionNorm === 'DESCARTAR' ? 'descartada' : 'devuelta'} desde el inventario (solicitud #${tevId})`)
+        .query(`
+            UPDATE dbo.TelaClienteEventos
+            SET Estado = 'RESUELTA', UsuarioResuelve = @Usr, FechaResolucion = GETDATE(), Observaciones = @Obs
+            WHERE BobinaID = @BID AND Tipo = 'AVISO_EXCEDENTE' AND Estado = 'PENDIENTE'
+        `);
+
+    if (accionNorm === 'DESCARTAR') {
+        const { metros } = await _descartarEnTx(transaction, { tevId, bobinaId, usuarioId });
+        return { ok: true, tevId, accion: accionNorm, codigoEtiqueta: b.CodigoEtiqueta, metros };
+    }
+    const empaquetado = await _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userName });
+    return { ...empaquetado, tevId, accion: accionNorm, codigoEtiqueta: b.CodigoEtiqueta };
 }
 
 /**
@@ -980,6 +1082,8 @@ module.exports = {
     listarParaEmpaquetar,
     listarAvisosPendientesCliente,
     empaquetarDevolucion,
+    devolverDesdeInventario,
+    devolverDesdeInventarioTx,
     finalizarLlegadaDeposito,
     refrescarAvisosPendientes,
     detectarCandidatosExcedente,

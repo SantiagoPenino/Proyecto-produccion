@@ -204,8 +204,8 @@ const BobinaCard = ({
                             type="button"
                             onClick={() => onSolicitarDevolucion(bob)}
                             className={BTN_ICONO}
-                            title="Solicitar devolución/descarte de excedente"
-                            aria-label="Solicitar devolución o descarte de excedente"
+                            title="Devolver o descartar el excedente (se hace en el momento, sin pasar por la bandeja)"
+                            aria-label="Devolver o descartar el excedente"
                         >
                             <Undo2 className="w-4 h-4" />
                         </button>

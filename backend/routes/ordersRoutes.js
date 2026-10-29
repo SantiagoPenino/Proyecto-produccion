@@ -4,6 +4,7 @@ const router = express.Router();
 // Importamos el controlador
 const ordersController = require('../controllers/ordersController');
 const clientOrdersController = require('../controllers/clientOrdersController');
+const fechasOrdenController = require('../controllers/fechasOrdenController');
 
 // 👇 Importamos Middleware de Autenticación
 const { verifyToken, authorizeAdminOrArea, soloInternoConRol, ROLES_EDITAN_ESTADO } = require('../middleware/authMiddleware');
@@ -19,6 +20,8 @@ router.post('/client', verifyToken, clientOrdersController.createClientOrder);
 router.post('/search/advanced', verifyToken, soloInternoConRol(), ordersController.advancedSearchOrders);
 router.get('/details/:id', verifyToken, soloInternoConRol(), ordersController.getOrderFullDetails);
 router.get('/search/integral/:ref', verifyToken, soloInternoConRol(), ordersController.getIntegralPedidoDetailsV2); // Nueva Ruta Integral (Version SQL SP)
+// Fechas de la orden y de su pedido (pestaña «Fechas» del detalle): plan, comprometida, pronta, cliente, depósito
+router.get('/fechas/:id', verifyToken, soloInternoConRol(), fechasOrdenController.getFechas);
 router.get('/priorities', verifyToken, soloInternoConRol(), ordersController.getPrioritiesConfig);
 router.get('/estados', verifyToken, soloInternoConRol(), ordersController.getEstadosConfig);
 // [PRO] Catálogo de tipos de archivo de referencia (selector del detalle de orden)

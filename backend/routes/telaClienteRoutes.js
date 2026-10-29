@@ -11,6 +11,7 @@ router.get('/:clienteId/estado-cuenta', verifyToken, ctrl.getEstadoCuenta);
 
 // Devolución física de excedente — solicitar (bobina interna) + bandeja de aprobación
 router.post('/:clienteId/bobinas/:bobinaId/solicitar', verifyToken, ctrl.solicitarDevolucion);
+router.post('/:clienteId/bobinas/:bobinaId/devolver-ahora', verifyToken, ctrl.devolverDesdeInventario); // botón ↶ del inventario, sin bandeja
 router.get('/bandeja',                                  verifyToken, ctrl.getBandeja);
 router.get('/bandeja/para-empaquetar',                  verifyToken, ctrl.getParaEmpaquetar);
 router.post('/bandeja/:tevId/aprobar',                  verifyToken, ctrl.aprobarEvento);

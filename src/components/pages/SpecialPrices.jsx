@@ -760,6 +760,7 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
 
     // Estado Dual Interactivo por Fila: rowStateMap[CodArticulo]
     const [rowStateMap, setRowStateMap] = useState({});
+    const [reglasSinFila, setReglasSinFila] = useState([]); // reglas del cliente que ninguna fila muestra (se reenvían igual)
 
     // Bulk & Filters
     const [filterCategory, setFilterCategory] = useState("TODAS");
@@ -932,7 +933,9 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                 
                 const grouped = {};
                 res.data.forEach(p => {
-                    const g = p.Grupo || 'Sin Familia';
+                    // Articulos.Grupo es char(20): viene con espacios ('1.1     '). Sin recortarlo la fila de la
+                    // familia quedaba 'GRUPO:1.1     ' y nunca coincidía con su regla → «Guardar tarifa» la borraba.
+                    const g = (p.Grupo || '').trim() || 'Sin Familia';
                     if (!grouped[g]) grouped[g] = [];
                     grouped[g].push({ ...p, Grupo: g });
                 });
@@ -946,6 +949,7 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                         CodArticulo: `GRUPO:${g}`,
                         ProIdProducto: null,
                         Descripcion: nombreGrupo ? `${g} - ${nombreGrupo}` : g,
+                        NombreGrupo: nombreGrupo || '',
                         Grupo: g,
                         Precio: 0,
                         Moneda: 'UYU'
@@ -967,8 +971,14 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                     profiles: res.data.profiles || [] 
                 });
                 setSelectedProfileIds(new Set((res.data.profiles || []).map(p => p.ID)));
-                const rules = res.data.rules || [];
-                
+                // La API devuelve la regla de familia con el código del grupo a secas ('1.1'): se lleva a la
+                // clave de su fila ('GRUPO:1.1'), igual que la arma loadProducts.
+                const rules = (res.data.rules || []).map(r =>
+                    r.CodGrupo != null && r.ProIdProducto == null
+                        ? { ...r, CodArticulo: `GRUPO:${String(r.CodGrupo).trim()}` }
+                        : r
+                );
+
                 // Auto-expandir familias que tengan reglas activas
                 const activeGroups = new Set();
                 rules.forEach(r => {
@@ -1013,8 +1023,10 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
     // Construye el estado dual $ y % para TODAS las filas
     const buildRowMap = (products, rules) => {
         const newMap = {};
+        const usadas = new Set();
         products.forEach(prod => {
             const rule = rules.find(r => r.CodArticulo === prod.CodArticulo);
+            if (rule) usadas.add(rule);
             const bp = parseFloat(prod.Precio) || 0;
             
             let customStr = bp > 0 ? bp.toString() : "";
@@ -1025,16 +1037,20 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
 
             if (rule) {
                 active = true;
-                tipo = rule.TipoRegla;
+                // Todo tipo con «percentage» (percentage, percentage_discount) es un porcentaje y fixed_price es
+                // precio fijo: el motor los lee igual. Antes percentage_discount quedaba con su nombre, al guardar
+                // caía en la rama de precio fijo y mandaba el precio rebajado como si fuera el % (25 % → 16,5 %).
+                const tipoBase = rule.TipoRegla || 'fixed';
+                tipo = tipoBase.includes('percentage') ? 'percentage' : tipoBase === 'fixed_price' ? 'fixed' : tipoBase;
                 const rv = parseFloat(rule.Valor) || 0;
 
-                if (tipo.includes('percentage')) {
+                if (tipo === 'percentage') {
                     discStr = rv.toString();
                     if (bp > 0) {
                         customStr = (bp * (1 - rv / 100)).toFixed(2);
                         if(customStr.endsWith('.00')) customStr = customStr.slice(0, -3);
                     } else customStr = "";
-                } else if (tipo === 'fixed' || tipo === 'fixed_price') {
+                } else if (tipo === 'fixed') {
                     customStr = rv.toString();
                     if (bp > 0) {
                         discStr = (((bp - rv) / bp) * 100).toFixed(2);
@@ -1059,10 +1075,17 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                 discStr,
                 amtStr,
                 tipoRegla: tipo,
-                isActive: active
+                isActive: active,
+                // La regla de la que salió la fila y cómo arrancó: si al guardar la fila sigue igual, se reenvía
+                // esa regla tal cual (mismo tipo, mismo valor) en vez de recalcularla.
+                regla: rule || null,
+                inicial: { customStr, discStr, amtStr, tipoRegla: tipo, isActive: active }
             };
         });
         setRowStateMap(newMap);
+        // Reglas que no tienen fila en la pantalla (familia de grupo vacío, artículo que ya no está en la lista):
+        // no se ven, pero «Guardar tarifa» las reenvía sin cambios para no borrarlas.
+        setReglasSinFila(rules.filter(r => !usadas.has(r)));
         setIsDirtyMap(false);
     };
 
@@ -1199,6 +1222,18 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
         toast.info("Perfiles de precio modificados localmente. Recuerda guardar tarifa.");
     };
 
+    // Una regla tal como vino de la API, en el formato que espera el guardado (la API trae la moneda como el
+    // MonIdMoneda numérico en «Moneda» y el escalón en «CantidadMinima»).
+    const reglaTalCual = (r) => ({
+        CodArticulo: r.CodArticulo,
+        ProIdProducto: r.ProIdProducto,
+        CodGrupo: r.CodGrupo,
+        TipoRegla: r.TipoRegla,
+        Valor: r.Valor,
+        MonIdMoneda: r.Moneda,
+        MinCantidad: r.CantidadMinima || 0
+    });
+
     const handleSaveRules = () => {
         if (!selClientId) return;
         const payloadRules = [];
@@ -1207,6 +1242,13 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
             const row = rowStateMap[cod];
             const prod = baseProducts.find(p => p.CodArticulo === cod);
             if (!prod) return;
+
+            // Fila que nadie tocó: se manda la regla de la que salió, sin recalcular nada.
+            const ini = row.inicial;
+            if (row.regla && ini && ['customStr', 'discStr', 'amtStr', 'tipoRegla', 'isActive'].every(k => row[k] === ini[k])) {
+                payloadRules.push(reglaTalCual(row.regla));
+                return;
+            }
 
             let isConfigured = false;
             let finalVal = 0;
@@ -1238,6 +1280,9 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
             }
         });
 
+        // Las que la pantalla no muestra también vuelven, sin cambios (el backend borra todo y reinserta lo que llega).
+        reglasSinFila.forEach(r => payloadRules.push(reglaTalCual(r)));
+
         api.post('/special-prices/profile', {
             clientId: selClientId,
             nombre: clientData.client?.Nombre || clientData.client?.NombreCliente || `Cliente ${selClientId}`,
@@ -1249,7 +1294,8 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
             setIsDirtyMap(false);
             loadRules(selClientId); // refrescar orgánicos
         })
-        .catch(e => toast.error("Error guardando: " + e.message));
+        // Si el backend frena el guardado (regla con un valor imposible), su mensaje dice qué regla y cómo arreglarla
+        .catch(e => toast.error(e.response?.data?.error || ("Error guardando: " + e.message)));
     };
 
     const handleCreateClient = (id, nombre) => {
@@ -1411,7 +1457,9 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                     group = "GLOBAL";
                 } else if (cod.startsWith('GRUPO:')) {
                     const familyName = cod.replace('GRUPO:', '');
-                    desc = `Toda la familia: ${familyName}`;
+                    // Con el nombre del grupo («1.1 · Sublimacion»), el mismo que muestra el catálogo
+                    const nombreFamilia = baseProducts.find(p => p.CodArticulo === cod)?.NombreGrupo;
+                    desc = `Toda la familia: ${familyName}${nombreFamilia ? ` · ${nombreFamilia}` : ''}`;
                     typeSymbol = "📁";
                     group = familyName;
                 } else {
@@ -1980,9 +2028,15 @@ const SpecialPrices = ({ clienteFijo = null, embebido = false }) => {
                                     <span className={`${CHIP} ${CHIP_CIAN}`}>
                                         {activeRulesCount} excepciones cargadas
                                     </span>
+                                    {reglasSinFila.length > 0 && (
+                                        <span className={`${CHIP} ${CHIP_ZINC}`} title="Reglas guardadas que no tienen fila en esta pantalla (por ejemplo, de una familia sin código). Al guardar se mantienen sin cambios.">
+                                            {reglasSinFila.length} {reglasSinFila.length === 1 ? 'regla que esta pantalla no muestra se mantiene' : 'reglas que esta pantalla no muestra se mantienen'}
+                                        </span>
+                                    )}
 
                                     {clientData.profiles && clientData.profiles.map((p, idx) => {
-                                        const name = p.NombrePerfil || '';
+                                        // /special-prices trae NombrePerfil; /profiles (al «Aplicar perfiles») trae Nombre
+                                        const name = p.NombrePerfil || p.Nombre || '';
                                         const nameLower = name.toLowerCase();
 
                                         // Ícono según el perfil (antes, además, un color por tipo: ahora todos en cian)

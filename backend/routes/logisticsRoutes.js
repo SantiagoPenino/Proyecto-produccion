@@ -64,6 +64,11 @@ router.post('/pro/orders/:ordenId/falla', fallaBandejaPRO.reportar);
 // Transport
 const uploadEncomiendas = require('../middleware/multerEncomiendasConfig');
 router.post('/remitos/:code/confirm-delivery', uploadEncomiendas.single('comprobante'), logisticsController.confirmRemitoDelivery);
+// Comprobante de una encomienda ya entregada (:code = "RW-35433"): Historial del día y En Viaje.
+// El código se valida ANTES del multer, que lo usa para armar el nombre del archivo en disco.
+const codigoRetiroValido = (req, res, next) => (/^[A-Za-z]{0,3}-?\d{1,9}$/.test(req.params.code || '')
+    ? next() : res.status(400).json({ error: 'Número de retiro inválido.' }));
+router.post('/encomiendas/:code/comprobante', codigoRetiroValido, uploadEncomiendas.single('comprobante'), logisticsController.subirComprobanteEncomienda);
 router.post('/transport/confirm', logisticsController.confirmTransport);
 router.get('/transport/active', logisticsController.getActiveTransports);
 router.get('/requirements', logisticsController.getOrderRequirements);
