@@ -1439,9 +1439,10 @@ exports.getOrdersByArea = async (req, res) => {
 
         // [CICLO EN PLANTA 26/10] En las finalizadas, cuánto tardó cada orden en horas laborales (lo calcula el job
         // «Ciclo en planta»). Sin la tabla (script sin correr) la planilla sigue igual, sin la columna.
-        let conCiclo = false;
+        let conCiclo = false, conPasos = false;
+        const cicloSvc = require('../services/cicloPlantaService');
         if (mode === 'pronto' || mode === 'history') {
-            try { conCiclo = await require('../services/cicloPlantaService').tieneTabla(pool); }
+            try { conCiclo = await cicloSvc.tieneTabla(pool); conPasos = cicloSvc.tienePasos(); }
             catch (e) { logger.warn(`[CICLO-PLANTA] planilla: ${e.message}`); }
         }
 
@@ -1519,7 +1520,8 @@ exports.getOrdersByArea = async (req, res) => {
                 cp.MinutosCorridos      AS CicloCorridos,
                 cp.MinutosEsperaCliente AS CicloEspera,
                 cp.Inicio               AS CicloInicio,
-                cp.OrigenInicio         AS CicloOrigen` : ''}
+                cp.OrigenInicio         AS CicloOrigen${conPasos ? `,
+                cp.Pasos                AS CicloPasos` : ''}` : ''}
 
             FROM dbo.Ordenes o WITH(NOLOCK)
             LEFT JOIN dbo.ConfigEquipos m WITH(NOLOCK) ON o.MaquinaID = m.EquipoID
@@ -1676,6 +1678,7 @@ exports.getOrdersByArea = async (req, res) => {
                 espera  : o.CicloEspera,
                 inicio  : o.CicloInicio,
                 origen  : o.CicloOrigen,
+                pasos   : o.CicloPasos ? cicloSvc.leerPasos(o.CicloPasos) : null,   // minutos por paso (28/10)
             } : null,
 
             deliveryDate: o.FechaEstimadaEntrega,

@@ -31,13 +31,15 @@ const DIA_SEMANA       = process.env.CONT_ESTADOS_DIA     || '4'; // 4 = Jueves
  * Actualiza a 'VENCIDO' las DeudaDocumento cuya DDeFechaVencimiento ya pasó.
  * Un resto de menos de un centavo no es deuda: no se vence (30/09/2026, 26 deudas "vencidas"
  * por 0,0001–0,0088 con el documento ya cobrado).
+ * Las 'PARCIAL' (pagadas en parte) también vencen: hasta el 29/10/2026 solo se vencían las
+ * 'PENDIENTE' y una deuda atrasada con un pago parcial nunca figuraba vencida (INF-SIS-2026-13, fase 2).
  */
 async function marcarDeudasVencidas(pool) {
   try {
     const result = await pool.request().query(`
       UPDATE dbo.DeudaDocumento
       SET    DDeEstado = 'VENCIDO'
-      WHERE  DDeEstado = 'PENDIENTE'
+      WHERE  DDeEstado IN ('PENDIENTE', 'PARCIAL')
         AND  DDeImportePendiente >= 0.01
         AND  DDeFechaVencimiento < CAST(GETDATE() AS DATE)
     `);

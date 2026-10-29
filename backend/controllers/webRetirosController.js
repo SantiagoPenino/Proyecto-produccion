@@ -236,17 +236,34 @@ exports.getMyRetirosPendientes = async (req, res) => {
             }
         }
 
-        // Retiros con pesos y dólares: el total que se va a cobrar es el de «Pagar» (pesos, con los
-        // dólares a la cotización del día), no el guardado, que en los de antes del 27/10 suma sin convertir.
+        // El total es el que va a cobrar «Pagar» (createHandyPaymentLinkForRetiro): lo pendiente de cada
+        // orden, sin las que ya tienen comprobante (se pagan en caja), y con pesos y dólares, los dólares a
+        // la cotización del día. Antes la lista mostraba el total guardado, con las facturadas y las ya
+        // pagas adentro, y un «Pagar» que fallaba en los retiros con solo facturadas (INF-SIS-2026-14, P8).
         const { cotizarSeleccion } = require('../services/retiroService');
         for (const r of Object.values(retirosMap)) {
-            if (r.monedas.size > 1 && r.ordIds.length) {
+            if (r.ordIds.length) {
                 try {
-                    const sel = await cotizarSeleccion(pool, r.ordIds.map(id => ({ ordId: id })));
+                    const sel = await cotizarSeleccion(pool, r.ordIds.map(id => ({ ordId: id })), { excluirFacturadas: true });
                     Object.assign(r, { Monto: sel.total, Moneda: sel.moneda });
                     if (sel.mezcla) Object.assign(r, { Cotizacion: sel.cotizacion, Dolares: sel.dolares, DolaresEnPesos: sel.dolaresEnPesos });
+                    // Cada orden con lo que se paga online, o por qué no
+                    const porId = new Map(sel.items.map(i => [i.ordId, i]));
+                    const bultos = JSON.parse(r.BultosJSON).map((b, k) => {
+                        const it = porId.get(r.ordIds[k]);
+                        if (!it) return b;
+                        return { ...b, amount: it.importe, currency: it.moneda === 'USD' ? 'US$' : '$',
+                                 ...(it.facturada ? { facturada: it.facturada.documento, deudaPendiente: it.facturada.deudaPendiente }
+                                     : it.importe <= 0.004 ? { pagada: true } : {}) };
+                    });
+                    r.BultosJSON = JSON.stringify(bultos);
+                    if (!(sel.total > 0.004)) {
+                        r.SinPagoOnline = sel.facturadas.length
+                            ? `${sel.facturadas.map(f => `${f.codigo} (${f.documento})`).join(', ')} ya ${sel.facturadas.length > 1 ? 'están facturadas' : 'está facturada'}: no se paga${sel.facturadas.length > 1 ? 'n' : ''} por acá. Si la factura tiene saldo, se paga en caja.`
+                            : 'No queda nada para pagar online en este retiro.';
+                    }
                 } catch (eSel) {
-                    logger.warn(`[PAGOS PENDIENTES] No se pudo calcular el total convertido de ${r.OrdIdRetiro}: ${eSel.message}`);
+                    logger.warn(`[PAGOS PENDIENTES] No se pudo calcular el total de ${r.OrdIdRetiro}: ${eSel.message}`);
                 }
             }
             delete r.ordIds;
@@ -293,7 +310,8 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
         if (!hijas.length) return res.status(400).json({ error: 'El retiro no tiene órdenes.' });
 
         const { cotizarSeleccion } = require('../services/retiroService');
-        const sel = await cotizarSeleccion(pool, hijas.map(h => ({ ordId: h.OrdIdOrden })));
+        // Las órdenes que ya tienen comprobante no se cobran por acá: su deuda va por caja (INF-SIS-2026-13)
+        const sel = await cotizarSeleccion(pool, hijas.map(h => ({ ordId: h.OrdIdOrden })), { excluirFacturadas: true });
         const nombre = new Map(hijas.map(h => [h.OrdIdOrden, h.OrdNombreTrabajo]));
         const ordenes = sel.items.map(i => ({
             id: i.codigo,
@@ -301,9 +319,14 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
             amount: i.importeRetiro,
             amountOriginal: i.importe,
             currency: i.moneda,
+            rawId: i.ordId,
+            // El webhook de Handy las saca del cobro de caja
+            ...(i.facturada ? { facturada: i.facturada.documento } : {}),
         }));
         const aCobrar = ordenes.filter(o => o.amount > 0);
-        if (!aCobrar.length) return res.status(400).json({ error: 'Este retiro no tiene nada pendiente de pago.' });
+        if (!aCobrar.length) return res.status(400).json({ error: sel.facturadas?.length
+            ? require('../services/retiroService').mensajeSoloFacturadas(sel.facturadas)
+            : 'Este retiro no tiene nada pendiente de pago.' });
         const currencyCode = sel.moneda === 'USD' ? 840 : 858;
 
         const { createPaymentLink } = require('../services/handyService');
@@ -335,22 +358,22 @@ exports.createHandyPaymentLinkForRetiro = async (req, res) => {
             return res.status(500).json({ error: result.error });
         }
 
-        // Actualizar la ReferenciaPagoOnline en OrdenesRetiro. Si mezcla monedas, también el
-        // total y la moneda con los de este link (los retiros mezclados de antes quedaron en
-        // dólares con el total sumado sin convertir).
-        try {
-            await pool.request()
-                .input('OReId', sql.Int, OReId)
-                .input('Ref', sql.VarChar(200), result.transactionId)
-                .input('Mezcla', sql.Bit, sel.mezcla ? 1 : 0)
-                .input('Total', sql.Decimal(18, 2), sel.total)
-                .input('Moneda', sql.VarChar(10), sel.moneda)
-                .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref,
-                            OReCostoTotalOrden = CASE WHEN @Mezcla = 1 THEN @Total ELSE OReCostoTotalOrden END,
-                            MonIdMoneda        = CASE WHEN @Mezcla = 1 THEN @Moneda ELSE MonIdMoneda END
-                        WHERE OReIdOrdenRetiro = @OReId`);
-        } catch (dbErr) {
-            logger.warn("[HANDY RETIRO] No se pudo actualizar ReferenciaPagoOnline:", dbErr.message);
+        // Si mezcla monedas, el total y la moneda del retiro pasan a los de este link (los retiros
+        // mezclados de antes quedaron en dólares con el total sumado sin convertir).
+        // La referencia del pago (ReferenciaPagoOnline) ya NO se graba acá: la graba el aviso de Handy
+        // cuando registra el pago. Grabada al armar el link, un link sin pagar dejaba el retiro «pago»
+        // al ubicarlo en el estante (INF-SIS-2026-14).
+        if (sel.mezcla) {
+            try {
+                await pool.request()
+                    .input('OReId', sql.Int, OReId)
+                    .input('Total', sql.Decimal(18, 2), sel.total)
+                    .input('Moneda', sql.VarChar(10), sel.moneda)
+                    .query(`UPDATE OrdenesRetiro SET OReCostoTotalOrden = @Total, MonIdMoneda = @Moneda
+                            WHERE OReIdOrdenRetiro = @OReId`);
+            } catch (dbErr) {
+                logger.warn("[HANDY RETIRO] No se pudo actualizar el total del retiro mezclado:", dbErr.message);
+            }
         }
 
         return res.json({ success: true, url: result.url, transactionId: result.transactionId });

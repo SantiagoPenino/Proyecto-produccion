@@ -85,8 +85,10 @@ router.delete('/saved-addresses/:id', verifyToken, webOrdersController.deleteAdd
 // POST /api/web-orders/pickup-orders/pdf (Generar PDF)
 router.post('/pickup-orders/pdf', verifyToken, webOrdersController.generatePickupReceipt);
 
-// POST /api/web-orders/pickup-orders/handy-payment (Generar Link de Pago Handy)
-router.post('/pickup-orders/handy-payment', verifyToken, webOrdersController.createHandyPaymentLink);
+// SIN USO — desmontada el 29/10/2026 (INF-SIS-2026-14, P7): POST /api/web-orders/pickup-orders/handy-payment
+// confiaba en los importes que mandaba la pantalla. El portal paga con /pickup-orders/init-payment y el log
+// HTTP de producción no registró ninguna llamada en los 7 días que guarda (consulta del 29/10).
+// router.post('/pickup-orders/handy-payment', verifyToken, webOrdersController.createHandyPaymentLink);
 
 // POST /api/web-orders/pickup-orders/init-payment (Nuevo flujo: generar link sin crear retiro)
 router.post('/pickup-orders/init-payment', verifyToken, webOrdersController.initHandyPayment);

@@ -416,6 +416,8 @@ const ordenesRetiroCaja = async (req, res) => {
     // y que no estén cancelados (6). Una orden cubierta ENTERA con la billetera
     // (consumo CUBIERTO_CUENTA_, no parcial) ya no tiene nada que cobrar: no
     // mantiene al retiro en caja aunque su PagIdPago siga NULL.
+    // Tampoco una orden en $0 (las reposiciones -R): no se pueden cobrar y se quedaban
+    // en la lista para siempre (RT-35459, 28/10/2026). Sin precio (NULL) sí se muestra.
     const query = `
       ${getOrdenesRetiroQueryBase}
       WHERE r.OReEstadoActual NOT IN (6)
@@ -424,6 +426,7 @@ const ordenesRetiroCaja = async (req, res) => {
         SELECT 1 FROM OrdenesDeposito od2 WITH(NOLOCK)
         WHERE od2.OReIdOrdenRetiro = r.OReIdOrdenRetiro
         AND od2.PagIdPago IS NULL
+        AND (od2.OrdCostoFinal IS NULL OR ABS(od2.OrdCostoFinal) >= 0.01)
         AND NOT EXISTS (
           -- Misma lista de ids que en la base (sin OR, para que use el índice de OrdIdOrden).
           SELECT 1
@@ -576,8 +579,20 @@ const marcarDespachoEntregadoAutorizado = async (req, res) => {
       const checkRes = await transaction.request()
         .input('ID', sql.Int, OReIdOrdenRetiro)
         .query(`
-          SELECT r.PagIdPago, r.OReEstadoActual, o.PagIdPago as O_PagIdPago, c.TClIdTipoCliente,
-                 r.CodCliente, r.OReCostoTotalOrden
+          SELECT r.PagIdPago, r.OReEstadoActual, o.OrdIdOrden, o.PagIdPago as O_PagIdPago, c.TClIdTipoCliente,
+                 r.CodCliente, r.OReCostoTotalOrden,
+                 -- Cubierta ENTERA por la billetera: el mismo EXISTS que la lista (CubiertaBilletera)
+                 CASE WHEN o.OrdIdOrden IS NOT NULL AND EXISTS (
+                     SELECT 1
+                     FROM (SELECT o.OrdIdOrden AS Id
+                           UNION ALL SELECT erpB.OrdenID FROM Ordenes erpB WITH(NOLOCK) WHERE erpB.CodigoOrden = o.OrdCodigoOrden) idsB
+                     JOIN MovimientosCuenta cx WITH(NOLOCK) ON cx.OrdIdOrden = idsB.Id
+                     JOIN CuentasCliente ccx WITH(NOLOCK) ON ccx.CueIdCuenta = cx.CueIdCuenta
+                     WHERE ccx.CliIdCliente = o.CliIdCliente
+                       AND cx.MovTipo = 'CONSUMO_CUENTA'
+                       AND (cx.MovAnulado IS NULL OR cx.MovAnulado = 0)
+                       AND cx.MovObservaciones LIKE 'CUBIERTO[_]CUENTA[_]%'
+                 ) THEN 1 ELSE 0 END AS CubiertaBilletera
           FROM OrdenesRetiro r WITH(NOLOCK)
           LEFT JOIN OrdenesDeposito o WITH(NOLOCK) ON o.OReIdOrdenRetiro = r.OReIdOrdenRetiro
           LEFT JOIN Clientes c WITH(NOLOCK) ON c.CliIdCliente = o.CliIdCliente
@@ -586,8 +601,16 @@ const marcarDespachoEntregadoAutorizado = async (req, res) => {
 
       if (checkRes.recordset.length === 0) continue;
 
-      // Una ORDEN está "impaga" si NI el retiro principal NI las órdenes hijas tienen PagIdPago.
-      const isImpaga = checkRes.recordset.some(row => !row.PagIdPago && !row.O_PagIdPago);
+      // Paga = la MISMA regla que la lista de la pantalla (processRetirosRows): pago en el retiro, o todas
+      // sus órdenes con PagIdPago anotado (el 0 es el centinela «cubierto sin efectivo»: plan, rollo o
+      // crédito, retiroService.crearRetiro) o cubiertas enteras por la billetera. Antes `!row.O_PagIdPago`
+      // tomaba el 0 como impago: la pantalla la veía paga, entregaba sin pedir contraseña y acá rebotaba con
+      // «Contraseña incorrecta» (RW-35368, 28/10, estado 8 con PagIdPago = 0).
+      const ordenesDelRetiro = checkRes.recordset.filter(row => row.OrdIdOrden != null);
+      const pagoEnRetiro = checkRes.recordset.some(row => !!row.PagIdPago);
+      const todasPagas = ordenesDelRetiro.length > 0
+        && ordenesDelRetiro.every(row => row.O_PagIdPago != null || row.CubiertaBilletera === 1);
+      const isImpaga = !pagoEnRetiro && !todasPagas;
       const isSemanalOAdelantado = checkRes.recordset.some(row => row.TClIdTipoCliente === 2 || row.TClIdTipoCliente === 3);
       // Estado 9 = Autorizado en Caja → no requiere contraseña aunque esté impaga
       const yaAutorizada = checkRes.recordset[0]?.OReEstadoActual === 9;

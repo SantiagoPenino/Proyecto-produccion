@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<svg id="Capa_2" data-name="Capa 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 370.28 370.28">
+<svg id="Capa_2" data-name="Capa 2" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 391.18 426.93">
   <defs>
     <style>
       .cls-1 {
@@ -8,8 +8,6 @@
 
       .cls-2 {
         fill: url(#Motivo_nuevo_58);
-        stroke: #231f20;
-        stroke-miterlimit: 10;
       }
     </style>
     <pattern id="Motivo_nuevo_58" data-name="Motivo nuevo 58" x="0" y="0" width="195.59" height="142.31" patternTransform="translate(-3476.16 -4342.27)" patternUnits="userSpaceOnUse" viewBox="0 0 195.59 142.31">
@@ -421,6 +419,6 @@
     </pattern>
   </defs>
   <g id="InfoPiezas">
-    <rect class="cls-2" x=".5" y=".5" width="369.28" height="369.28"/>
+    <rect class="cls-2" width="391.18" height="426.93"/>
   </g>
 </svg>

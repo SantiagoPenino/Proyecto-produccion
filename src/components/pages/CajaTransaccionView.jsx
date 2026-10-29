@@ -35,6 +35,7 @@ import { CustomSelect } from '../../client-portal/pautas/CustomSelect';
 import { Listbox } from '@headlessui/react';
 import { ChevronDown, Check } from 'lucide-react';
 import VoucherEgresoModal from './VoucherEgresoModal';
+import useConfirmar from '../ui/useConfirmar';
 import { recargoDesdePct, pctRecargoDesdeImporte } from '../../utils/desglosePrecio';
 
 function LightSelect({ value, onChange, options = [], placeholder = 'Seleccionar...' }) {
@@ -98,6 +99,7 @@ const TIPOS_AJUSTE = [
 const fmt = (n) => Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function CajaTransaccionView({ isAdminCaja = false }) {
+  const [confirmar, ventanaConfirmar] = useConfirmar();
   const [activeTab, setActiveTab] = useState('INGRESOS');
   const [subTabIngreso, setSubTabIngreso] = useState('COBRO');
 
@@ -1507,6 +1509,9 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   const handleRealizarCobro = async () => {
     if (seleccionados.length === 0) return toast.warning('Seleccione retiros a cobrar.');
+    // Retiro en $0 (reposición -R): no hay nada que cobrar y el back lo rechaza. Llega desde la búsqueda de mostrador.
+    if ([totalesCobro.bruto, totalesCobro.neto, totalIngresado].every(v => Math.abs(parseFloat(v) || 0) < 0.005))
+      return toast.warning('No hay nada para cobrar: lo elegido suma $0. Se entrega sin pasar por caja.');
     const esCobroCredito = condicionCobro === 'CREDITO';
     if (!esCobroCredito && !cobroBalanceado) return toast.warning('Pagos no cuadran con el total.');
     if (!esCobroCredito && carritosPago.some(p => !p.metodoPagoId)) return toast.warning('Debe seleccionar Método de pago en todas las líneas.');
@@ -1789,8 +1794,21 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
         });
         return linea;
       }).join('\n');
-      const ya = (prev.data?.yaCubiertas || []).length ? `\nYa estaban cubiertas: ${prev.data.yaCubiertas.join(', ')}.` : '';
-      if (!window.confirm(`Cubrir el retiro con la BILLETERA del cliente (saldo prepago):\n\n${detalle}${ya}\n\n• Cada orden se descuenta ENTERA de la cuenta indicada.\n• NO se emite factura: esa plata ya se facturó al cargarla.\n• El retiro queda Abonado y se entrega sin cobrar.\n• Se imprime un comprobante interno del consumo (sin valor fiscal).\n\n¿Confirmás?`)) return;
+      const ya = (prev.data?.yaCubiertas || []).length ? `Ya estaban cubiertas: ${prev.data.yaCubiertas.join(', ')}.` : '';
+      // Facturada con saldo: no se cubre con la billetera y el retiro sigue sin abonar (INF-SIS-2026-14)
+      const aviso = prev.data?.aviso || '';
+      const lineas = [
+        ...detalle.split('\n'), ya, aviso,
+        '• Cada orden se descuenta ENTERA de la cuenta indicada.',
+        '• NO se emite factura: esa plata ya se facturó al cargarla.',
+        aviso ? '• El retiro sigue sin abonar hasta cobrar la facturada.' : '• El retiro queda Abonado y se entrega sin cobrar.',
+        '• Se imprime un comprobante interno del consumo (sin valor fiscal).',
+      ].filter(Boolean);
+      if (!(await confirmar({
+        titulo: 'Cubrir el retiro con la billetera del cliente (saldo prepago)',
+        texto: <>{lineas.map((l, i) => <span key={i} className={`block whitespace-pre-wrap ${l === aviso ? 'font-bold text-amber-700' : ''}`}>{l}</span>)}</>,
+        confirmar: 'Cubrir con la billetera',
+      }))) return;
       const r = await api.post(`/contabilidad/retiros/${s.retiroId}/cubrir-con-billetera`, {});
       toast.success(r.data?.message || 'Retiro cubierto con la billetera.');
       // Ticket para imprimir, igual que en un cobro normal de caja. Es un comprobante
@@ -1954,6 +1972,7 @@ export default function CajaTransaccionView({ isAdminCaja = false }) {
 
   return (
     <>
+      {ventanaConfirmar}
       {createPortal(
         <div style={{ position: 'fixed', top: '-9999px', left: '-9999px', width: '80mm', pointerEvents: 'none', zIndex: -1 }}>
           <TicketImpresion ref={ticketRef} data={ticketData} />

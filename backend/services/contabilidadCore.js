@@ -646,10 +646,12 @@ const crearDocumentoContable = async ({ header, lineas }, transaction = null) =>
  * @param {object}  opts
  * @param {number}  [opts.tcaIdTransaccion]
  * @param {number[]}[opts.orderIds]
+ * @param {number[]}[opts.ordenesCobradas] - MODO 1: de cada retiro, solo estas órdenes (las que cobró
+ *        la transacción). Sin la lista, todas las del retiro, como antes.
  * @param {object}  transaction  - Transacción mssql activa (o null para usar pool)
  * @returns {Promise<object[]>}  Array de líneas formateadas para crearDocumentoContable
  */
-const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura = 'UYU' } = {}, transaction = null) => {
+const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura = 'UYU', ordenesCobradas } = {}, transaction = null) => {
   const pool = transaction ? null : await getPool();
   const makeReq = () => transaction ? new sql.Request(transaction) : pool.request();
 
@@ -751,6 +753,17 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
 
   // ── MODO 1: desde TransaccionDetalle ──────────────────────────────────────
   if (tcaIdTransaccion) {
+    // De cada retiro, solo las órdenes que cobró la transacción (INF-SIS-2026-14). La consulta trae
+    // todas las del retiro, y un retiro puede llevar órdenes que no se cobran ahí: ya facturadas (el
+    // pago online las deja afuera), ya pagas o destildadas en caja. Salían en la factura igual, con un
+    // total que no cerraba (ET-12709: 9 líneas por 456,98 contra un cobro de 13,20). Sin la lista
+    // (otros llamadores) o en las líneas viejas sin orden, igual que siempre.
+    const idsCobradas = Array.isArray(ordenesCobradas)
+      ? [...new Set(ordenesCobradas.map(n => parseInt(n, 10)).filter(n => !isNaN(n)))]
+      : null;
+    const filtroCobradas = idsCobradas
+      ? `AND (td.TdeTipoReferencia <> 'ORDEN_RETIRO' OR od.OrdIdOrden IS NULL${idsCobradas.length ? ` OR od.OrdIdOrden IN (${idsCobradas.join(',')})` : ''})`
+      : '';
     const res = await makeReq()
       .input('tcaId', sql.Int, tcaIdTransaccion)
       .query(`
@@ -850,6 +863,7 @@ const resolverLineasDetalle = async ({ tcaIdTransaccion, orderIds, monedaFactura
                 SELECT 1 FROM dbo.Pagos px WITH(NOLOCK)
                 WHERE px.PagIdPago = od.PagIdPago AND px.PagTipoMovimiento = 'EXONERACION'
           )
+          ${filtroCobradas}
       `);
 
     // Lo COBRADO por estas referencias, en la moneda del documento: es la base de la

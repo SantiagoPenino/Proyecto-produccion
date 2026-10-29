@@ -4496,7 +4496,10 @@ async function cancelarDeuda(filtros, transaction = null) {
 /**
  * reducirDeuda
  * Reduce DDeImportePendiente de una deuda y ajusta DDeEstado según el resultado.
- * Si queda en 0 o menos → 'COBRADO'. Si queda parcial → DDeEstado sin cambio.
+ * Si queda en 0 o menos → 'COBRADO'. Si queda resto: 'PENDIENTE' pasa a 'PARCIAL'; los demás
+ * estados no cambian ('VENCIDO' sigue vencida, 'PARCIAL' sigue parcial).
+ * Hasta el 29/10/2026 un pago parcial dejaba 'PENDIENTE' (INF-SIS-2026-13, fase 2): el pago
+ * de deudas, la NC y la imputación de anticipo mostraban «PARCIAL» pero la deuda no lo decía.
  *
  * @param {object} params
  *   @param {number} params.ddeId     DDeIdDocumento a reducir
@@ -4522,6 +4525,7 @@ async function reducirDeuda(params, transaction = null) {
       SET DDeImportePendiente = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN 0
                                      ELSE DDeImportePendiente - @Monto END,
           DDeEstado           = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN 'COBRADO'
+                                     WHEN DDeEstado = 'PENDIENTE' THEN 'PARCIAL'
                                      ELSE DDeEstado END,
           DDeFechaCobro       = CASE WHEN DDeImportePendiente - @Monto < 0.01 THEN GETDATE()
                                      ELSE DDeFechaCobro END

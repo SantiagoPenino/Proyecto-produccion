@@ -126,7 +126,17 @@ export const UnpaidPickupsView = () => {
                                         {bultos.slice(0, 3).map((b, i) => (
                                             <div key={i} className="flex justify-between text-sm">
                                                 <span className="text-zinc-400 truncate mr-3" title={b.desc}>{b.desc || b.orderNumber}</span>
-                                                <span className="font-bold text-custom-cyan shrink-0">{simDe(b.currency)} {fmt2(b.amount)}</span>
+                                                {b.facturada ? (
+                                                    // Ya tiene comprobante: no se paga por acá (INF-SIS-2026-14)
+                                                    <span className="text-xs font-bold text-zinc-400 shrink-0 text-right">
+                                                        Facturada · {b.facturada}
+                                                        {b.deudaPendiente && <span className="block text-[11px] font-medium text-zinc-500">Se paga en caja</span>}
+                                                    </span>
+                                                ) : b.pagada ? (
+                                                    <span className="text-xs font-bold text-green-400 shrink-0">Pagada</span>
+                                                ) : (
+                                                    <span className="font-bold text-custom-cyan shrink-0">{simDe(b.currency)} {fmt2(b.amount)}</span>
+                                                )}
                                             </div>
                                         ))}
                                         {bultos.length > 3 && (
@@ -152,17 +162,25 @@ export const UnpaidPickupsView = () => {
                                         )}
                                     </div>
 
-                                    <CustomButton
-                                        onClick={() => handlePay(retiro)}
-                                        isLoading={payingId === retiro.OrdIdRetiro}
-                                        disabled={payingId !== null}
-                                        icon={CreditCard}
-                                        className="w-1/2 md:w-auto !bg-custom-dark !text-zinc-400 hover:!text-zinc-100 !shadow-none border border-zinc-800 hover:!border-brand-cyan/40 hover:!bg-brand-cyan/5"
-                                        whileHover={{ scale: 1 }}
-                                        whileTap={{ scale: 1 }}
-                                    >
-                                        Pagar Online
-                                    </CustomButton>
+                                    {retiro.SinPagoOnline ? (
+                                        // Nada para pagar online (todo facturado o ya pago): el «Pagar» fallaba siempre
+                                        <p className="w-1/2 md:w-auto max-w-xs text-xs text-zinc-400 text-right flex items-start gap-1.5">
+                                            <AlertCircle size={14} className="text-brand-cyan shrink-0 mt-0.5" />
+                                            {retiro.SinPagoOnline}
+                                        </p>
+                                    ) : (
+                                        <CustomButton
+                                            onClick={() => handlePay(retiro)}
+                                            isLoading={payingId === retiro.OrdIdRetiro}
+                                            disabled={payingId !== null}
+                                            icon={CreditCard}
+                                            className="w-1/2 md:w-auto !bg-custom-dark !text-zinc-400 hover:!text-zinc-100 !shadow-none border border-zinc-800 hover:!border-brand-cyan/40 hover:!bg-brand-cyan/5"
+                                            whileHover={{ scale: 1 }}
+                                            whileTap={{ scale: 1 }}
+                                        >
+                                            Pagar Online
+                                        </CustomButton>
+                                    )}
                                 </div>
                             </div>
                         );

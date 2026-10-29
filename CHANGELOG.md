@@ -9,7 +9,159 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ## [Sin deployar]
 
-Nada por ahora.
+### Cambiado
+- **Tiempo de respuesta de las áreas: 7 días por defecto y demora por paso (28–29/10).** El indicador salió en el deploy del 28/10; esto es lo que vino después.
+  - **7 días:** el chip de la cabecera y el detalle muestran los últimos 7 días; antes, 30. Al cambiar de período en el detalle, lo anterior queda atenuado y con una ruedita hasta que llega lo nuevo. Antes el cuerpo pasaba a la ruedita sola y el modal se achicaba y volvía a crecer.
+  - **Demora por paso.** El ciclo se reparte entre los pasos según las marcas de cada orden: Esperando lote, Esperando máquina (en lote o asignada, antes de «Iniciar producción», con las pausas), En producción (desde «Iniciar producción» hasta que la orden se tilda impresa), Control y calidad (desde que quedó impresa hasta Pronto), Con falla; en SUB también Esperando calandra y Calandra, en TPU Diseño y en Terminaciones «Hasta recibir el material».
+    - **Manda el tilde de la orden (29/10):** el fin de la impresión de cada orden es su tilde «impresa» en el detalle del lote, no el «Fin impresión» del lote. Los botones del lote se aprietan muchas veces al final: DTF-37461 quedó tildada a las 11:48 y su lote se «inició» a las 13:17, un minuto antes de Pronto, y el cálculo anterior le daba casi 3 h de «esperando máquina». Los botones del lote apretados después del tilde ya no la vuelven a producción; solo cuenta el arranque de la calandra.
+    - **Paso nuevo «En lote, sin inicio marcado»:** es el rato desde que la orden entra al lote hasta que la tildan impresa, cuando el lote no marcó «Iniciar producción» antes. Ahí la espera y la impresión van juntas y no hay marca para separarlas. En la copia, a 30 días, es el 6 % del ciclo en DTF y el 10 % en SUB.
+    - **Dónde se ve:** en el detalle del área, una barra de colores y una tabla con el promedio por orden de cada paso, el % del ciclo, cuántas órdenes pasaron por el paso y cuánto tardaron esas. En las 10 más lentas, una barrita por orden y el paso donde más tiempo pasó. En el tooltip de la columna «Ciclo» de finalizadas y en el del detalle de la orden, los minutos de cada paso.
+    - **Límites:** el desglose vale lo que valen las marcas. Si la orden no se tildó impresa (el sistema la tilda solo al completarla) y el lote no marcó «Fin impresión», el control queda dentro de producción; en DTF pasa en 1 de cada 5. En Terminaciones el material se escanea minutos antes de terminar, así que casi todo cae en «Hasta recibir el material». Si un lote quedó «en producción» días sin marcar el fin, cuenta como producción: en la copia, la orden más lenta de SUB tiene 97 h de calandra.
+    - **Cómo se calcula:** columna nueva `OrdenesCicloPlanta.Pasos` (JSON con los minutos de cada paso; los pasos suman el ciclo exacto). La calcula el mismo job, que completa también las filas que ya estaban sin la columna. Sin la columna, el ciclo anda igual pero sin el detalle por paso.
+    - **Probado:** 11 pruebas unitarias nuevas (`__tests__/cicloPasos.test.js`; 4 del tilde, del 29/10). En la copia local se recalcularon las 35.097 órdenes en 19 s, y en todas los pasos suman el ciclo. Revisé a mano tres órdenes de DTF y una de SUB contra su historial. El detalle se vio en el navegador el 28/10, a 1440 y 390 px; el cambio del 29/10 no se miró en el navegador.
+
+### Arreglado
+- **Control: el botón «Finalizar orden» ya no aparece en una orden que ya salió de Control (29/10).** Aparecía en las órdenes Pronto (el botón miraba el estado general, que sigue en «Produccion» hasta que el depósito la recibe). Tocarlo no cambiaba nada, porque el servidor saltea las ya cerradas, pero la pantalla mostraba el aviso de «completada». Ahora no sale en las Pronto, en tránsito, recibidas en otra área ni finalizadas, y esas muestran el cartel «COMPLETA» en la cabecera, que antes nunca aparecía. «Finalizar lote completo» sale solo si queda alguna orden sin cerrar, y nunca sin una orden elegida (sin elección, el botón no hacía nada). Probado en la copia con el lote #6384: en DTF-38763 (Pronto) no aparece. Simulando en el navegador los archivos controlados, sin tocar la base, aparece «Finalizar orden» en una orden sin cerrar y «Finalizar lote completo» en el #6375. No se tocó nada en la base. Solo front: `pages/FilePrintControl.jsx`.
+- **Caja: cobrar un retiro en $0 daba error 500, y los cobros a crédito mandaban el total a Descuentos concedidos (29/10, plan INF-SIS-2026-15).**
+  - **Lo que pasaba:**
+    - La caja listaba los retiros sin pagar aunque todas sus órdenes valieran $0, como las reposiciones -R. Nunca se pagan, así que no salían de la lista. En producción había 28, todos ya entregados.
+    - Al elegir uno, una línea de pago vacía «cuadraba». El asiento quedaba con una sola línea y el motor contable lo rechazaba: «Un asiento requiere mínimo 2 líneas», con un 500 (RT-35459, 28/10 17:17 y 17:20). La transacción se deshacía entera. Pasaba desde el 27/04.
+    - Un cobro a crédito, sin líneas de pago, armaba el asiento Haber Clientes / Debe 5.2.03 por el total: la línea de ajuste lo «cuadraba» como un descuento del 100 %. En la copia del 27/10 había 2, del 31/08 (ET-0006836 y FA-001122). Esos asientos no se tocaron.
+  - **Ahora:**
+    - La lista de caja pide al menos una orden sin pagar con precio distinto de 0. Las órdenes sin precio (NULL) se siguen mostrando.
+    - Si igual llega un cobro de $0 (desde la búsqueda de mostrador o un aviso de pago), la pantalla avisa y el servidor contesta 400: «No hay nada para cobrar: lo elegido suma $0…».
+    - El cobro a crédito no genera asiento de cobro. El documento y la deuda se crean igual. El cobro con «importe a cobrar» menor sigue llevando su línea de descuento.
+  - **Probado en la copia, sin escrituras** (la transacción se cortó en el commit):
+    - RT-30902 ($0) contesta 400, con una línea de pago vacía y a crédito.
+    - RT-32912 de contado da el asiento de siempre (1.2.1 H 2.322 / 1.1.1 D 2.322).
+    - Con importe a cobrar $ 2.300 agrega 5.2.03 D 22.
+    - A crédito llega al commit sin asiento.
+    - La lista de caja ya no trae ninguno de los 27 retiros en $0 de la copia, y sigue trayendo los que tienen una -R junto a una orden con precio.
+    - Prueba nueva: `__tests__/cobroSinImporte.test.js` (8 casos).
+  - **Archivos:** `services/cajaService.js` (`decidirAsientoCobro`), `controllers/ordenesRetiroController.js` (`ordenesRetiroCaja`) y `pages/CajaTransaccionView.jsx`.
+- **TPU «Hago mi matriz»: la textura del relieve salía cortada en cruz donde se unen sus copias (29/10, plan INF-SIS-2026-16).**
+  - **Lo que pasaba** (TPU-38211, Recurso 8):
+    - El generador escribía la escala de cada copia de la textura con 3 decimales (0,193 en vez de 0,193335). Cada copia quedaba un 0,17 % más chica que su lugar y entre copia y copia quedaba una línea de 0,1 mm sin relieve. Pasaba con todas las texturas.
+    - La escala del arte de color tenía el mismo redondeo (0,175 en vez de 0,175223): el color de adentro quedaba corrido hasta 0,1 mm respecto del relieve. El borde no cambiaba, porque lo tapa el sangrado.
+    - Las 8 texturas armadas con un motivo de Illustrator (Recurso 8, 9 y 10, textura1 a textura5) no medían un número entero de repeticiones del motivo (Recurso 8: 5,93 × 5,13), así que el dibujo saltaba en cada unión. Seis traían además el motivo medio punto adentro del borde, con una línea fina en la unión, y un borde dibujado que se veía en el visor 3D.
+  - **Ahora:**
+    - Las escalas van con 6 decimales (`_esc` en `tpu_matriz.py`).
+    - Las 8 texturas miden un número entero de repeticiones, el motivo llena todo el archivo y no tienen borde. `repeticiones` en `texturas.json` se ajustó en la misma proporción (de 2 a entre 1,89 y 2,42), así la trama queda del mismo tamaño en el parche. El grosor de trazo medido (`trazoMm`, `escalaMin`) no cambió, salvo textura4 (0,144 → 0,151 mm, con la misma escala mínima).
+    - Clave nueva `oculta` en `texturas.json`: la textura no se ofrece en el visor, pero sigue en la carpeta, las órdenes que ya la eligieron la siguen viendo y se pueden regenerar. Quedan ocultas 11 de las 33 dibujadas que no empalman: textura-003, 009, 010 y 018 dejan huecos entre copias; textura-002, 011, 019, 021, 022 y 023 dejan una línea en la unión; textura-020 tiene un salto.
+  - **Probado en la copia:**
+    - TPU-38211 regenerada: 0 columnas sin tinta en la unión (antes 2) y el `.plt` idéntico.
+    - Una pieza con cada una de las 8 texturas, con las uniones sobre el arte: antes había líneas o saltos en la unión y ahora no.
+    - Visor 3D simulado (cada SVG dibujado con Inkscape y repetido como en el visor): antes se veían el borde y el salto, ahora no.
+    - Arte de color (TPU-37070): el sangrado queda igual, 1 mm de cada lado.
+    - El catálogo devuelve las 41 texturas, con las 11 ocultas marcadas.
+  - **No arreglado:** Recurso 10 trae cortes dentro de su propio motivo (así está dibujado en Illustrator). Recurso 9, textura-012, 020 y 022, que se imprimen invertidas, tienen piezas que se pisan dentro del motivo y ahí aparece una línea fina de relieve; ver la sección de pendientes del plan.
+  - **Archivos:** `backend/python/tpu_matriz.py`, `public/assets/textures/` (los 8 SVG, `texturas.json` y `README.md`), `controllers/webOrdersController.js` (`getTexturasTpu`: campo `oculta`) y `client-portal/modulos/Tpu3DViewer.jsx` (la lista para elegir saca las ocultas).
+- **Portal: los pagos online ya no cobran órdenes que ya están facturadas (28/10, plan INF-SIS-2026-13, fase 1).**
+  - **Lo que pasaba:** «Retirar» y «Pagos pendientes» daban por paga una orden solo con la cobranza pagada, la billetera o un pago anotado; no miraban si ya tenía comprobante. El cliente la pagaba por Handy o Mercado Pago, caja rechazaba registrar el cobro («cada orden lleva UN solo comprobante») y la plata quedaba en la pasarela sin anotar. Pasó con RW-35313 (FA-2999, 28/10) y RW-34852 (FA-2921, 26/10). En producción la consulta del 28/10 dio 20 órdenes así, 13 con el comprobante figurando pago. En la copia del 27/10 son 18, y pagas de verdad 11: DIR-33506 figura cobrada pero por una nota de crédito, y su deuda sigue viva en otra factura (FA-2714).
+  - **Ahora:**
+    - En «Retirar», una orden con comprobante sale «Facturada · FA-…» (con «Se paga en caja» si tiene saldo), sin importe. Se puede elegir para el retiro, pero no suma al total; si es lo único elegido, se confirma el retiro sin pagar.
+    - Handy, Mercado Pago, «Pagar con saldo» y «Pagos pendientes» calculan sin esas órdenes (`cotizarSeleccion` con `excluirFacturadas`, y `leerFacturadas` con la misma condición que el control de caja). Si todo lo elegido está facturado, el mensaje lo dice con el comprobante.
+    - El cobro de caja que hacen los avisos de Handy y Mercado Pago, y el de «Pagar con saldo», lleva solo las órdenes sin comprobante.
+    - El control de caja mira solo las órdenes que el cobro dice que cobra (`orderNumbers`); sin esa lista, todas las del retiro, como antes. (Corrección del 29/10: acá decía que así funcionaba el «destildá esas órdenes del cobro» del mensaje de caja. No: la caja no tiene tilde por orden, manda todas las pendientes del retiro.)
+  - **Sin cambios:** cómo nace el retiro (`crearRetiro`). Con órdenes facturadas sin cubrir nace en 1, «pasar por caja», y la factura se cobra por Pago de Deudas. Solo queda Autorizado si el cliente tiene plata adelantada con saldo: el chequeo del ciclo semanal pide una fecha de cierre que los ciclos abiertos no tienen, así que con ciclo y sin anticipo también nace en 1. (Corrección del 29/10: acá decía que quedaba Autorizado si el cliente tenía crédito.)
+  - **Probado en la copia, sin escrituras:** `leerFacturadas` marca las 10 órdenes de la consulta B que probé; en un retiro con SUB-37986 facturada (PC-6041) y tres más, el total baja de US$ 51,30 a US$ 33,30; el inicio de pago de Handy con solo DTF-37604 contesta 400 con «ya está facturada»; la lista de Mistura Club trae sus 3 órdenes facturadas en 0 con el ET-13818; caja rechaza (409) el retiro 34946 con la facturada adentro y pasa el control con solo la sin facturar (corté la transacción antes de empezar). **No probado:** la pantalla del portal en el navegador (compila) ni un pago real.
+  - `services/retiroService.js`, `controllers/webOrdersController.js`, `controllers/webRetirosController.js`, `services/cajaService.js` y `client-portal/modulos/PickupView.jsx`.
+  - **Fase 1b (29/10, investigación INF-SIS-2026-14): lo que la fase 1 dejaba mal en los retiros mixtos.** La fase 1 no sale sin esto.
+    - **El e-Ticket lleva solo lo cobrado.** El armado de líneas (`contabilidadCore.resolverLineasDetalle`, modo 1) traía todas las órdenes del retiro. Con una ya facturada adentro, el e-Ticket repetía su línea y no cerraba con el total; el mismo defecto ya existía por caja (ET-12709: 9 líneas por 456,98 contra un cobro de 13,20). Ahora caja le pasa las órdenes que cobra (`ordenesCobradas`). Vale también para la caja manual: una orden del retiro que ya estaba paga no sale en la factura.
+    - **Un retiro con órdenes que se siguen debiendo no queda abonado.** Si quedan órdenes del retiro fuera del cobro, sin comprobante y sin nada que las cubra, o facturadas con saldo, caja marca pagas solo las cobradas y el retiro sigue sin abonar, para cobrar el resto en caja. Aplica a los retiros en estado 1, 2 o 7. Antes quedaba «Abonado» y se entregaba con la factura impaga. Si las que quedan están facturadas y pagas, se abona como siempre. El auto-cierre tampoco lo cierra.
+      - **En la caja no cambia en la práctica:** manda todas las órdenes pendientes del retiro, así que no queda ninguna afuera (las exoneradas tienen pago anotado y no cuentan). En la copia, desde el 01/09, hay un solo retiro abonado con órdenes que hoy se siguen debiendo: RT-26809.
+    - **El aviso de pago vuelve a mirar.** Handy y Mercado Pago revisan las facturadas justo antes de registrar (`retiroService.cobroOnlineSinFacturadas`).
+      - Si una orden se facturó entre el link y el pago, se registra el resto con su parte proporcional del cobro. La parte de la facturada queda sin imputar, con un ticket a Finanzas que trae el cliente, el importe, la Tx y el comprobante. Si la factura tiene saldo, se cobra con esa plata por Pago de Deudas; si estaba paga, queda a favor o se devuelve. Si no queda nada para registrar, no se llama a caja y sale el mismo ticket.
+      - El ticket de Handy «cobrado SIN registrar» ahora lleva el cliente; antes salía sin cliente.
+      - Con el 409 del control de caja, Mercado Pago ya no libera la marca del pago: cada aviso nuevo volvía a fallar y mandaba otro ticket.
+    - **Avisos repetidos.** El retiro que queda sin abonar no tiene `PagIdPago`, que es como Handy reconocía un aviso repetido. Ahora también se busca el cobro de esa Tx en las órdenes (`pagoOnlineYaRegistrado`), en Handy y en Mercado Pago. Mercado Pago tampoco guarda la referencia del pago en un retiro sin abonar, porque al ubicarlo en el estante lo hacía figurar pago.
+    - **Sin hacer:** el retiro no tiene historial de texto donde anotar «pago online sin imputar» (`HistoricoEstadosOrdenesRetiro` guarda solo el estado), así que queda solo el ticket.
+    - **Probado en la copia, cada caso en una transacción con ROLLBACK (18 de 18):**
+      - EUREKA, DTF-36877 (ET-13520, paga) + DTF-38339: el aviso cobra solo DTF-38339 (US$ 15,62). El e-Ticket tiene esa línea y cierra; sin la lista traía las dos. El retiro queda abonado.
+      - Sergio Bresque, SUB-32999 (PC-6077, con saldo) + DTF-31491: el e-Ticket lleva solo DTF-31491 (US$ 24,64). El retiro sigue en estado 1 y la orden cobrada queda paga. El aviso repetido se reconoce.
+      - El mismo caso con el link armado antes de facturarse: registra US$ 24,64 y deja US$ 157,70 sin imputar.
+      - El aviso de Handy entero, con todo lo cobrado facturado después del link: no llama a caja y crea el ticket con el cliente 5715726, la Tx y PC-6077. El aviso repetido no manda otro.
+      - RW-34852 (FA-2921): «Retirar» y «Pagos pendientes» contestan 400 «ya están facturadas»; no se arma el link.
+      - Sin facturadas, igual que antes: retiro abonado y e-Ticket con la orden.
+      - Un cobro que cubre solo una de dos órdenes sin facturar (caso armado para la prueba: la caja manda todas): el e-Ticket lleva la cobrada y el retiro queda sin abonar.
+      - La prueba de la fase 1 y los 49 tests de caja siguen pasando. La copia quedó como estaba.
+      - **No probado:** un pago real en Handy o Mercado Pago, ni el aviso de Mercado Pago entero (sí sus piezas).
+    - `services/contabilidadCore.js`, `services/cajaService.js`, `services/retiroService.js` y `controllers/webOrdersController.js`.
+  - **Fase 1c (29/10): lo que quedaba alrededor.**
+    - **Cobrar la factura marca la orden paga (P4).** Pago de Deudas sobre un documento (también el contado de la pre-factura, que pasa por ahí) y el cobro manual de `editarFactura` (de crédito a contado) bajaban la deuda, pero la orden seguía «a cobrar» para el portal, la caja y la entrega. Ahora, al saldar el documento, sus órdenes quedan con el `PagIdPago` del cobro (`retiroService.marcarOrdenesDeDocumentosPagas`). El retiro sin abonar que ya no debe nada se cierra: 1 y 2 pasan a 3, y 7 a 8 (`cerrarRetiroSiNoDebe`).
+      - Solo órdenes que todavía se retiran: en depósito sin retiro o en un retiro en 1, 2 o 7. Una factura de ciclo cobrada después de la entrega queda como antes.
+      - No cuentan las facturas con deuda viva ni las acreditadas enteras por una nota de crédito.
+      - Es lo que destraba el retiro mixto de la 1b: se paga online la orden sin facturar, el retiro queda «pasar por caja», en caja se cobra la factura por Pago de Deudas y el retiro se cierra.
+      - **Corrección de datos:** las órdenes de facturas cobradas antes de esto siguen sin `PagIdPago`. Script en el Escritorio, «Pagos online · 1c · corrección de datos.sql», con respaldo en `_BK_OrdenesPagoDocumento_20261029`. En la copia toca 13 órdenes de 7 documentos: 11 en depósito y 2 en RW-34713 (estado 7).
+    - **Nota de crédito total (P6).** Si el comprobante de la orden está acreditado entero por una NC, la orden sale con deuda, «se cobra en caja», y no como paga. Desde la orden no se llega a la factura que la reemplazó (la refactura no la liga). El control de caja lo dice: «acreditada entera por NC-000056: buscá la factura que la reemplazó y cobrala por Pago de Deudas». Si la orden tiene otro documento sin acreditar, se usa ese. Caso: DIR-33506 (FA-2693, NC-000056; la deuda real en FA-2714).
+    - **Otros caminos (P7).**
+      - Tótem: la lista marca las facturadas (importe 0, «Facturada» en pantalla). La tarjeta y Mercado Pago no las cobran: con facturadas en el retiro, la tarjeta le pasa a caja las órdenes a cobrar, y Mercado Pago las marca en el link.
+      - Caja › «Cubrir con billetera»: una orden facturada no tenía movimiento sin documento, así que el plan la tomaba por «orden vieja sin cargo» y la cubría con un consumo directo, un segundo cobro. Ahora la de saldo no se cubre y el retiro sigue sin abonar hasta cobrarla; la paga cuenta como cubierta. La confirmación pasó de `window.confirm` a la ventana del sistema.
+      - Ruta vieja `/pickup-orders/handy-payment`: desmontada, con el código marcado SIN USO. Confiaba en los importes que mandaba la pantalla, el portal no la llama (paga con `/pickup-orders/init-payment`) y el log HTTP de producción no tenía ninguna llamada en los 7 días que guarda (consulta de Santiago del 29/10).
+    - **Pantallas (P8).**
+      - «Pagos pendientes» muestra lo que va a cobrar «Pagar»: sin las facturadas («Facturada · FA-…», «Se paga en caja») y sin las ya pagas. Si no queda nada para pagar online, en lugar del botón dice por qué. Antes mostraba el total guardado y un «Pagar» que fallaba siempre en los retiros con solo facturadas.
+      - Si una orden se factura con la pantalla abierta y el total queda en 0, el pago contesta el motivo («ya está facturada…») en vez de un 409 que la pantalla descartaba sin avisar. Si el total baja sin llegar a 0, el aviso dice «Cambió el total de tu retiro» y nombra la facturada, en vez de «Cambió la cotización del dólar».
+      - «Cubrir con billetera» del portal: no manda las facturadas (se confirman en otro retiro, sin pagar) y lo avisa. El servidor también las deja afuera, en vez de fallar la cobertura entera.
+      - Una orden ya paga (su e-Ticket también es un comprobante) ya no sale como «facturada, se paga en caja».
+    - **La referencia del pago va en el retiro cuando se paga.** «Pagos pendientes» grababa la Tx de Handy en `ReferenciaPagoOnline` al armar el link, y con eso, al ubicar el retiro en el estante, figuraba pago aunque el link nunca se pagara. En la copia hay uno así: RT-34557, link del 26/10 en «Creado». Ahora la graba el aviso de Handy al registrar el pago, si el retiro quedó abonado, como ya hacía Mercado Pago.
+    - **Probado en la copia, cada caso en una transacción con ROLLBACK (15 de 15):**
+      - Pago de Deudas sobre PC-6077 deja SUB-32999 paga y cierra el retiro mixto (de 1 a 3).
+      - Con la deuda de FA-2921 viva no marca nada. Saldada, marca SUB-37551 y DTF-37918 y RW-34852 pasa de 7 a 8. FA-2693, acreditada por NC, no marca DIR-33506.
+      - DIR-33506 sale con deuda y la NC; el control de caja la nombra.
+      - Caja › Cubrir con billetera en RW-34852 contesta «facturadas con saldo: se cobra por Pago de Deudas».
+      - Tótem: SUB-32999 sale facturada en 0.
+      - «Pagos pendientes» de RW-34852: total 0, las dos como FA-2921 y el motivo en lugar del botón.
+      - Un pago con el total viejo de una orden que se facturó contesta 400 con el motivo, no 409.
+      - DTF-35507 (paga, FA-2740) no sale facturada.
+      - El script de corrección: 13 candidatas, el UPDATE toca 13.
+      - La 1b (18 de 18), la prueba de la fase 1 y los 49 tests de caja siguen pasando. La copia quedó como estaba.
+      - **No probado:** las pantallas en el navegador (compilan), el tótem con la tarjeta o Mercado Pago (están apagados), el cobro manual de `editarFactura` entero (sí la función que llama) y un pago real.
+    - `services/retiroService.js`, `services/cajaService.js`, `controllers/cajaController.js`, `controllers/cfeController.js`, `controllers/contabilidadController.js`, `controllers/webOrdersController.js`, `controllers/webRetirosController.js`, `services/totemMpService.js`, `services/poslink/poslinkTotemService.js`; front: `client-portal/modulos/PickupView.jsx`, `client-portal/modulos/UnpaidPickupsView.jsx`, `client-portal/modulos/totem/TotemDashboard.jsx`, `pages/CajaTransaccionView.jsx`.
+  - **Fase 2 (29/10): una deuda pagada en parte queda «PARCIAL» y vence igual.**
+    - **Pago parcial.** `reducirDeuda` (Pago de Deudas, nota de crédito parcial, «Imputar anticipo») dejaba la deuda en PENDIENTE aunque la pantalla y el movimiento dijeran «PARCIAL». Ahora PENDIENTE con resto pasa a PARCIAL. Una VENCIDO sigue VENCIDO, y los demás estados no cambian.
+    - **Vencimiento.** El job de vencidas (jueves 23:59) vencía solo las PENDIENTE: una PARCIAL atrasada nunca figuraba vencida. En la copia del 27/10 hay 185 PARCIAL, todas atrasadas, que el job va a vencer en su primera corrida después del deploy.
+    - **Otros lugares que miraban solo PENDIENTE:**
+      - Cambiar las órdenes de cliente (`reasignarOrdenesCliente`) movía solo la deuda PENDIENTE. Una PARCIAL o VENCIDO quedaba en el cliente anterior. Ahora viaja toda deuda viva.
+      - «DocsVencidos» del listado de clientes no contaba las PARCIAL atrasadas.
+      - «Imputar anticipo» (estado de cuenta) se ofrece para toda deuda con pendiente, pero rechazaba las VENCIDO con «La deuda ya está en estado: VENCIDO». Con el job venciendo las PARCIAL iban a ser más. Ahora las acepta.
+    - **Lo que quedó como estaba:** la caja, el saldo a favor del ciclo y `SP_ImputarPagoPEPS` ya ponían PARCIAL en un pago parcial, incluso sobre una VENCIDO. El job las vuelve a vencer. El resto de las 129 lecturas del estado de la deuda ya incluía PARCIAL.
+    - **Datos viejos (opcional):** «Pagos online · fase 2 · deudas parciales.sql» en el Escritorio pasa a PARCIAL las PENDIENTE con un pago parcial, con respaldo en `_BK_DeudaParcial_20261029`. En la copia no hay ninguna: el job las vence cada jueves. Si el conteo da 0, no hace falta correrlo.
+    - **Probado en la copia, cada caso en una transacción con ROLLBACK (8 de 8):**
+      - Pago de Deudas por la mitad de FA-2960 la deja PARCIAL, y el movimiento dice «Estado: PARCIAL». Pagado el resto, queda COBRADO.
+      - Un tercio de ET-13389 (VENCIDO) la deja VENCIDO con el resto.
+      - El job vence las 185 PARCIAL atrasadas y no queda ninguna sin vencer.
+      - Pasar EMB-4373 a otro cliente lleva su deuda PARCIAL a la cuenta nueva.
+      - «Imputar anticipo» sobre una VENCIDO baja el pendiente y la deja VENCIDO.
+      - Siguen pasando la 1b (18), la 1c (15), la prueba de la fase 1 y los 49 tests de caja.
+    - `services/contabilidadService.js`, `jobs/deudasVencidas.job.js`, `controllers/contabilidadController.js`, `controllers/cajaController.js`.
+- **Entrega de pedidos: un retiro cubierto por plan, rollo o crédito pedía contraseña y rebotaba con «Contraseña incorrecta» (28/10).**
+  - **Lo que pasaba:** el RW-35368 (estado 8, «Empaquetado y abonado») tiene `PagIdPago = 0` en el retiro y en sus órdenes, que es la marca de «cubierto sin efectivo» (`retiroService.crearRetiro`). La pantalla lo veía pago y entregaba sin pedir contraseña, pero el servidor tomaba el 0 como impago y, como el cliente es común, exigía la contraseña: 6 intentos de 16:03 a 16:05, todos rechazados.
+  - **Ahora** el servidor decide «pago» con la misma regla que la lista de la pantalla: pago en el retiro, o todas sus órdenes con pago anotado (el 0 incluido) o cubiertas enteras por la billetera. Un retiro impago de verdad sigue pidiendo la contraseña.
+  - En producción, el RW-35368 era el único trabado así (consulta del 28/10).
+  - Probado en la copia con la consulta nueva: 3 retiros en estado 8 con `PagIdPago = 0` pasan de «impago» a «pago»; 2 en estado 7 sin pago siguen impagos; 2 con pago real siguen pagos.
+  - `controllers/ordenesRetiroController.js` (`marcarDespachoEntregadoAutorizado`).
+- **Pedido de tela de cliente con más metros que la bobina: ahora es un aviso, no un error del servidor (28/10).** «La bobina solo tiene 9m disponibles. El pedido requiere 11m.» frenaba bien el pedido, pero salía como 500 y quedaba como ERROR en el log (28/10 11:22). Ahora contesta 400 con ese mensaje, igual que «Bobina de tela no encontrada.». Solo backend, con reinicio: `controllers/webOrdersController.js`.
+
+### Notas de deploy
+- **Tiempo de respuesta, 7 días y pasos:**
+  - **SQL: ya aplicado.** Santiago agregó la columna `Pasos` en producción el 29/10, con `ALTER TABLE dbo.OrdenesCicloPlanta ADD Pasos NVARCHAR(400) NULL`.
+  - **Backend, con reinicio:** `services/cicloPlantaService.js` y `controllers/ordersController.js`.
+  - **Front, en el build:** `production/components/IndicadorCicloArea.jsx` y `utils/cicloPlanta.js`.
+  - **Después:** ejecutar «Ciclo en planta» a mano desde el Administrador de Jobs; completa los pasos de todas las órdenes desde el 01/07. Sin el SQL, el backend anda igual y no muestra el desglose.
+- **Control, botón Finalizar:** solo front, en el build: `pages/FilePrintControl.jsx`.
+- **Pagos online sin órdenes facturadas (INF-SIS-2026-13, fases 1, 1b, 1c y 2):** van juntas: la fase 1 sola deja mal los retiros mixtos, y la 1c es la que los destraba en caja. La fase 2 comparte `cajaController.js` y `contabilidadController.js` con la 1c.
+  - **Backend, con reinicio:** `services/retiroService.js`, `services/cajaService.js`, `services/contabilidadCore.js`, `services/contabilidadService.js`, `services/totemMpService.js`, `services/poslink/poslinkTotemService.js`, `controllers/webOrdersController.js`, `controllers/webRetirosController.js`, `controllers/cajaController.js`, `controllers/cfeController.js`, `controllers/contabilidadController.js`, `routes/webOrdersRoutes.js`, `jobs/deudasVencidas.job.js`.
+  - **Front, en el build y junto con el backend** (espera el campo `facturada` de las listas): `client-portal/modulos/PickupView.jsx`, `client-portal/modulos/UnpaidPickupsView.jsx`, `client-portal/modulos/totem/TotemDashboard.jsx`, `pages/CajaTransaccionView.jsx`.
+  - **SQL de esquema:** ninguno.
+  - **Después del deploy:** correr «Pagos online · 1c · corrección de datos.sql» (Escritorio), bloque por bloque y en la misma pestaña, y confirmar el COMMIT si «Actualizadas» coincide con «Ordenes». Después, el bloque 1 de «Pagos online · fase 2 · deudas parciales.sql»: si «PendientesConPagoParcial» da 0, no hace falta seguir.
+  - **Ojo:** el primer jueves a las 23:59 después del deploy, el job de vencidas vence las PARCIAL atrasadas (en la copia, 185). El bloque 1 de la fase 2 las cuenta («ParcialesAtrasadas»).
+- **Entrega de retiros cubiertos:** solo backend, con reinicio: `controllers/ordenesRetiroController.js`. Sin SQL ni build.
+- **Caja: retiros en $0 y cobros a crédito (INF-SIS-2026-15):** sin SQL. Backend con reinicio (`services/cajaService.js`, `controllers/ordenesRetiroController.js`) y el front en el build (`pages/CajaTransaccionView.jsx`). Ojo: `cajaService.js` también tiene las fases 1, 1b y 1c de pagos online (INF-SIS-2026-13), y `CajaTransaccionView.jsx` la 1c: salen juntas.
+- **TPU, texturas cortadas (INF-SIS-2026-16):** sin SQL.
+  - `python/tpu_matriz.py`: no hace falta reiniciar, se ejecuta en cada generación.
+  - Las texturas van en el build: Vite copia `public/assets/textures` a `backend/public/assets/textures`, que en el servidor es `/var/www/sistema-produccion/public/assets/textures`. De ahí leen el generador (el job de TPU-38211 lo muestra) y el visor. Si se suben sueltas: los 8 SVG corregidos, `texturas.json` y `README.md`.
+  - `Tpu3DViewer.jsx` va en el build. `controllers/webOrdersController.js`, con reinicio, también tiene cambios de pagos online (INF-SIS-2026-13). Si lo de TPU tiene que salir antes, puede ir sin ese archivo: las 11 texturas ocultas solo se siguen ofreciendo, no se rompe nada.
+  - **Después:** las órdenes ya generadas no cambian solas. En `Escritorio\TPU regeneradas INF-16` están los archivos de impresión y control nuevos de TPU-38159, 38210, 38212 y 38806, que en la copia del 27/10 estaban sin imprimir. Antes de reemplazarlos, confirmar con la consulta 1 del plan que siguen sin imprimir. El corte no cambia.
 
 ## [2026-10-28] — deployado el 28/10 (cambios del 26/10 a la tarde al 28/10)
 

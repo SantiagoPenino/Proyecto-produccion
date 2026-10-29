@@ -1595,11 +1595,12 @@ exports.reasignarOrdenesCliente = async (req, res) => {
         .input('Importe', sql.Decimal(18,4), importe)
         .query(`UPDATE dbo.CuentasCliente SET CueSaldoActual = CueSaldoActual + @Importe WHERE CueIdCuenta = @NewCue`);
 
-      // Actualizar DeudaDocumento si existe
+      // Actualizar DeudaDocumento si existe. Toda deuda viva viaja con la orden: con solo
+      // 'PENDIENTE', una pagada en parte o vencida quedaba en el cliente anterior (29/10/2026).
       await transaction.request()
         .input('OrdId',  sql.Int, ordId)
         .input('NewCue', sql.Int, cuentaDestinoId)
-        .query(`UPDATE dbo.DeudaDocumento SET CueIdCuenta = @NewCue WHERE OrdIdOrden = @OrdId AND DDeEstado = 'PENDIENTE'`);
+        .query(`UPDATE dbo.DeudaDocumento SET CueIdCuenta = @NewCue WHERE OrdIdOrden = @OrdId AND DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO')`);
     }
 
     await transaction.commit();
@@ -2232,7 +2233,7 @@ exports.getClientesActivos = async (req, res) => {
           ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN cc.CueSaldoActual * @TC ELSE cc.CueSaldoActual END), 0) AS SaldoTotal,
           ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN dd.DDeImportePendiente * @TC ELSE dd.DDeImportePendiente END), 0) AS DeudaTotal,
           SUM(CASE WHEN dd.DDeFechaVencimiento < GETDATE()
-                    AND dd.DDeEstado IN ('PENDIENTE','VENCIDO') THEN 1 ELSE 0 END)                 AS DocsVencidos,
+                    AND dd.DDeEstado IN ('PENDIENTE','VENCIDO','PARCIAL') THEN 1 ELSE 0 END)       AS DocsVencidos,
           MAX(CASE WHEN cc.CueDiasCiclo > 0 THEN 1 ELSE 0 END)                                    AS EsSemanal,
           MAX(CASE WHEN cic.CicEstado = 'ABIERTO' THEN 1 ELSE 0 END)                              AS TieneCicloAbierto
         FROM      dbo.Clientes        c  WITH(NOLOCK)
@@ -2273,7 +2274,7 @@ exports.getClientesActivos = async (req, res) => {
         ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN cc.CueSaldoActual * @TC ELSE cc.CueSaldoActual END), 0) AS SaldoTotal,
         ISNULL(SUM(CASE WHEN cc.MonIdMoneda = 2 THEN dd.DDeImportePendiente * @TC ELSE dd.DDeImportePendiente END), 0) AS DeudaTotal,
         SUM(CASE WHEN dd.DDeFechaVencimiento < GETDATE()
-                  AND dd.DDeEstado IN ('PENDIENTE','VENCIDO') THEN 1 ELSE 0 END)                 AS DocsVencidos,
+                  AND dd.DDeEstado IN ('PENDIENTE','VENCIDO','PARCIAL') THEN 1 ELSE 0 END)       AS DocsVencidos,
         MAX(CASE WHEN cc.CueDiasCiclo > 0 THEN 1 ELSE 0 END)                                    AS EsSemanal,
         MAX(CASE WHEN cic.CicEstado = 'ABIERTO' THEN 1 ELSE 0 END)                              AS TieneCicloAbierto
       FROM      dbo.CuentasCliente cc WITH(NOLOCK)
@@ -4412,6 +4413,10 @@ exports.cubrirRetiroConBilletera = async (req, res) => {
       WHERE od.OReIdOrdenRetiro = @Ret`)).recordset;
     if (!filas.length) return res.status(404).json({ success: false, error: `El retiro RW-${retiroId} no tiene órdenes.` });
     const CliIdCliente = filas[0].CliIdCliente;
+    // Órdenes ya facturadas: su movimiento ya tiene documento, así que el plan las tomaba por
+    // «órdenes viejas sin cargo» y las cubría con un consumo directo, un segundo cobro de lo ya
+    // facturado (INF-SIS-2026-14, P7). No se cubren: la de saldo se cobra por Pago de Deudas.
+    const facturadas = await require('../services/retiroService').leerFacturadas(pool, filas.map(f => f.OrdIdOrden));
 
     // 2) Cuentas PREPAGO del cliente con saldo real (mismas reglas que el portal)
     const ctas = (await pool.request().input('Cli', sql.Int, CliIdCliente).query(`
@@ -4442,10 +4447,16 @@ exports.cubrirRetiroConBilletera = async (req, res) => {
     }
 
     // 3) Plan: cada orden ENTERA en una cuenta, prioridad del motor, sin negativo
-    const plan = [], yaCubiertas = [], sinCubrir = [];
+    const plan = [], yaCubiertas = [], sinCubrir = [], facturadasConSaldo = [];
     for (const f of filas) {
       const codigo = (f.OrdCodigoOrden || `#${f.OrdIdOrden}`).trim();
       if (f.PagIdPago || f.YaCubierta) { yaCubiertas.push(codigo); continue; }
+      const fa = facturadas.get(f.OrdIdOrden);
+      if (fa) {
+        if (fa.deudaPendiente) facturadasConSaldo.push(`${codigo} (${fa.documento}${fa.acreditadaPor ? `, acreditada por ${fa.acreditadaPor}` : ''})`);
+        else yaCubiertas.push(`${codigo} (${fa.documento}, paga)`);
+        continue;
+      }
       const monOrden = Number(f.MonIdMoneda) === 2 ? 2 : 1;
       // Orden SIN cargo en cuenta corriente (vieja, pre-motor): se cubre igual por su
       // costo, con un consumo directo (espejo del "+ Nueva orden" del libro).
@@ -4495,9 +4506,14 @@ exports.cubrirRetiroConBilletera = async (req, res) => {
       const disp = ctas.map(c => `${c.nombre}: ${c.mon === 2 ? 'US$' : '$'} ${c.disp.toFixed(2)}`).join(' · ') || 'sin saldo en la billetera';
       return res.status(400).json({ success: false, error: `La billetera no puede cubrir: ${sinCubrir.join('; ')}. Disponible: ${disp}. No se descontó nada.` });
     }
-    if (!plan.length) return res.status(400).json({ success: false, error: yaCubiertas.length ? `Todas las órdenes del retiro ya están cubiertas o pagas (${yaCubiertas.join(', ')}).` : 'No hay órdenes para cubrir.' });
+    const avisoFacturadas = facturadasConSaldo.length
+      ? `${facturadasConSaldo.join(', ')} ya ${facturadasConSaldo.length > 1 ? 'están facturadas' : 'está facturada'} con saldo: se cobra por «Pago de Deudas», no con la billetera.`
+      : '';
+    if (!plan.length) return res.status(400).json({ success: false, error: avisoFacturadas
+      ? `${avisoFacturadas}${yaCubiertas.length ? ` Las demás ya están cubiertas o pagas (${yaCubiertas.join(', ')}).` : ''}`
+      : yaCubiertas.length ? `Todas las órdenes del retiro ya están cubiertas o pagas (${yaCubiertas.join(', ')}).` : 'No hay órdenes para cubrir.' });
 
-    if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, cotizacion: cot });
+    if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, facturadasConSaldo, aviso: avisoFacturadas || null, cotizacion: cot });
 
     // 4) Cubrir cada orden con el mismo motor de siempre (consumo + marca + deuda + asiento).
     //    Sin cargo en cta cte → consumo directo con la marca (espejo del "+ Nueva orden"):
@@ -4548,18 +4564,22 @@ exports.cubrirRetiroConBilletera = async (req, res) => {
     //    o pagas: sinCubrir vacío + plan ejecutado entero, por eso es incondicional).
     //    1 Ingresado / 2 Pasar por caja → 3 Abonado; 7 Empaquetado sin abonar →
     //    8 Empaquetado y abonado; 5 Entregado / 9 Autorizado / 10 En viaje no se tocan.
-    await pool.request().input('Ret', sql.Int, retiroId).query(`
-      UPDATE dbo.OrdenesRetiro
-      SET OReEstadoActual = CASE WHEN OReEstadoActual IN (1, 2) THEN 3
-                                 WHEN OReEstadoActual = 7 THEN 8
-                                 ELSE OReEstadoActual END,
-          OReFechaEstadoActual = GETDATE()
-      WHERE OReIdOrdenRetiro = @Ret AND OReEstadoActual IN (1, 2, 7)`);
+    //    Con una orden facturada con saldo, el retiro sigue sin abonar hasta cobrarla.
+    if (!facturadasConSaldo.length) {
+      await pool.request().input('Ret', sql.Int, retiroId).query(`
+        UPDATE dbo.OrdenesRetiro
+        SET OReEstadoActual = CASE WHEN OReEstadoActual IN (1, 2) THEN 3
+                                   WHEN OReEstadoActual = 7 THEN 8
+                                   ELSE OReEstadoActual END,
+            OReFechaEstadoActual = GETDATE()
+        WHERE OReIdOrdenRetiro = @Ret AND OReEstadoActual IN (1, 2, 7)`);
+    }
 
     req.app?.get && req.app.get('socketio')?.emit('actualizado', { type: 'actualizacion' });
     req.app?.get && req.app.get('socketio')?.emit('retiros:update', { type: 'billetera' });
-    return res.json({ success: true, plan, yaCubiertas, cotizacion: cot,
-      message: `🔋 ${plan.length} orden(es) del retiro RW-${retiroId} cubiertas con la billetera: ${plan.map(p => `${p.codigo} ← «${p.cuenta}» ${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' · ')}. El retiro queda Abonado, se entrega sin cobrar.` });
+    return res.json({ success: true, plan, yaCubiertas, facturadasConSaldo, cotizacion: cot,
+      message: `🔋 ${plan.length} orden(es) del retiro RW-${retiroId} cubiertas con la billetera: ${plan.map(p => `${p.codigo} ← «${p.cuenta}» ${p.monedaCuenta === 'USD' ? 'US$' : '$'} ${p.importeCta.toFixed(2)}`).join(' · ')}. `
+        + (avisoFacturadas ? `${avisoFacturadas} El retiro sigue sin abonar hasta cobrarla.` : 'El retiro queda Abonado, se entrega sin cobrar.') });
   } catch (err) {
     logger.error('[CAJA] cubrirRetiroConBilletera:', err.message);
     return res.status(500).json({ success: false, error: err.message });

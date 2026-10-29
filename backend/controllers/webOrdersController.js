@@ -1431,10 +1431,11 @@ exports.createWebOrder = async (req, res) => {
                             .input('BID', sql.Int, bid)
                             .query(`SELECT MetrosRestantes, InsumoID, DescripcionTela, CodigoEtiqueta, Ancho, AnchoReal, Referencia FROM InventarioBobinas WHERE BobinaID = @BID`);
 
-                        if (!checkBob.recordset.length) throw new Error('Bobina de tela no encontrada.');
+                        // Errores del pedido, no del servidor: 400 con el mensaje para el cliente (antes salían como 500, log 28/10 11:22).
+                        if (!checkBob.recordset.length) throw Object.assign(new Error('Bobina de tela no encontrada.'), { status: 400, codigo: 'BOBINA_NO_ENCONTRADA' });
                         const { MetrosRestantes, InsumoID, DescripcionTela, CodigoEtiqueta, Ancho, AnchoReal, Referencia } = checkBob.recordset[0];
                         if (mag > MetrosRestantes) {
-                            throw new Error(`La bobina solo tiene ${MetrosRestantes}m disponibles. El pedido requiere ${mag}m.`);
+                            throw Object.assign(new Error(`La bobina solo tiene ${MetrosRestantes}m disponibles. El pedido requiere ${mag}m.`), { status: 400, codigo: 'BOBINA_SIN_METROS' });
                         }
 
                         // Descuento CONDICIONADO (MetrosRestantes >= @Mts): dos pedidos simultáneos
@@ -3530,6 +3531,9 @@ exports.getTexturasTpu = async (req, res) => {
                 // Escala mínima de la trama según el grosor de su trazo (python/medir_trazo_texturas.py).
                 // null = no medida: el visor usa su mínimo general.
                 escalaMin: num(ajustes[archivo]?.escalaMin, null, 0.1),
+                // Fuera de la lista para elegir (no empalma copia con copia, 29/10, INF-SIS-2026-16). Se
+                // sigue mandando: el visor la necesita para mostrar las órdenes que ya la eligieron.
+                oculta: ajustes[archivo]?.oculta === true,
             }));
 
         res.json({ success: true, data });
@@ -4403,6 +4407,12 @@ exports.getPickupOrders = async (req, res) => {
             return match ? parseFloat(match[1]) : 1;
         };
 
+        // Órdenes que ya tienen comprobante: no se cobran por acá (su deuda va por caja). Salen con
+        // importe 0 y el comprobante, así el total y los pagos online las dejan afuera (INF-SIS-2026-13).
+        let facturadas = new Map();
+        try { facturadas = await require('../services/retiroService').leerFacturadas(pool, externalOrders.map(o => o.IdOrden)); }
+        catch (eFac) { logger.warn('[PICKUP] No se pudo ver qué órdenes ya están facturadas:', eFac.message); }
+
         // 4. Mapear respuesta al formato frontend
         const pickupOrders = externalOrders.map(o => {
             const docId = o.CodigoOrden || `#${o.IdOrden}`;
@@ -4418,8 +4428,14 @@ exports.getPickupOrders = async (req, res) => {
             else if (o.ParcialBilletera === 1 && o.RestoCtaCte != null) {
                 finalAmount = Math.round(Number(o.RestoCtaCte) * 100) / 100;
             }
+            const fact = !isPaid ? facturadas.get(o.IdOrden) : null;
+            const importeFacturado = fact ? finalAmount : null;
+            if (fact) finalAmount = 0;
 
             return {
+                // Ya tiene comprobante: { documento, deudaPendiente } (sin importe a cobrar)
+                facturada: fact || null,
+                importeFacturado,
                 id: docId,
                 rawId: o.IdOrden,
                 desc: o.NombreTrabajo || 'Pedido',
@@ -4548,6 +4564,13 @@ async function getClientePickupOrders(pool, cliIdCliente) {
         }
     }
 
+    // Órdenes que ya tienen comprobante: el tótem no las cobra (ni con la tarjeta ni con Mercado Pago),
+    // igual que el portal; su deuda va por caja (INF-SIS-2026-14, P7). Salen con importe 0 y el
+    // comprobante, así prepararRetiroTotem las deja fuera de lo que se cobra.
+    let facturadas = new Map();
+    try { facturadas = await require('../services/retiroService').leerFacturadas(pool, allOrdersRes.recordset.map(o => o.IdOrden)); }
+    catch (eFac) { logger.warn('[TOTEM] No se pudo ver qué órdenes ya están facturadas:', eFac.message); }
+
     return allOrdersRes.recordset.map(o => {
         const docId = o.CodigoOrden || `#${o.IdOrden}`;
         const cob = cobranzasMap[docId];
@@ -4556,7 +4579,14 @@ async function getClientePickupOrders(pool, cliIdCliente) {
         if (o.CubiertaBilletera !== 1 && o.ParcialBilletera === 1 && o.RestoCtaCte != null) {
             amount = Math.round(Number(o.RestoCtaCte) * 100) / 100;
         }
+        const pagaYa = cob?.EstadoCobro === 'Pagado' || o.CubiertaBilletera === 1;
+        const fact = !pagaYa ? facturadas.get(o.IdOrden) : null;
+        const importeFacturado = fact ? amount : null;
+        if (fact) amount = 0;
         return {
+            // Ya tiene comprobante: { documento, deudaPendiente, acreditadaPor } (sin importe a cobrar)
+            facturada: fact || null,
+            importeFacturado,
             id: docId,
             rawId: o.IdOrden,
             desc: o.NombreTrabajo || 'Pedido',
@@ -5152,7 +5182,8 @@ exports.generatePickupReceipt = async (req, res) => {
 // en que llega el aviso.
 const _cotizarPagoRetiro = async (pool, orders) => {
     const { cotizarSeleccion } = require('../services/retiroService');
-    const sel = await cotizarSeleccion(pool, (orders || []).map(o => ({ ordId: o.OrdIdOrden })));
+    // Las órdenes que ya tienen comprobante valen 0: su deuda se cobra en caja (INF-SIS-2026-13)
+    const sel = await cotizarSeleccion(pool, (orders || []).map(o => ({ ordId: o.OrdIdOrden })), { excluirFacturadas: true });
     const porId = new Map((orders || []).map(o => [parseInt(o.OrdIdOrden, 10), o]));
     return {
         sel,
@@ -5164,6 +5195,8 @@ const _cotizarPagoRetiro = async (pool, orders) => {
             amountOriginal: i.importe,
             currency: i.moneda,
             rawId: i.ordId,
+            // El webhook las saca del cobro de caja (si no, caja rechaza el registro del pago entero)
+            ...(i.facturada ? { facturada: i.facturada.documento } : {}),
         })),
         // Para crear el retiro con los mismos importes que se cobraron (crearRetiro.importesPorOrden)
         importes: Object.fromEntries(sel.items.map(i => [i.ordId, i.importe])),
@@ -5175,9 +5208,16 @@ const _cotizarPagoRetiro = async (pool, orders) => {
 const _totalCambiado = (sel, totalVisto) => {
     const visto = Number(totalVisto);
     if (totalVisto === undefined || totalVisto === null || !Number.isFinite(visto) || Math.abs(visto - sel.total) <= 1) return null;
+    // Sin nada para cobrar (por ejemplo, la orden se facturó con la pantalla abierta): no es un total
+    // nuevo para confirmar; contesta el control siguiente, con el motivo (INF-SIS-2026-14, P8).
+    if (!(sel.total > 0.004)) return null;
     const sim = sel.moneda === 'USD' ? 'US$' : '$';
+    const fact = sel.facturadas || [];
     return {
-        error: `El total de tu retiro pasó a ${sim} ${sel.total.toFixed(2)}${sel.mezcla ? ` (dólar a $ ${Number(sel.cotizacion).toFixed(2)})` : ''}.`,
+        error: fact.length
+            ? `${fact.map(f => `${f.codigo} (${f.documento})`).join(', ')} ya ${fact.length > 1 ? 'están facturadas' : 'está facturada'} y se paga${fact.length > 1 ? 'n' : ''} en caja: el total de tu retiro pasó a ${sim} ${sel.total.toFixed(2)}.`
+            : `El total de tu retiro pasó a ${sim} ${sel.total.toFixed(2)}${sel.mezcla ? ` (dólar a $ ${Number(sel.cotizacion).toFixed(2)})` : ''}.`,
+        facturadas: fact,
         codigo: 'TOTAL_CAMBIADO',
         total: sel.total, moneda: sel.moneda,
         cotizacion: sel.cotizacion, cotizacionDia: sel.cotizacionDia,
@@ -5209,7 +5249,9 @@ exports.initHandyPayment = async (req, res) => {
         const cambio = _totalCambiado(sel, totalAmount);
         if (cambio) return res.status(409).json(cambio);
         const aCobrar = ordenes.filter(o => o.amount > 0);
-        if (!aCobrar.length) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
+        if (!aCobrar.length) return res.status(400).json({ error: sel.facturadas?.length
+            ? require('../services/retiroService').mensajeSoloFacturadas(sel.facturadas)
+            : 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
 
         const currencyCode = sel.moneda === 'USD' ? 840 : 858;
 
@@ -6073,6 +6115,18 @@ exports.cubrirConBilletera = async (req, res) => {
         if (conRetiro.length) {
             return res.status(400).json({ error: `${conRetiro.map(f => (f.OrdCodigoOrden || '').trim()).join(', ')} ya ${conRetiro.length > 1 ? 'tienen' : 'tiene'} un retiro creado (RW-${conRetiro[0].OReIdOrdenRetiro}). Actualizá la página.` });
         }
+        // Órdenes ya facturadas: no se cubren con la billetera ni van en este retiro, que nace abonado.
+        // Se confirman aparte, sin pagar (con saldo, se pagan en caja). Antes una sola facturada en la
+        // selección hacía fallar la cobertura entera (INF-SIS-2026-14, P8).
+        const factBill = await require('../services/retiroService').leerFacturadas(pool, ordIds);
+        const facturadasFuera = filas.filter(f => factBill.has(f.OrdIdOrden) && !f.PagIdPago && !f.YaConsumida)
+            .map(f => ({ ordId: f.OrdIdOrden, codigo: (f.OrdCodigoOrden || `#${f.OrdIdOrden}`).trim(), ...factBill.get(f.OrdIdOrden) }));
+        if (facturadasFuera.length) {
+            const fuera = new Set(facturadasFuera.map(f => f.ordId));
+            for (let i = filas.length - 1; i >= 0; i--) if (fuera.has(filas[i].OrdIdOrden)) filas.splice(i, 1);
+            for (let i = ordIds.length - 1; i >= 0; i--) if (fuera.has(ordIds[i])) ordIds.splice(i, 1);
+            if (!filas.length) return res.status(400).json({ error: require('../services/retiroService').mensajeSoloFacturadas(facturadasFuera) });
+        }
 
         // 2) Cuentas PREPAGO del cliente (con saldo real y artículos permitidos)
         const ctas = (await pool.request().input('Cli', sql.Int, cli.CliIdCliente).query(`
@@ -6154,7 +6208,7 @@ exports.cubrirConBilletera = async (req, res) => {
         }
         if (!plan.length && !yaCubiertas.length) return res.status(400).json({ error: 'No hay pedidos para cubrir.' });
 
-        if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, cotizacion: cot });
+        if (preview) return res.json({ success: true, preview: true, plan, yaCubiertas, facturadasFuera, cotizacion: cot });
 
         // 4) Cubrir cada orden con el motor de administración (consumo + marca + deuda + asiento)
         const ctrlConta = require('./contabilidadController');
@@ -6216,7 +6270,7 @@ exports.cubrirConBilletera = async (req, res) => {
         const io5 = req?.app?.get ? req.app.get('socketio') : null;
         if (io5) io5.emit('actualizado', { type: 'actualizacion' });
         logger.info(`[BILLETERA PORTAL] 🔋 Retiro RW-${OReIdOrdenRetiro} creado con ${plan.length} orden(es) cubiertas por billetera${yaCubiertas.length ? ` (+${yaCubiertas.length} ya cubiertas)` : ''}.`);
-        return res.json({ success: true, retiro: `RW-${OReIdOrdenRetiro}`, OReIdOrdenRetiro, plan, yaCubiertas });
+        return res.json({ success: true, retiro: `RW-${OReIdOrdenRetiro}`, OReIdOrdenRetiro, plan, yaCubiertas, facturadasFuera });
     } catch (err) {
         logger.error('[BILLETERA PORTAL] cubrir-con-billetera:', err.message);
         res.status(500).json({ error: 'No se pudo cubrir con la billetera.' });
@@ -6242,7 +6296,9 @@ exports.pagarConSaldoBilletera = async (req, res) => {
         const cambio = _totalCambiado(sel, totalAmount);
         if (cambio) return res.status(409).json(cambio);
         const total = sel.total;
-        if (!(total > 0)) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
+        if (!(total > 0)) return res.status(400).json({ error: sel.facturadas?.length
+            ? require('../services/retiroService').mensajeSoloFacturadas(sel.facturadas)
+            : 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
         const moneda = sel.moneda;
 
         const cli = (await pool.request().input('Cod', sql.Int, codCliente)
@@ -6353,6 +6409,8 @@ exports.pagarConSaldoBilletera = async (req, res) => {
                 referenciaId:  OReIdOrdenRetiro,
                 montoOriginal: total,
                 descripcion:   `Retiro RW-${OReIdOrdenRetiro}`,
+                // Con órdenes ya facturadas en el retiro, la caja cobra solo las otras (INF-SIS-2026-13)
+                ...(sel.facturadas?.length ? { orderNumbers: sel.items.filter(i => !i.facturada).map(i => i.ordId) } : {}),
             }],
             // Una línea de pago por cuenta usada, cada una EN LA MONEDA DE SU CUENTA
             // (el débito PAGO_SALDO valida moneda línea = moneda cuenta); cross lleva
@@ -6379,12 +6437,27 @@ exports.pagarConSaldoBilletera = async (req, res) => {
 };
 
 // --- HANDY PAYMENT ---
+// SIN USO (INF-SIS-2026-14, P7): ruta desmontada el 29/10/2026 en webOrdersRoutes.js. El portal paga con
+// initHandyPayment, que calcula los importes en el servidor; esta confiaba en los importes y el total que
+// mandaba la pantalla. El log HTTP de producción no tenía ninguna llamada en sus 7 días (29/10).
 exports.createHandyPaymentLink = async (req, res) => {
     try {
         const { orders, totalAmount, activeCurrency, ordenRetiro, orderNumbers: reactOrderNumbers } = req.body;
+        logger.warn(`[HANDY VIEJO] /pickup-orders/handy-payment llamada por el cliente ${req.user?.codCliente || '?'} (${(orders || []).length} órdenes): ruta SIN USO, revisar quién la llama.`);
 
         if (!orders || orders.length === 0) {
             return res.status(400).json({ error: "No orders provided for payment." });
+        }
+        // Tampoco cobra órdenes que ya tienen comprobante (el mismo control que initHandyPayment)
+        const idsViejo = orders.map(o => parseInt(o.rawId || o.OrdIdOrden, 10)).filter(n => n > 0);
+        if (idsViejo.length) {
+            const rs = require('../services/retiroService');
+            const factViejo = await rs.leerFacturadas(await getPool(), idsViejo);
+            if (factViejo.size) {
+                return res.status(400).json({ error: rs.mensajeSoloFacturadas([...factViejo].map(([ordId, f]) => ({
+                    codigo: orders.find(o => parseInt(o.rawId || o.OrdIdOrden, 10) === ordId)?.id || `#${ordId}`, ...f,
+                }))) });
+            }
         }
 
         const currencyCode = activeCurrency === 'USD' ? 840 : 858;
@@ -6577,6 +6650,33 @@ const crearTicketFinanzas = async (pool, codCliente, asunto, texto) => {
 // Lo usa también el ingreso a Depósito de las compras de la tienda pagadas online.
 exports.crearTicketFinanzas = crearTicketFinanzas;
 
+// Pago online que no se imputa entero (INF-SIS-2026-14, P3): una orden del retiro se facturó entre que
+// el cliente armó el pago y lo pagó. Esa parte de la plata queda sin imputar: si la factura tiene saldo
+// se cobra con ella por «Pago de Deudas»; si ya estaba paga, queda a favor o se devuelve (decide Finanzas).
+// `cobro` es el resultado de retiroService.cobroOnlineSinFacturadas. Best-effort, como el ticket.
+const _ticketPagoSinImputar = async (pool, { pasarela, txId, codCliente, retiroId, moneda, montoTotal, cobro }) => {
+    try {
+        const sim = moneda === 'USD' ? 'US$' : '$';
+        const fmt = (n) => `${sim} ${Number(n || 0).toFixed(2)}`;
+        const ordenes = (cobro.sinImputar?.ordenes || []).map(o => `· ${o.codigo}: ${o.documento}, ${o.acreditadaPor
+            ? `acreditada entera por ${o.acreditadaPor} → buscar la factura que la reemplazó y cobrarla con esta plata`
+            : o.deudaPendiente
+                ? 'con saldo → cobrarla por «Pago de Deudas» con esta plata'
+                : 'ya paga → la plata queda a favor del cliente o se devuelve'}`).join('\n');
+        const registrado = cobro.registrar
+            ? `Se registró ${fmt(cobro.monto)} por las otras órdenes del retiro (con su e-Ticket).`
+            : `No se registró nada: ${cobro.motivo}.`;
+        await crearTicketFinanzas(pool, codCliente,
+            `ALERTA: pago ${pasarela} con ${fmt(cobro.sinImputar?.monto)} sin imputar en RW-${retiroId} (Tx ${txId})`,
+            `El cliente ${codCliente || '(sin dato)'} pagó ${fmt(montoTotal)} por ${pasarela} el retiro RW-${retiroId}, `
+            + `pero entre que armó el pago y lo pagó se facturó:\n${ordenes}\n\n${registrado}\n`
+            + `Quedan ${fmt(cobro.sinImputar?.monto)} sin imputar.\n\nTransactionId: ${txId}\n\n`
+            + 'El cliente YA pagó: NO volver a cobrarle esas órdenes en caja.');
+    } catch (e) {
+        logger.error(`[PAGO SIN IMPUTAR] No se pudo crear el ticket (${pasarela} ${txId}): ${e.message}`);
+    }
+};
+
 // --- HANDY WEBHOOK ---
 // Recibe notificaciones automáticas de Handy cuando un cobro cambia de estado
 // Docs V2.0: PurchaseData.Status → 0=Iniciado, 1=Exitoso, 2=Fallido, 3=Pendiente
@@ -6609,6 +6709,8 @@ exports.handyWebhook = async (req, res) => {
         // Retiro sobre el que se está registrando el cobro: si el registro falla,
         // el ticket de alerta a Finanzas lo referencia para ubicar el caso.
         let retiroEnCurso = null;
+        // Y el cliente: el ticket salía sin cliente (INF-SIS-2026-14)
+        let codClienteEnCurso = null;
 
         const statusMap = { 0: 'Iniciado', 1: 'Pagado', 2: 'Fallido', 3: 'Pendiente' };
         const statusLabel = statusMap[status] || `Desconocido(${status})`;
@@ -6642,6 +6744,7 @@ exports.handyWebhook = async (req, res) => {
 
                 if (txData.recordset.length > 0) {
                     const tx = txData.recordset[0];
+                    codClienteEnCurso = tx.CodCliente || null;
                     const storedData = JSON.parse(tx.OrdersJson || '{}');
 
                     // [TIENDA 21/08] Pago de una compra de la tienda con RETIRO EN EL LOCAL
@@ -6848,6 +6951,28 @@ exports.handyWebhook = async (req, res) => {
                         // esAdministrativa=true fuerza StuIdSesion=NULL (sin sesión de cajero).
                         // cajaService resuelve solo las órdenes hijas y cruza DeudaDocumento exacto.
                         // Retry con backoff para resistir deadlocks con operaciones concurrentes.
+                        // Aviso repetido de un retiro que quedó sin abonar a propósito (una orden facturada
+                        // con saldo: sigue «pasar por caja»): el control de arriba no lo ve (INF-SIS-2026-14).
+                        const { cobroOnlineSinFacturadas, pagoOnlineYaRegistrado } = require('../services/retiroService');
+                        if (await pagoOnlineYaRegistrado(pool, ordenRetiroId, transactionId)) {
+                            logger.info(`[HANDY WEBHOOK] El pago ${transactionId} ya está registrado en RW-${ordenRetiroId}: aviso repetido, sin acción.`);
+                            return;
+                        }
+                        // Qué se cobra, mirado AHORA: sin las órdenes que tienen comprobante, también las
+                        // facturadas después de armar el link (esa parte de la plata queda sin imputar).
+                        const cobro = await cobroOnlineSinFacturadas(pool, { ordenRetiroId, orders, monto: tx.TotalAmount });
+                        if (!cobro.registrar) {
+                            if (!storedData.sinImputarAvisado) {
+                                await _ticketPagoSinImputar(pool, { pasarela: 'Handy', txId: transactionId, codCliente: tx.CodCliente, retiroId: ordenRetiroId, moneda, montoTotal: tx.TotalAmount, cobro });
+                                await pool.request()
+                                    .input('txId5', sql.VarChar(100), transactionId)
+                                    .input('json5', sql.NVarChar(sql.MAX), JSON.stringify({ ...storedData, ordenRetiro: storedData.ordenRetiro || payloadPago.ordenRetiro, sinImputarAvisado: true }))
+                                    .query('UPDATE HandyTransactions SET OrdersJson = @json5 WHERE TransactionId = @txId5');
+                            }
+                            logger.warn(`[HANDY WEBHOOK] Pago ${transactionId} de RW-${ordenRetiroId} sin registrar: ${cobro.motivo}. Ticket a Finanzas.`);
+                            return;
+                        }
+
                         const { procesarTransaccion } = require('../services/cajaService');
                         const MAX_RETRIES = 3;
                         let result = null;
@@ -6864,20 +6989,25 @@ exports.handyWebhook = async (req, res) => {
                                         // link (portal o «Pagos pendientes»), para que la deuda en
                                         // dólares se descuente con la misma (sin ella, la del día).
                                         cotizacion:        storedData.cotizacion || undefined,
-                                        observaciones:     `Cobro Handy (Tx: ${transactionId})`,
+                                        observaciones:     `Cobro Handy (Tx: ${transactionId})${cobro.sinImputar ? ` · sin imputar ${cobro.sinImputar.monto}` : ''}`,
                                     },
                                     aplicaciones: [{
                                         tipo:           'ORDEN_RETIRO',
                                         referenciaId:   ordenRetiroId,
-                                        montoOriginal:  tx.TotalAmount,
+                                        // Sin la parte de las facturadas después del link (cobro.sinImputar)
+                                        montoOriginal:  cobro.monto,
                                         descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
-                                        // orderNumbers vacío → cajaService los descubre solo en BD
+                                        // orderNumbers vacío → cajaService los descubre solo en BD. Si el
+                                        // retiro lleva órdenes ya facturadas, se cobran solo las otras: con
+                                        // ellas adentro, caja rechaza el registro entero y la plata queda sin
+                                        // anotar (INF-SIS-2026-13).
+                                        ...(cobro.orderNumbers ? { orderNumbers: cobro.orderNumbers } : {}),
                                     }],
                                     pagos: [{
                                         metodoPagoId:  9,   // Handy
                                         monedaId,
                                         moneda,
-                                        montoOriginal: tx.TotalAmount,
+                                        montoOriginal: cobro.monto,
                                         cotizacion:    1,
                                     }],
                                 });
@@ -6896,6 +7026,18 @@ exports.handyWebhook = async (req, res) => {
 
                         const pagoId = result.pagosCreados[0]?.pagIdPago;
                         logger.info(`[HANDY WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${result.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
+                        if (cobro.sinImputar) {
+                            await _ticketPagoSinImputar(pool, { pasarela: 'Handy', txId: transactionId, codCliente: tx.CodCliente, retiroId: ordenRetiroId, moneda, montoTotal: tx.TotalAmount, cobro });
+                        }
+                        // La referencia del pago va en el retiro recién ahora, con el pago registrado y el
+                        // retiro abonado (como Mercado Pago). «Pagos pendientes» la grababa al armar el link
+                        // y un link sin pagar dejaba el retiro «pago» al ubicarlo en el estante (INF-SIS-2026-14).
+                        if (!result.retirosSinCerrar?.length) {
+                            await pool.request()
+                                .input('RID', sql.Int, ordenRetiroId)
+                                .input('Ref', sql.VarChar(200), transactionId)
+                                .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref WHERE OReIdOrdenRetiro = @RID AND ISNULL(ReferenciaPagoOnline, '') <> 'ANTICIPO'`);
+                        }
 
 
 
@@ -6933,9 +7075,13 @@ exports.handyWebhook = async (req, res) => {
                 // La tarjeta YA se cobró pero el registro interno falló: sin esta
                 // alerta el retiro figura impago y caja lo vuelve a cobrar al
                 // entregar (doble cobro real, o factura del ciclo si es cta. cte.).
-                await crearTicketFinanzas(pool, null,
+                // 409 = el control de caja «una orden, un comprobante»: no se arregla reintentando.
+                const porFacturada = reactErr.statusCode === 409;
+                await crearTicketFinanzas(pool, codClienteEnCurso,
                     `ALERTA: pago Handy cobrado SIN registrar (Tx ${transactionId})`,
-                    `Handy capturó ${totalAmount} (${currency === 840 ? 'USD' : 'UYU'}) pero el registro del pago falló:\n${reactErr.message}\n\nTransactionId: ${transactionId}${retiroEnCurso ? `\nRetiro: RW-${retiroEnCurso}` : ''}\n\nEl cliente YA pagó con tarjeta. NO volver a cobrar este retiro en caja: registrar el pago a mano o devolver la transacción en el panel de Handy.`);
+                    `Handy capturó ${totalAmount} (${currency === 840 ? 'USD' : 'UYU'})${codClienteEnCurso ? ` del cliente ${codClienteEnCurso}` : ''} pero el registro del pago falló:\n${reactErr.message}\n\nTransactionId: ${transactionId}${retiroEnCurso ? `\nRetiro: RW-${retiroEnCurso}` : ''}\n\nEl cliente YA pagó con tarjeta. NO volver a cobrar este retiro en caja: ${porFacturada
+                        ? 'una orden ya tiene comprobante. Si la factura tiene saldo, cobrarla por «Pago de Deudas» con esta plata; las órdenes sin facturar se cobran en caja con este pago, destildando la facturada. O devolver la transacción en el panel de Handy.'
+                        : 'registrar el pago a mano o devolver la transacción en el panel de Handy.'}`);
             }
         } else if (status === 2 || status === 5) {
             // «Fallido» sobre un link YA COBRADO: no se anula nada (19/10/2026). Antes se tomaba como
@@ -7221,7 +7367,9 @@ exports.initMpPayment = async (req, res) => {
         const cambio = _totalCambiado(sel, totalAmount);
         if (cambio) return res.status(409).json(cambio);
         const aCobrar = ordenes.filter(o => o.amount > 0);
-        if (!aCobrar.length) return res.status(400).json({ error: 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
+        if (!aCobrar.length) return res.status(400).json({ error: sel.facturadas?.length
+            ? require('../services/retiroService').mensajeSoloFacturadas(sel.facturadas)
+            : 'Estas órdenes ya están pagas: no hay nada para cobrar.' });
 
         const currency = sel.moneda;
 
@@ -7663,6 +7811,24 @@ exports.mpWebhook = async (req, res) => {
         // nadie más lo reintenta. El 1205 revierte la transacción entera: volver a correrla es seguro. Mismo
         // criterio que el webhook de Handy (3 intentos, 2 s y 4 s).
         mpMonto = totalAmountPaid;
+        // Mismo control que Handy (INF-SIS-2026-14): el retiro que queda sin abonar a propósito no
+        // muestra el pago en OrdenesRetiro.PagIdPago, y qué se cobra se mira AHORA, sin las órdenes
+        // con comprobante (las facturadas después de armar el pago dejan esa plata sin imputar).
+        const { cobroOnlineSinFacturadas, pagoOnlineYaRegistrado } = require('../services/retiroService');
+        if (await pagoOnlineYaRegistrado(pool, ordenRetiroId, externalRef)) {
+            logger.warn(`[MP WEBHOOK] El pago ${externalRef} ya está registrado en RW-${ordenRetiroId}: aviso repetido, sin acción.`);
+            mpPagoRegistrado = true;
+            return;
+        }
+        const cobro = await cobroOnlineSinFacturadas(pool, { ordenRetiroId, orders, monto: totalAmountPaid });
+        if (!cobro.registrar) {
+            // La marca PaidAt queda puesta: los avisos siguientes de este pago se descartan solos.
+            await _ticketPagoSinImputar(pool, { pasarela: 'MercadoPago', txId: externalRef, codCliente: tx.CodCliente, retiroId: ordenRetiroId, moneda, montoTotal: totalAmountPaid, cobro });
+            logger.warn(`[MP WEBHOOK] Pago ${externalRef} de RW-${ordenRetiroId} sin registrar: ${cobro.motivo}. Ticket a Finanzas.`);
+            mpPagoRegistrado = true;   // no es una falla: que el catch no libere la marca ni mande otro ticket
+            return;
+        }
+
         const { procesarTransaccion } = require('../services/cajaService');
         const { esDeadlock } = require('../utils/reintentarDeadlock');
         const MP_INTENTOS = 3;
@@ -7679,20 +7845,23 @@ exports.mpWebhook = async (req, res) => {
                         // Retiro con pesos y dólares: la cotización con que se armó el pago, para
                         // que la deuda en dólares se descuente con la misma (sin ella, la del día).
                         cotizacion:        storedData.cotizacion || undefined,
-                        observaciones:     `Cobro MercadoPago (Tx: ${externalRef})`,
+                        observaciones:     `Cobro MercadoPago (Tx: ${externalRef})${cobro.sinImputar ? ` · sin imputar ${cobro.sinImputar.monto}` : ''}`,
                     },
                     aplicaciones: [{
                         tipo:           'ORDEN_RETIRO',
                         referenciaId:   ordenRetiroId,
-                        montoOriginal:  totalAmountPaid,
+                        // Sin la parte de las facturadas después de armar el pago (cobro.sinImputar)
+                        montoOriginal:  cobro.monto,
                         descripcion:    `Retiro diferido RW-${ordenRetiroId}`,
-                        // orderNumbers vacío → cajaService los descubre solo en BD
+                        // orderNumbers vacío → cajaService los descubre solo en BD; sin las ya
+                        // facturadas (INF-SIS-2026-13), igual que el webhook de Handy.
+                        ...(cobro.orderNumbers ? { orderNumbers: cobro.orderNumbers } : {}),
                     }],
                     pagos: [{
                         metodoPagoId:  10,  // MercadoPago
                         monedaId,
                         moneda,
-                        montoOriginal: totalAmountPaid,
+                        montoOriginal: cobro.monto,
                         cotizacion:    1,
                     }],
                 });
@@ -7709,12 +7878,18 @@ exports.mpWebhook = async (req, res) => {
         const pagoId = mpResult.pagosCreados[0]?.pagIdPago;
         logger.info(`[MP WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${mpResult.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
         require('../services/saludIntegraciones').ok('mercadopago');   // monitor
+        if (cobro.sinImputar) {
+            await _ticketPagoSinImputar(pool, { pasarela: 'MercadoPago', txId: externalRef, codCliente: tx.CodCliente, retiroId: ordenRetiroId, moneda, montoTotal: totalAmountPaid, cobro });
+        }
 
-        // Guardar también ReferenciaPagoOnline en OrdenesRetiro
-        await pool.request()
-            .input('RID', sql.Int, ordenRetiroId)
-            .input('Ref', sql.VarChar(200), externalRef)
-            .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref WHERE OReIdOrdenRetiro = @RID`);
+        // Guardar también ReferenciaPagoOnline en OrdenesRetiro. No si el retiro quedó sin abonar (una
+        // orden facturada con saldo): la referencia lo hace figurar pago al ubicarlo en el estante.
+        if (!mpResult.retirosSinCerrar?.length) {
+            await pool.request()
+                .input('RID', sql.Int, ordenRetiroId)
+                .input('Ref', sql.VarChar(200), externalRef)
+                .query(`UPDATE OrdenesRetiro SET ReferenciaPagoOnline = @Ref WHERE OReIdOrdenRetiro = @RID`);
+        }
 
 
 
@@ -7756,8 +7931,11 @@ exports.mpWebhook = async (req, res) => {
             // el registro fallara: todo aviso posterior de MP sobre este pago se descartaba como duplicado y nada lo
             // recuperaba (RW-32253, 12/10/2026). Se libera para que el próximo aviso lo registre solo. Seguro: la
             // guarda del retiro (PagIdPago) frena un segundo registro si mientras tanto se cobró a mano.
+            // Con el 409 del control de caja («una orden, un comprobante») NO se libera: no es un choque
+            // pasajero, cada aviso nuevo de MP volvería a fallar y a mandar otro ticket (INF-SIS-2026-14).
+            const porFacturada = e.statusCode === 409;
             let marcaLiberada = false;
-            try {
+            if (!porFacturada) try {
                 const poolMarca = await getPool();
                 const r = await poolMarca.request().input('Tx', sql.VarChar(100), mpTxRef)
                     .query('UPDATE MercadoPagoTransactions SET PaidAt = NULL WHERE TransactionId = @Tx AND PaidAt IS NOT NULL');
@@ -7769,7 +7947,7 @@ exports.mpWebhook = async (req, res) => {
                 const poolAlerta = await getPool();
                 await crearTicketFinanzas(poolAlerta, mpCodCliente,
                     `ALERTA: pago MercadoPago cobrado SIN registrar (Tx ${mpTxRef})`,
-                    `MercadoPago aprobó el cobro${mpMonto ? ` de ${mpMonto}` : ''} pero el registro del pago falló:\n${e.message}\n\nTransactionId: ${mpTxRef}${mpRetiroEnCurso ? `\nRetiro: RW-${mpRetiroEnCurso}` : ''}\n\nEl cliente YA pagó. NO volver a cobrar este retiro en caja.${marcaLiberada ? '\nSi MercadoPago vuelve a avisar de este pago, el sistema lo registra solo: antes de registrarlo a mano, fijate que el retiro siga sin pago.' : ''}\nSi sigue sin pago: registrarlo a mano o devolver el pago en MercadoPago.`);
+                    `MercadoPago aprobó el cobro${mpMonto ? ` de ${mpMonto}` : ''} pero el registro del pago falló:\n${e.message}\n\nTransactionId: ${mpTxRef}${mpRetiroEnCurso ? `\nRetiro: RW-${mpRetiroEnCurso}` : ''}\n\nEl cliente YA pagó. NO volver a cobrar este retiro en caja.${porFacturada ? '\nUna orden ya tiene comprobante: si la factura tiene saldo, cobrarla por «Pago de Deudas» con esta plata; las órdenes sin facturar se cobran en caja con este pago, destildando la facturada.' : ''}${marcaLiberada ? '\nSi MercadoPago vuelve a avisar de este pago, el sistema lo registra solo: antes de registrarlo a mano, fijate que el retiro siga sin pago.' : ''}\nSi sigue sin pago: registrarlo a mano o devolver el pago en MercadoPago.`);
             } catch (e2) {
                 logger.error('[MP WEBHOOK] No se pudo crear ticket de alerta:', e2.message);
             }

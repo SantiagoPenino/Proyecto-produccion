@@ -189,6 +189,16 @@ def _f(v):
     return "0" if s in ("", "-0") else s
 
 
+def _esc(v):
+    """Factor de escala de un `cm`: 6 decimales. Con los 3 de _f la escala de la textura de TPU-38211
+    (0,193335) quedaba en 0,193 y cada copia salia 0,17 % mas chica que su lugar: entre copia y copia,
+    una linea de 0,1 mm sin relieve (29/10, INF-SIS-2026-16). Al arte le pasaba lo mismo (0,175223 ->
+    0,175): el color de adentro se corria hasta 0,1 mm respecto del relieve; el borde lo tapa el sangrado.
+    Las traslaciones siguen con _f: 0,001 pt no se ve."""
+    s = f"{float(v):.6f}".rstrip("0").rstrip(".")
+    return "0" if s in ("", "-0") else s
+
+
 def _hex(rgb):
     if rgb is None:
         return None
@@ -1801,7 +1811,7 @@ def generar(job, preview=None):
     Ap = np.array([[P0p[0], P0p[1], 1], [P1p[0], P1p[1], 1], [P2p[0], P2p[1], 1]], dtype=float)
     solX = np.linalg.solve(Ap, np.array([Q0[0], Q1[0], Q2[0]]))
     solY = np.linalg.solve(Ap, np.array([Q0[1], Q1[1], Q2[1]]))
-    cm_arte = f"{_f(solX[0])} {_f(solY[0])} {_f(solX[1])} {_f(solY[1])} {_f(solX[2])} {_f(solY[2])} cm"
+    cm_arte = f"{_esc(solX[0])} {_esc(solY[0])} {_esc(solX[1])} {_esc(solY[1])} {_f(solX[2])} {_f(solY[2])} cm"
 
     # -- capa CMYK unitaria: sangrado (anillos) + arte
     ops = []
@@ -1968,7 +1978,7 @@ def generar(job, preview=None):
                     for i in range(i0, i1):
                         tx = sangrado_pt + dx + i * tile_w
                         ty = sangrado_pt + dy + j * tile_h
-                        cm_tile = f"{_f(s)} 0 0 {_f(s)} {_f(tx)} {_f(ty)} cm"
+                        cm_tile = f"{_esc(s)} 0 0 {_esc(s)} {_f(tx)} {_f(ty)} cm"
                         partes.append(f"q {cm_tile} {nombre_xo} Do Q")
                         planas.append(f"q {cm_tile} {texto_tile} Q")
                         n_tex += 1

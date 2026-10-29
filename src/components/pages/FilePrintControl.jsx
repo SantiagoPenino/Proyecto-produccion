@@ -19,6 +19,15 @@ import { printLabelsHelper } from '../../utils/printHelper';
 // Pseudo-lote "Todos": habilita el buscador cross-lote (el backend busca en todos los lotes activos del área).
 const ALL_ROLLS = { id: 'todo', nombre: 'Todos los lotes' };
 
+// Orden que ya salió de Control (Pronto, en tránsito, recibida en otra área o finalizada): queda en la lista pero no
+// se finaliza de nuevo. Mismo criterio que el guard de completarOrden en el backend, que igual las saltea; sin esto el
+// botón FINALIZAR aparecía en una orden ya Pronto y mostraba "completada" sin hacer nada (29/10/2026).
+const yaCerrada = (o) => {
+  const sa = (o?.statusArea || '').toUpperCase().trim();
+  const s = (o?.status || '').toUpperCase().trim();
+  return ['PRONTO', 'EN TRANSITO', 'RECIBIDO EN DESTINO'].includes(sa) || s === 'FINALIZADO' || s === 'ENTREGADO';
+};
+
 const SmallRollMetrics = ({ roll, metrics }) => {
   if (!roll) return null;
   const execution = metrics?.stats?.execution || 0;
@@ -678,6 +687,14 @@ const FilePrintControl = ({ areaCode }) => {
   const isFallaOrder = /\-F\d+(-\d+)?$/.test(selectedOrder?.code || '') && !selectedOrder?.fallaDeOtraArea;
   const originalOrderCode = isFallaOrder ? selectedOrder.code.replace(/\-F\d+(-\d+)?$/, '') : null;
 
+  // Botón de cierre: la orden seleccionada con todo controlado, o el lote entero (sin buscador) cuando todas las que
+  // quedan sin cerrar están controladas y sin fallas — mismo criterio que handleFinalizarOrden. Las ya cerradas no lo
+  // muestran: con el lote todo Pronto ya no hay nada que finalizar.
+  const pendientesLote = orders.filter(o => !yaCerrada(o));
+  const loteListo = !searchTerm.trim() && pendientesLote.length > 0
+    && pendientesLote.every(o => o.controlled) && pendientesLote.every(o => (o.failures || 0) === 0);
+  const ordenLista = !!selectedOrder && orderMetrics.total > 0 && orderMetrics.done === orderMetrics.total && !yaCerrada(selectedOrder);
+
   const handleCorregirFalla = async () => {
     if (!originalOrderCode) return;
 
@@ -787,13 +804,7 @@ const FilePrintControl = ({ areaCode }) => {
 
     // Excluir órdenes ya en estado final de todos los cálculos
     // (Pronto/En Transito/Finalizado quedan en la lista visual pero no son "pendientes")
-    const isFinalState = (o) => {
-      const saUp = (o.statusArea || '').toUpperCase().trim();
-      const sUp  = (o.status     || '').toUpperCase().trim();
-      return saUp === 'PRONTO' || saUp === 'EN TRANSITO' || sUp === 'FINALIZADO';
-    };
-
-    const ordenesPendientes = orders.filter(o => !isFinalState(o));
+    const ordenesPendientes = orders.filter(o => !yaCerrada(o));
 
     // Con el buscador filtrado, la lista visible NO representa el lote entero → se finaliza SOLO la
     // orden seleccionada (aunque las visibles estén controladas), no "el lote completo".
@@ -1434,7 +1445,7 @@ const FilePrintControl = ({ areaCode }) => {
                         <i className="fa-solid fa-truck-fast mr-1"></i>{selectedOrder.modoRetiro}
                       </span>
                     )}
-                    {(selectedOrder.status === 'PRONTO' || (selectedOrder.EstadoenArea || selectedOrder.areaStatus) === 'Pronto') && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
+                    {yaCerrada(selectedOrder) && <span className="px-2 py-0.5 rounded bg-brand-cyan text-white text-[10px] font-black uppercase tracking-widest">COMPLETA</span>}
                   </div>
 
                   {/* STEPPER (Ruta) INLINE */}
@@ -1607,8 +1618,8 @@ const FilePrintControl = ({ areaCode }) => {
             )}
 
             {/* BOTTOM COMPLETION BUTTON - aparece cuando todos los archivos están listos o el lote entero está controlado */}
-            {((orderMetrics.done === orderMetrics.total && orderMetrics.total > 0 && selectedOrder && !['FINALIZADO', 'ENTREGADO'].includes(selectedOrder.status?.toUpperCase())) || 
-              (orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0))) && (
+            {/* Sin orden seleccionada no se muestra: handleFinalizarOrden sale sin hacer nada si no hay una. */}
+            {selectedOrder && (ordenLista || loteListo) && (
               <div className="fixed bottom-6 right-6 z-50 animate-in slide-in-from-bottom duration-500">
                 {isFallaOrder ? (
                   <button
@@ -1633,8 +1644,8 @@ const FilePrintControl = ({ areaCode }) => {
                       <i className="fa-solid fa-check-circle text-2xl"></i>
                     )}
                     <div>
-                      <div className="font-black text-lg">{finalizandoOrden ? 'FINALIZANDO...' : (!searchTerm.trim() && orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0) ? 'FINALIZAR LOTE COMPLETO' : 'FINALIZAR ORDEN')}</div>
-                      <div className="text-xs opacity-90">{!searchTerm.trim() && orders.length > 0 && orders.every(o => o.controlled) && orders.every(o => (o.failures || 0) === 0) ? 'Finalizar todas las órdenes del lote a la vez' : 'Todos los archivos listos · Pulsar para cerrar'}</div>
+                      <div className="font-black text-lg">{finalizandoOrden ? 'FINALIZANDO...' : (loteListo ? 'FINALIZAR LOTE COMPLETO' : 'FINALIZAR ORDEN')}</div>
+                      <div className="text-xs opacity-90">{loteListo ? 'Finalizar todas las órdenes del lote a la vez' : 'Todos los archivos listos · Pulsar para cerrar'}</div>
                     </div>
                   </button>
                 )}

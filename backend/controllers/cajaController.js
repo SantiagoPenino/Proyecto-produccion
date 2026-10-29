@@ -1622,6 +1622,9 @@ const procesarPagoDeudaInterno = async (req, res) => {
     // estampa PagIdPago al final (cuando ya existe) para que el retiro y la caja las
     // vean PAGAS y no las vuelvan a cobrar (05-09-2026).
     const ordenesPagadasPorDeuda = [];
+    // Documentos que este cobro deja saldados: sus órdenes quedan pagas al final, con el
+    // PagIdPago (INF-SIS-2026-14, P4). Antes la deuda bajaba y la orden seguía «a cobrar».
+    const docsSaldados = [];
     // Imputación completa (trazabilidad, reporte 26-ago-2026): lo aplicado a cada deuda
     // se anota acá y, cuando existan los Pagos, se escribe en dbo.ImputacionPago.
     const imputacionesPend = []; // [{ ddeId, cueIdCuenta, monto }] en moneda de la deuda
@@ -1658,7 +1661,8 @@ const procesarPagoDeudaInterno = async (req, res) => {
         // Aplicar solo lo que hay disponible en el pago restante, sin exceder la deuda pendiente
         const montoAplicar   = Math.min(pagoRestante, pendienteActual);
         const nuevoPendiente = Math.max(0, pendienteActual - montoAplicar);
-        const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+        // Mismo criterio que reducirDeuda (va a la observación del movimiento): una vencida sigue vencida.
+        const nuevoEstado    = nuevoPendiente < 0.01 ? 'COBRADO' : (dde.DDeEstado === 'PENDIENTE' ? 'PARCIAL' : dde.DDeEstado);
         pagoRestante -= montoAplicar;
 
         // Centralizado: reduce pendiente y ajusta estado automáticamente
@@ -1707,6 +1711,7 @@ const procesarPagoDeudaInterno = async (req, res) => {
               .input('DocId', sql.Int, docImputado)
               .query(`UPDATE dbo.DocumentosContables SET DocPagado = 1 WHERE DocIdDocumento = @DocId AND (DocPagado IS NULL OR DocPagado = 0)`);
             logger.info(`[PAGO-DEUDA] Doc #${docImputado} saldado → DocPagado=1.`);
+            docsSaldados.push(docImputado);
           }
         }
 
@@ -2347,6 +2352,14 @@ const procesarPagoDeudaInterno = async (req, res) => {
               );
           `);
         logger.info(`[PAGO-DEUDA] PagIdPago #${primerPagIdPago} estampado en ${ordsPagadas.length} orden(es) pagada(s) por deuda; retiro padre revisado.`);
+      }
+
+      // Documentos saldados (factura de ciclo, pre-factura de contado, PC a crédito…): sus órdenes
+      // quedan pagas y se cierran los retiros sin abonar que ya no deben nada (INF-SIS-2026-14, P4).
+      if (primerPagIdPago && docsSaldados.length) {
+        await require('../services/retiroService').marcarOrdenesDeDocumentosPagas(transaction, {
+          docIds: docsSaldados, pagId: primerPagIdPago, usuarioId,
+        });
       }
 
       // ─────────────────────────────────────────────
@@ -4363,7 +4376,9 @@ async function imputarAnticipoADeuda(req, res) {
       .query('SELECT DDeImportePendiente, DDeEstado, DocIdDocumento FROM dbo.DeudaDocumento WITH(UPDLOCK) WHERE DDeIdDocumento=@DdeId AND CueIdCuenta=@CueId');
     if (!deudaR.recordset.length) throw new Error('Deuda no encontrada para esta cuenta.');
     const deuda = deudaR.recordset[0];
-    if (!['PENDIENTE','PARCIAL'].includes(deuda.DDeEstado)) throw new Error(`La deuda ya está en estado: ${deuda.DDeEstado}`);
+    // VENCIDO también es deuda viva: «Imputar anticipo» se ofrece para toda deuda con pendiente y
+    // una vencida se rechazaba con «La deuda ya está en estado: VENCIDO» (29/10/2026).
+    if (!['PENDIENTE','PARCIAL','VENCIDO'].includes(deuda.DDeEstado)) throw new Error(`La deuda ya está en estado: ${deuda.DDeEstado}`);
 
     const pendiente = Number(deuda.DDeImportePendiente);
     const montoAplicar = monto ? Math.min(Number(monto), pendiente, saldoActual) : Math.min(pendiente, saldoActual);
@@ -4373,7 +4388,8 @@ async function imputarAnticipoADeuda(req, res) {
     // Centralizado: reduce pendiente y maneja estado automáticamente
     await contabilidadSvc.reducirDeuda({ ddeId: ddeIdDocumento, monto: montoAplicar }, transaction);
     const nuevoPendiente = Math.max(0, pendiente - montoAplicar);
-    const nuevoEstado = nuevoPendiente < 0.01 ? 'COBRADO' : 'PARCIAL';
+    // Mismo criterio que reducirDeuda: una vencida sigue vencida.
+    const nuevoEstado = nuevoPendiente < 0.01 ? 'COBRADO' : (deuda.DDeEstado === 'PENDIENTE' ? 'PARCIAL' : deuda.DDeEstado);
 
     if (nuevoEstado === 'COBRADO' && deuda.DocIdDocumento) {
       await new sql.Request(transaction).input('DocId', sql.Int, deuda.DocIdDocumento)

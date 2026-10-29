@@ -42,7 +42,9 @@ async function iniciarPagoMp({ clientId, orders }) {
         ordersData: {
             type: 'totem-mp',
             ordenRetiro: r.codigo,           // el aviso de MP asienta el pago en este retiro (no crea otro)
-            orders: r.elegidas.map(o => ({ id: o.id, desc: o.desc || o.id, amount: o.amount, rawId: o.rawId })),
+            // Las facturadas van marcadas: el aviso las deja fuera del cobro de caja (INF-SIS-2026-14)
+            orders: r.elegidas.map(o => ({ id: o.id, desc: o.desc || o.id, amount: o.amount, rawId: o.rawId,
+                                           ...(o.facturada ? { facturada: o.facturada.documento } : {}) })),
             totalCost: r.total,
             moneda: r.moneda,
         },

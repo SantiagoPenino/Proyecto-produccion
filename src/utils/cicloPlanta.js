@@ -47,11 +47,35 @@ export const ORIGEN_INICIO = {
     LIBERADA: 'desde que se liberó (esperaba a otra orden)',
 };
 
+// (28/10/2026) Pasos del ciclo, en el orden en que ocurren. Los minutos de cada orden van al paso en el que estaba
+// según sus marcas (backend/services/cicloPlantaService.js, pasosDe); desde el 29/10 manda el tilde «impresa» de la
+// orden, no los botones del lote. Las esperas en ámbar, la máquina en brand-cyan, el control en verde y la falla en
+// magenta; «En lote, sin inicio marcado» en gris porque es espera e impresión mezcladas.
+export const PASOS_CICLO = [
+    { id: 'material', label: 'Hasta recibir el material', color: 'bg-violet-300', ayuda: 'Desde que ECO UV terminó de imprimir hasta que se escaneó el material en Terminaciones. Se suele escanear al terminar, así que incluye buena parte del trabajo.' },
+    { id: 'diseno', label: 'Diseño', color: 'bg-violet-400', ayuda: 'Hasta que se aprueba el boceto, sin la espera del cliente.' },
+    { id: 'lote', label: 'Esperando lote', color: 'bg-amber-300', ayuda: 'Desde que entra (o la sacan de un lote) hasta que la ponen en un lote.' },
+    { id: 'espera', label: 'Esperando máquina', color: 'bg-amber-500', ayuda: 'En un lote o asignada a la máquina, antes de que el lote marque «Iniciar producción». Incluye las pausas.' },
+    { id: 'en_lote', label: 'En lote, sin inicio marcado', color: 'bg-zinc-400', ayuda: 'La orden quedó tildada impresa sin que el lote marcara «Iniciar producción» antes: ese rato es espera más impresión y no hay marca para separarlas.' },
+    { id: 'produccion', label: 'En producción', color: 'bg-brand-cyan', ayuda: 'Desde que el lote marcó «Iniciar producción» hasta que la orden quedó tildada impresa. Si no la tildaron ni se marcó «Fin impresión», hasta Pronto.' },
+    { id: 'cola_calandra', label: 'Esperando calandra', color: 'bg-orange-400', ayuda: 'Desde que quedó impresa (o el lote pasó a calandra) hasta que arrancó la calandra.' },
+    { id: 'calandra', label: 'Calandra', color: 'bg-sky-600', ayuda: 'Desde que arrancó la calandra.' },
+    { id: 'control', label: 'Control y calidad', color: 'bg-emerald-500', ayuda: 'Desde que la orden quedó tildada impresa (o «Fin impresión» del lote) hasta Pronto. Incluye esperar a que la controlen.' },
+    { id: 'falla', label: 'Con falla', color: 'bg-brand-magenta', ayuda: 'Desde que se reportó la falla hasta que la orden siguió.' },
+];
+export const PASO_CICLO = Object.fromEntries(PASOS_CICLO.map(p => [p.id, p]));
+
+// { lote: 95, espera: 40 } → [{ ...paso, minutos }] en el orden de PASOS_CICLO, sin los vacíos
+export const listaPasos = (pasos) => (pasos ? PASOS_CICLO.filter(p => pasos[p.id] > 0).map(p => ({ ...p, minutos: pasos[p.id] })) : []);
+// «Esperando lote 1 h 35 min · En producción 40 min»
+export const textoPasos = (pasos) => listaPasos(pasos).map(p => `${p.label} ${fmtDuracion(p.minutos)}`).join(' · ');
+
 // Texto del tooltip de la celda «Ciclo» y del detalle de la orden
 export function tituloCiclo(c) {
     if (!c) return '';
     const partes = [`${fmtDuracion(c.minutos)} laborales ${ORIGEN_INICIO[c.origen] || ''} hasta que quedó pronta`];
     if (c.espera > 0) partes.push(`sin ${fmtDuracion(c.espera)} de espera del cliente`);
     partes.push(`${fmtCorridos(c.corridos)} corridos`);
-    return partes.join(' · ');
+    const pasos = textoPasos(c.pasos);
+    return partes.join(' · ') + (pasos ? `\nPor paso: ${pasos}` : '');
 }

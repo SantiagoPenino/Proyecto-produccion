@@ -75,7 +75,10 @@ const r2 = (n) => Math.round(Number(n) * 100) / 100;
 async function iniciarCobroTotem({ terminal, clientId, orders }) {
     const r = await prepararRetiroTotem({ clientId, orders, origen: `tótem ${terminal.PteEtiqueta}` });
     try {
-        const cobro = await cobrarRetiro({ terminal, cliente: r.cliente, retiroId: r.retiroId, codigo: r.codigo, moneda: r.moneda, total: r.total, aPagar: r.aPagar });
+        // Con órdenes ya facturadas en el retiro, caja cobra solo las de aPagar: con ellas adentro, el
+        // control «una orden, un comprobante» rechaza el cobro entero (INF-SIS-2026-14)
+        const orderNumbers = r.elegidas.some(o => o.facturada) ? r.aPagar.map(o => o.rawId) : undefined;
+        const cobro = await cobrarRetiro({ terminal, cliente: r.cliente, retiroId: r.retiroId, codigo: r.codigo, moneda: r.moneda, total: r.total, aPagar: r.aPagar, orderNumbers });
         return { cobro, retiro: { id: r.retiroId, codigo: r.codigo } };
     } catch (e) {
         // El retiro ya existe: el tótem imprime el ticket y el cliente paga en la caja, como hoy.
@@ -143,7 +146,7 @@ async function prepararRetiroTotem({ clientId, orders, origen }) {
 }
 
 /** Manda al POS el cobro de un retiro ya creado (primera vez o reintento). */
-async function cobrarRetiro({ terminal, cliente, retiroId, codigo, moneda, total, aPagar }) {
+async function cobrarRetiro({ terminal, cliente, retiroId, codigo, moneda, total, aPagar, orderNumbers }) {
     const pool = await getPool();
     let cotizacion = null;
     if (moneda === 'USD') {
@@ -162,7 +165,8 @@ async function cobrarRetiro({ terminal, cliente, retiroId, codigo, moneda, total
             esAdministrativa: true,
             observaciones: `Tótem ${terminal.PteEtiqueta} · ${codigo}${aPagar ? ` · ${aPagar.map(o => o.id).join(', ')}` : ''}`.slice(0, 300),
         },
-        aplicaciones: [{ tipo: 'ORDEN_RETIRO', referenciaId: retiroId, codigoRef: codigo, descripcion: `Retiro ${codigo} (tótem)`, montoOriginal: total }],
+        aplicaciones: [{ tipo: 'ORDEN_RETIRO', referenciaId: retiroId, codigoRef: codigo, descripcion: `Retiro ${codigo} (tótem)`, montoOriginal: total,
+                         ...(Array.isArray(orderNumbers) && orderNumbers.length ? { orderNumbers } : {}) }],
         pagos: [{ metodoPagoId: METODO_POS_ID, moneda, monedaId: moneda === 'USD' ? 2 : 1, montoOriginal: total, cotizacion }],
         posIndex: 0,
         usuarioId: USUARIO_SISTEMA,
@@ -188,6 +192,7 @@ async function reintentar({ terminal, uuid }) {
     return cobrarRetiro({
         terminal, cliente: cli, retiroId: ap.referenciaId, codigo: ap.codigoRef || `RT-${ap.referenciaId}`,
         moneda, total: Number(f.PtxMontoCentesimos) / 100, aPagar: null,
+        orderNumbers: ap.orderNumbers,   // las mismas órdenes que el cobro anterior
     });
 }
 

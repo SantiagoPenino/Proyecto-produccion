@@ -801,6 +801,21 @@ async function getProductosVenta() {
   return res.recordset;
 }
 
+/**
+ * Qué hace el cobro con el asiento de caja (función pura, 29/10/2026, INF-SIS-2026-15):
+ *  - RECHAZAR: lo elegido vale $0 y no entra plata. Antes llegaba al motor con una sola línea y
+ *    salía «Un asiento requiere mínimo 2 líneas» con un 500 (RT-35459, reposición en $0, 28/10).
+ *  - SIN_ASIENTO: cobro a crédito, sin líneas de pago. No entra plata; antes la línea de ajuste
+ *    «cuadraba» el asiento mandando el total a Descuentos concedidos (5.2.03).
+ *  - ASIENTO: el resto, como siempre (también el "importe a cobrar" menor: ese descuento es real).
+ */
+function decidirAsientoCobro({ totalBruto, totalNeto, totalCobrado, cantPagos }) {
+  const cero = (x) => Math.abs(parseFloat(x) || 0) < 0.005;
+  if (cero(totalBruto) && cero(totalNeto) && cero(totalCobrado)) return 'RECHAZAR';
+  if (!cantPagos) return 'SIN_ASIENTO';
+  return 'ASIENTO';
+}
+
 // ─────────────────────────────────────────────────────────────────────────
 // FUNCIÓN PRINCIPAL
 // ─────────────────────────────────────────────────────────────────────────
@@ -829,24 +844,43 @@ async function procesarTransaccion(payload) {
   // en el cobro del retiro: cada orden lleva UN solo comprobante. Si su deuda sigue
   // pendiente, el camino es "Pago de Deudas" (recibo), no otra factura.
   {
-    const retirosGuard = (aplicaciones || [])
-      .filter(a => a.tipo === 'ORDEN_RETIRO' && a.referenciaId)
+    // Si la aplicación dice qué órdenes cobra (orderNumbers: caja con las tildadas, los pagos online
+    // sin las ya facturadas), se miran solo esas; si no, todas las del retiro (28/10, INF-SIS-2026-13).
+    const appsRetiro = (aplicaciones || []).filter(a => a.tipo === 'ORDEN_RETIRO' && a.referenciaId);
+    const conLista = (a) => Array.isArray(a.orderNumbers) && a.orderNumbers.length > 0;
+    const retirosGuard = appsRetiro.filter(a => !conLista(a))
       .map(a => parseInt(String(a.referenciaId).replace(/\D/g, ''), 10))
       .filter(n => !isNaN(n));
-    if (retirosGuard.length && header?.clienteId) {
+    const ordenesGuard = appsRetiro.filter(conLista)
+      .flatMap(a => a.orderNumbers.map(n => parseInt(n, 10)))
+      .filter(n => !isNaN(n));
+    if ((retirosGuard.length || ordenesGuard.length) && header?.clienteId) {
+      const filtroGuard = [
+        retirosGuard.length ? `od.OReIdOrdenRetiro IN (${retirosGuard.join(',')})` : null,
+        ordenesGuard.length ? `od.OrdIdOrden IN (${ordenesGuard.join(',')})` : null,
+      ].filter(Boolean).join(' OR ');
       const poolGuard = await getPool();
       const factRes = await poolGuard.request()
         .input('Cli', sql.Int, parseInt(header.clienteId))
         .query(`
           SELECT DISTINCT od.OrdCodigoOrden, LTRIM(RTRIM(dc.DocSerie)) DocSerie, LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) DocNumero,
-                 ISNULL((SELECT TOP 1 dd.DDeEstado FROM dbo.DeudaDocumento dd WITH(NOLOCK) WHERE dd.DocIdDocumento = dc.DocIdDocumento), 'PAGADO') AS DeudaEstado
+                 ISNULL((SELECT TOP 1 dd.DDeEstado FROM dbo.DeudaDocumento dd WITH(NOLOCK) WHERE dd.DocIdDocumento = dc.DocIdDocumento), 'PAGADO') AS DeudaEstado,
+                 -- Nota de crédito que acredita el documento ENTERO: su deuda «COBRADO» no es un pago,
+                 -- y la refactura no liga la orden (INF-SIS-2026-14, P6)
+                 (SELECT TOP 1 LTRIM(RTRIM(n.DocSerie)) + '-' + LTRIM(RTRIM(CAST(n.DocNumero AS VARCHAR(50))))
+                  FROM dbo.DocumentosContables n WITH(NOLOCK)
+                  WHERE n.DocIdDocumentoRef = dc.DocIdDocumento AND n.DocTipo LIKE '%Nota De Cr%' AND ISNULL(n.DocEstado, '') <> 'ANULADO'
+                    AND (SELECT SUM(n2.DocTotal) FROM dbo.DocumentosContables n2 WITH(NOLOCK)
+                         WHERE n2.DocIdDocumentoRef = dc.DocIdDocumento AND n2.DocTipo LIKE '%Nota De Cr%'
+                           AND ISNULL(n2.DocEstado, '') <> 'ANULADO') >= dc.DocTotal - 0.01
+                  ORDER BY n.DocIdDocumento DESC) AS NotaCredito
           FROM dbo.OrdenesDeposito od WITH(NOLOCK)
           JOIN dbo.MovimientosCuenta m WITH(NOLOCK)
             ON (m.OrdIdOrden = od.OrdIdOrden
                 OR m.OrdIdOrden IN (SELECT o2.OrdenID FROM dbo.Ordenes o2 WITH(NOLOCK) WHERE o2.CodigoOrden = od.OrdCodigoOrden))
           JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = @Cli
           JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
-          WHERE od.OReIdOrdenRetiro IN (${retirosGuard.join(',')})
+          WHERE (${filtroGuard})
             AND ISNULL(od.OrdCostoFinal, 0) > 0.01
             AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
             AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
@@ -855,9 +889,11 @@ async function procesarTransaccion(payload) {
       if (factRes.recordset.length) {
         const det = factRes.recordset.map(f =>
           `${f.OrdCodigoOrden} ya está facturada en ${f.DocSerie}-${f.DocNumero}` +
-          (['PENDIENTE', 'PARCIAL', 'VENCIDO'].includes(String(f.DeudaEstado).toUpperCase())
-            ? ' (deuda pendiente: cobrala por "Pago de Deudas")'
-            : ' (paga: entregá sin cobrar)'));
+          (f.NotaCredito
+            ? ` (acreditada entera por ${f.NotaCredito}: buscá la factura que la reemplazó y cobrala por "Pago de Deudas")`
+            : ['PENDIENTE', 'PARCIAL', 'VENCIDO'].includes(String(f.DeudaEstado).toUpperCase())
+              ? ' (deuda pendiente: cobrala por "Pago de Deudas")'
+              : ' (paga: entregá sin cobrar)'));
         const eGuard = new Error(`No se cobró el retiro — ${det.join(' · ')}. Cada orden lleva UN solo comprobante; destildá esas órdenes del cobro.`);
         eGuard.statusCode = 409;   // rechazo esperado del control, no una falla del sistema (ver cajaController)
         throw eGuard;
@@ -886,6 +922,11 @@ async function procesarTransaccion(payload) {
   });
 
   const totalCobrado = pagosNorm.reduce((s, p) => s + p.montoConvertido, 0);
+
+  const asientoCobro = decidirAsientoCobro({ totalBruto, totalNeto, totalCobrado, cantPagos: pagosNorm.length });
+  if (asientoCobro === 'RECHAZAR') {
+    throw faltaDato('No hay nada para cobrar: lo elegido suma $0 (por ejemplo, una reposición). Se entrega sin pasar por caja.');
+  }
 
   // ── Ajuste de COBRO (independiente del valor de las órdenes/factura) ──
   // El cajero puede fijar un "importe a cobrar" distinto del total real (redondeo/pago cerrado).
@@ -1301,6 +1342,7 @@ async function procesarTransaccion(payload) {
     const ordenesRetiro  = aplicaciones.filter(a => a.tipo === 'ORDEN_RETIRO'   && a.referenciaId);
     const ordenesDeposito = aplicaciones.filter(a => a.tipo === 'ORDEN_DEPOSITO' && a.referenciaId);
     const ordenesPagadasIds = [];
+    const retirosSinCerrar = [];   // retiros que quedan sin abonar porque se siguen debiendo otras órdenes
 
     // OrdenesRetiro → determinar nuevo estado según estado actual
     for (const ap of ordenesRetiro) {
@@ -1354,6 +1396,22 @@ async function procesarTransaccion(payload) {
       }
 
       const estadoActual   = estadoRes.recordset[0].OReEstadoActual;
+
+      // Retiro mixto (INF-SIS-2026-14, P2): si quedan órdenes del retiro fuera de este cobro que se
+      // siguen debiendo, se marcan pagas solo las cobradas (arriba) y el retiro NO pasa a abonado:
+      // sigue sin pagar, para cobrar el resto en caja. Antes quedaba abonado y se entregaba con la
+      // factura impaga (pago online con una orden ya facturada, o caja con órdenes destildadas).
+      // Solo sin abonar (1 ingresado, 2 pasar por caja, 7 empaquetado sin abonar): en los demás el
+      // cobro no cambia si se entrega.
+      if ([1, 2, 7].includes(Number(estadoActual))) {
+        const debe = await require('./retiroService').ordenesQueQuedanDebiendo(transaction, realRefId, ap.orderNumbers);
+        if (debe.length) {
+          retirosSinCerrar.push({ retiroId: realRefId, ordenes: debe });
+          logger.warn(`[CAJA] Retiro ${realRefId}: quedan debiendo ${debe.map(o => o.documento ? `${o.codigo} (${o.documento})` : o.codigo).join(', ')}. Se marcan pagas solo las cobradas; el retiro sigue sin abonar.`);
+          continue;
+        }
+      }
+
       // Estado 1(Pendiente)→3(Abonado)  | Estado 5(Listo)→8(Listo y abonado) | otros→sin cambio de estado
       const nuevoEstado = estadoActual === 1 ? 3 : estadoActual;
 
@@ -1422,6 +1480,9 @@ async function procesarTransaccion(payload) {
     for (const ap of ordenesRetiro) {
       const realRefId = parseInt(String(ap.referenciaId).replace(/\D/g, ''), 10);
       if (isNaN(realRefId) || String(ap.referenciaId).trim().toUpperCase().startsWith('RL')) continue; // Los retiros virtuales no se cierran porque no existen en tabla
+      // El PASO 4 lo dejó sin abonar a propósito (INF-SIS-2026-14). Este conteo deja afuera las órdenes
+      // en 6 y 9, así que no sirve para saber si queda alguna debiéndose: que no lo cierre.
+      if (retirosSinCerrar.some(x => x.retiroId === realRefId)) continue;
 
       const checkRes = await new sql.Request(transaction)
         .input('Id', sql.Int, realRefId)
@@ -1606,15 +1667,20 @@ async function procesarTransaccion(payload) {
       const strRef = aplicaciones.map(a => a.codigoRef || a.referenciaId).filter(Boolean).join(', ') || tcaIdTransaccion;
       const conceptoAsiento = `Cobro s/ ${strRef} - ${strDoc}`;
 
-      const asiId = await contabilidadCore.generarAsientoCompleto({
-        concepto: conceptoAsiento,
-        usuarioId,
-        tcaIdTransaccion,
-        origen: 'CAJA_COBROS',
-        lineas: lineasContables
-      }, transaction);
-
-      logger.info(`[CAJA-ERP] Asiento Contable generado para TcaId=${tcaIdTransaccion}`);
+      // A crédito no entra plata: no hay asiento de cobro (ver decidirAsientoCobro). El documento y la deuda siguen igual.
+      let asiId = null;
+      if (asientoCobro === 'ASIENTO') {
+        asiId = await contabilidadCore.generarAsientoCompleto({
+          concepto: conceptoAsiento,
+          usuarioId,
+          tcaIdTransaccion,
+          origen: 'CAJA_COBROS',
+          lineas: lineasContables
+        }, transaction);
+        logger.info(`[CAJA-ERP] Asiento Contable generado para TcaId=${tcaIdTransaccion}`);
+      } else {
+        logger.info(`[CAJA-ERP] Cobro a crédito sin pagos: sin asiento de cobro para TcaId=${tcaIdTransaccion}`);
+      }
 
       // ── PASO 5.6: GENERACIÓN CFE (FACTURACIÓN ELECTRÓNICA) ─────────────
       if (header.tipoDocumento && header.tipoDocumento !== 'NINGUNO') {
@@ -1671,10 +1737,16 @@ async function procesarTransaccion(payload) {
              // con fallbacks legacy). Antes el PC quedaba SIN líneas a propósito y el modal de
              // facturación mostraba una línea genérica con el nombre del cliente. Si no resuelve
              // nada, queda vacío como antes (línea editable) — esto NUNCA bloquea el cobro.
+             // De cada retiro, solo las órdenes que cobra este cobro (ap.orderNumbers, ya sin las
+             // exoneradas): el retiro puede traer otras ya facturadas, pagas o destildadas, y salían
+             // en la factura con un total que no cerraba (INF-SIS-2026-14, P1).
+             const ordenesCobradasCFE = (ordenesRetiro.length && ordenesRetiro.every(ap => Array.isArray(ap.orderNumbers)))
+               ? ordenesRetiro.flatMap(ap => ap.orderNumbers)
+               : undefined;
              let lineasDocCFE = [];
              try {
                lineasDocCFE = await contabilidadCore.resolverLineasDetalle(
-                 { tcaIdTransaccion, monedaFactura: monedaId === 1 ? 'UYU' : 'USD' },
+                 { tcaIdTransaccion, monedaFactura: monedaId === 1 ? 'UYU' : 'USD', ordenesCobradas: ordenesCobradasCFE },
                  transaction
                ) || [];
              } catch (eLineas) {
@@ -2047,6 +2119,8 @@ async function procesarTransaccion(payload) {
       docIdDocumento:   header.docIdDocumento || null,
       numeroDoc:        header.numeroDoc || null,
       serieDoc:         header.serieDoc || null,
+      // Retiros que quedaron sin abonar porque se siguen debiendo otras órdenes (INF-SIS-2026-14)
+      retirosSinCerrar,
     };
 
   } catch (err) {
@@ -3125,6 +3199,7 @@ async function anularEgreso({ egrId, usuarioId, motivo }) {
 
 module.exports = {
   procesarTransaccion,
+  decidirAsientoCobro,
   procesarVentaDirecta,
   getProductosVenta,
   anularTransaccion,

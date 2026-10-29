@@ -2573,6 +2573,18 @@ exports.editarFactura = async (req, res) => {
                     .input('docId', sql.Int, id)
                     .input('tcaId', sql.Int, currentTcaId)
                     .query("UPDATE DocumentosContables SET TcaIdTransaccion = @tcaId WHERE DocIdDocumento = @docId");
+
+                // Factura cobrada a mano: sus órdenes quedan pagas y se cierran los retiros que ya no
+                // deben nada (INF-SIS-2026-14, P4). Antes la orden seguía «a cobrar» en el portal y la
+                // entrega (7 de las 18 facturadas que el portal ofrecía cobrar en la copia del 27/10).
+                const pagManual = (await transaction.request()
+                    .input('tcaId', sql.Int, currentTcaId)
+                    .query('SELECT TOP 1 PagIdPago FROM dbo.Pagos WHERE PagTcaIdTransaccion = @tcaId ORDER BY PagIdPago')).recordset[0];
+                if (pagManual) {
+                    await require('../services/retiroService').marcarOrdenesDeDocumentosPagas(transaction, {
+                        docIds: [parseInt(id, 10)], pagId: pagManual.PagIdPago, usuarioId: req.user.id,
+                    });
+                }
             }
         }
 

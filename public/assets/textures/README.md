@@ -12,6 +12,12 @@ textura, soltá el archivo acá. Para sacarla, ver la advertencia de abajo.
   exacto que haga falta. Usá **PNG** solo si la textura es una foto o escaneo de un material real.
 - **Seamless (tileable)**: el borde derecho tiene que continuar en el izquierdo y el de arriba en
   el de abajo. Se repite para cubrir el parche; si no calza, se ve una grilla de costuras.
+  - Si el SVG es un rectángulo relleno con un **motivo de Illustrator** (`<pattern>`), el `viewBox`
+    y el rectángulo tienen que medir un número **entero** de repeticiones del motivo, y el
+    rectángulo tiene que llenar todo el `viewBox` (sin el margen de medio punto que deja el borde
+    de la mesa de trabajo). Si no, el dibujo salta en cada unión: así salían las 8 texturas con
+    motivo hasta el 29/10 (INF-SIS-2026-16, TPU-38211).
+  - Para revisar una textura nueva: armala en 2 × 2 copias y mirá las uniones.
 - **Imágenes embebidas, no vinculadas** (data URI / opción "Embed" de Illustrator): un SVG
   cargado en `<img>` no puede traer archivos externos.
 
@@ -43,6 +49,11 @@ En esta misma carpeta, un archivo con la repetición y la altura de cada textura
 - **`escalaMinFija`** — (a mano, opcional) un mínimo decidido a ojo que manda sobre la cuenta: el
   script lo respeta y lo copia a `escalaMin`. Hoy solo `textura2.svg` = 1 (no se achica). Si lo
   cambiás, corré `python python/medir_trazo_texturas.py --recalcular` (no vuelve a medir).
+- **`oculta`** — (a mano, opcional) `true` la saca de la lista para elegir en el visor. El archivo
+  queda en la carpeta: las órdenes que ya la eligieron la siguen viendo y se pueden regenerar. Hoy
+  hay 11 ocultas porque no empalman copia con copia (huecos, una línea o un salto en la unión,
+  29/10): textura-002, 003, 009, 010, 011, 018, 019, 020, 021, 022 y 023. Cuando diseño corrija una,
+  se borra la clave.
 
 Lo que no esté listado usa los defaults. Si el JSON tiene un error de sintaxis se ignora entero y se
 avisa en el log — las texturas siguen funcionando.

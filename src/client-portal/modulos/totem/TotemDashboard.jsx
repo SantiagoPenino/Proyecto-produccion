@@ -864,9 +864,17 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
 
                                     {/* Cost */}
                                     <div className="w-28 flex-shrink-0 text-right">
-                                        <span className="text-base font-bold text-blue-400">
-                                            {order.currency} {order.amount.toFixed(2)}
-                                        </span>
+                                        {order.facturada ? (
+                                            // Ya tiene comprobante: no se cobra en el tótem (INF-SIS-2026-14)
+                                            <span className="text-sm font-bold text-white/60" title={order.facturada.deudaPendiente ? 'La factura tiene saldo: se paga en caja.' : 'Ya está facturada y paga.'}>
+                                                Facturada
+                                                {order.facturada.deudaPendiente && <span className="block text-[11px] font-medium text-white/40">Se paga en caja</span>}
+                                            </span>
+                                        ) : (
+                                            <span className="text-base font-bold text-blue-400">
+                                                {order.currency} {order.amount.toFixed(2)}
+                                            </span>
+                                        )}
                                     </div>
                                 </div>
                             ))}

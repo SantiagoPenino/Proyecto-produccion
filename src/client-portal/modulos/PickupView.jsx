@@ -224,11 +224,17 @@ export const PickupView = () => {
     // El servidor recalcula el total al pagar; si la cotización cambió con la pantalla abierta
     // contesta 409 con el total nuevo. Se muestra, y si el cliente confirma se reintenta con ese.
     const confirmarTotalNuevo = async (err) => {
-        if (err?.status !== 409 || !err?.data?.total) return null;
+        if (err?.status !== 409 || err?.data?.total === undefined || err?.data?.total === null) return null;
         const d = err.data;
+        // Total 0: no hay nada para confirmar; antes se cortaba sin avisar (INF-SIS-2026-14)
+        if (!(Number(d.total) > 0)) {
+            await Swal.fire({ icon: 'info', title: 'No hay nada para pagar', text: d.error || '', background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+            return null;
+        }
         if (Number(d.cotizacion) > 0) { setCotizacionDolar(Number(d.cotizacion)); setCotizacionDia(d.cotizacionDia || null); }
         const conf = await Swal.fire({
-            icon: 'info', title: 'Cambió la cotización del dólar',
+            // El total cambia por la cotización o porque una orden se facturó con la pantalla abierta
+            icon: 'info', title: d.facturadas?.length ? 'Cambió el total de tu retiro' : 'Cambió la cotización del dólar',
             html: `${d.error || ''}<br/><br/>¿Seguís con el pago por <b>${d.moneda === 'USD' ? 'US$' : '$'} ${fmt2(d.total)}</b>?`,
             showCancelButton: true, confirmButtonText: 'Sí, seguir', cancelButtonText: 'Cancelar',
             background: '#212121', color: '#e4e4e7', confirmButtonColor: '#006E97',
@@ -316,7 +322,7 @@ export const PickupView = () => {
                     costo: Number(Number(order.amount || 0).toFixed(2)),
                     estado: order.originalStatus,
                     tipodecliente: order.clientType || "Comun",
-                    pago: order.isPaid ? 'Pagado' : 'No realizado',
+                    pago: order.isPaid ? 'Pagado' : (order.facturada ? `Facturada (${order.facturada.documento})` : 'No realizado'),
                     checked: true,
                     clientId: order.clientId || 'N/A',
                     contact: order.contact || '',
@@ -498,11 +504,22 @@ export const PickupView = () => {
             const savedDir = shippingData?.direccionesGuardadas?.find(d => d.Direccion === selectedDireccion);
             if (savedDir) { depto = savedDir.Ciudad || ''; loc = savedDir.Localidad || ''; }
             else if (dir === shippingData?.defaultDireccion) { depto = defaultDepto || ''; loc = defaultLocalidad || ''; }
+            // Las facturadas no se cubren con la billetera ni van en este retiro (nace pago): se
+            // confirman aparte, sin pagar (INF-SIS-2026-14)
+            const facturadasSel = readyOrders.filter(o => selectedOrders.includes(o.id) && o.facturada);
             const ordersPayload = selectedOrders.map(selId => {
                 const order = readyOrders.find(o => o.id === selId);
-                if (!order) return null;
+                if (!order || order.facturada) return null;
                 return { OrdIdOrden: order.rawId, orderNumber: order.id.replace('#', ''), desc: order.desc, amount: order.amount, currency: order.currency };
             }).filter(Boolean);
+            const avisoFacturadas = facturadasSel.length
+                ? `${facturadasSel.map(o => `${o.id} (${o.facturada.documento})`).join(', ')} ya ${facturadasSel.length > 1 ? 'están facturadas' : 'está facturada'}: no se cubre${facturadasSel.length > 1 ? 'n' : ''} con la billetera. Confirmal${facturadasSel.length > 1 ? 'as' : 'a'} en otro retiro, sin pagar.`
+                : '';
+            if (!ordersPayload.length) {
+                setLoading(false);
+                await Swal.fire({ icon: 'info', title: 'Nada para cubrir con la billetera', text: avisoFacturadas, background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2', customClass: { popup: 'rounded-xl border border-zinc-700' } });
+                return;
+            }
             const payloadBase = {
                 orders: ordersPayload,
                 lugarRetiro: esEncomienda ? 2 : 1,
@@ -531,6 +548,7 @@ export const PickupView = () => {
                 html: `Cada pedido se descuenta ENTERO de tu saldo prepago:<br/><br/>`
                     + `<div style="text-align:left;display:inline-block">${lineasHtml}</div><br/><br/>`
                     + `${(prev.yaCubiertas || []).length ? `<span style="font-size:12px;opacity:.75">Ya estaban cubiertos: ${prev.yaCubiertas.join(', ')}.</span><br/>` : ''}`
+                    + `${avisoFacturadas ? `<span style="font-size:12px;opacity:.75">${avisoFacturadas}</span><br/>` : ''}`
                     + `<span style="font-size:12px;opacity:.75">No se emite factura nueva: tu saldo ya fue facturado al recargarlo. El retiro queda pago al instante.</span>`,
                 showCancelButton: true, confirmButtonText: 'Sí, cubrir con mi billetera', cancelButtonText: 'Cancelar',
                 background: '#212121', color: '#e4e4e7', confirmButtonColor: '#0891b2',
@@ -978,9 +996,13 @@ export const PickupView = () => {
                                     <p className="text-sm font-semibold text-custom-cyan truncate">{o.id}</p>
                                     <p className="text-xs text-zinc-500 truncate">{o.desc}</p>
                                 </div>
-                                <span className="font-bold text-custom-cyan shrink-0 ml-3">
-                                    <span className="text-xs text-zinc-500 mr-0.5">{o.currency === 'USD' ? 'US$' : '$'}</span>{(o.amount || 0).toFixed(2)}
-                                </span>
+                                {o.facturada ? (
+                                    <span className="text-xs font-bold text-zinc-400 shrink-0 ml-3 text-right">Facturada · {o.facturada.documento}</span>
+                                ) : (
+                                    <span className="font-bold text-custom-cyan shrink-0 ml-3">
+                                        <span className="text-xs text-zinc-500 mr-0.5">{o.currency === 'USD' ? 'US$' : '$'}</span>{(o.amount || 0).toFixed(2)}
+                                    </span>
+                                )}
                             </div>
                         ))}
                     </div>
@@ -1656,6 +1678,12 @@ export const PickupView = () => {
                                                     <span className="text-green-400 flex items-center justify-end gap-1">
                                                         <CheckCircle size={14} /> Pagado
                                                     </span>
+                                                ) : order.facturada ? (
+                                                    // Ya tiene comprobante: no se cobra por acá (INF-SIS-2026-13)
+                                                    <span className="text-zinc-300" title={order.facturada.deudaPendiente ? 'La factura tiene saldo: se paga en caja o con tu vendedor.' : 'Ya está facturada y paga.'}>
+                                                        Facturada · {order.facturada.documento}
+                                                        {order.facturada.deudaPendiente && <span className="block text-[11px] text-zinc-500">Se paga en caja</span>}
+                                                    </span>
                                                 ) : (
                                                     <span className="text-custom-cyan">{`${order.currency === 'USD' ? 'US$' : '$'} ${(order.amount || 0).toFixed(2)}`}</span>
                                                 )}
@@ -1686,6 +1714,10 @@ export const PickupView = () => {
                                             <span className="px-2 py-0.5 bg-green-900/30 text-green-400 text-[10px] font-bold uppercase tracking-wider rounded-full border border-green-700/40">
                                                 Pagado
                                             </span>
+                                        ) : order.facturada ? (
+                                            <span className="px-2 py-0.5 bg-zinc-800 text-zinc-300 text-[10px] font-bold uppercase tracking-wider rounded-full border border-zinc-700">
+                                                Facturada
+                                            </span>
                                         ) : (
                                             <span className="px-2 py-0.5 bg-cyan-900/30 text-cyan-400 text-[10px] font-bold uppercase tracking-wider rounded-full border border-cyan-700/40">
                                                 Disponible para retiro
@@ -1698,9 +1730,16 @@ export const PickupView = () => {
                                     <div className="bg-custom-dark p-3 rounded-lg border border-zinc-800">
                                         <div className="flex justify-between text-sm">
                                             <span className="text-zinc-400 truncate mr-3">{order.desc}</span>
-                                            <span className="font-bold text-custom-cyan shrink-0">
-                                                {order.currency === 'USD' ? 'US$' : '$'} {(order.amount || 0).toFixed(2)}
-                                            </span>
+                                            {order.facturada ? (
+                                                <span className="font-bold text-zinc-300 shrink-0 text-right">
+                                                    {order.facturada.documento}
+                                                    {order.facturada.deudaPendiente && <span className="block text-[11px] font-medium text-zinc-500">Se paga en caja</span>}
+                                                </span>
+                                            ) : (
+                                                <span className="font-bold text-custom-cyan shrink-0">
+                                                    {order.currency === 'USD' ? 'US$' : '$'} {(order.amount || 0).toFixed(2)}
+                                                </span>
+                                            )}
                                         </div>
                                     </div>
 

@@ -2522,7 +2522,9 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                     </div>
                                     <span className={`block mt-1 text-[9px] ${ui.swatchTxt} leading-tight`}>{esMatriz ? 'Liso' : 'Sin textura'}</span>
                                 </button>
-                                {texturas.map(t => (
+                                {/* Las ocultas (texturas.json) no se ofrecen; la de la zona activa se muestra
+                                    igual, para que una orden que ya la eligió no la pierda. */}
+                                {texturas.filter(t => !t.oculta || elecciones[zonaActiva] === t.archivo).map(t => (
                                     <button
                                         key={t.archivo}
                                         type="button"

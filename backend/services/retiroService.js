@@ -361,6 +361,198 @@ async function leerOrdenesParaCobro(exec, ordIds, { pendiente = true } = {}) {
 }
 
 /**
+ * Órdenes que ya tienen comprobante vivo (factura, e-ticket o pedido de caja): la misma condición
+ * que el control de caja «cada orden lleva UN solo comprobante» (cajaService.procesarTransaccion).
+ * Si queda deuda, se cobra por Pago de Deudas; los pagos online no las cobran (INF-SIS-2026-13: el
+ * 28/10 un cliente pagó por Handy el RW-35313, ya facturado en la FA-2999, caja rechazó registrar
+ * el cobro y la plata quedó en la pasarela sin anotar).
+ * Documento acreditado ENTERO por una nota de crédito (INF-SIS-2026-14, P6): la NC no desliga la
+ * orden y la refactura no la vuelve a ligar, así que la deuda real está en otro documento que desde
+ * la orden no se encuentra (DIR-33506: FA-2693 acreditada por NC-000056, la deuda en FA-2714). Se
+ * prefiere un documento sin acreditar; si no hay, la orden sale con deuda (se resuelve en caja) y
+ * con la NC en `acreditadaPor`. Antes salía «paga» por la deuda COBRADO que deja la NC.
+ * @returns {Promise<Map<number, {documento:string, deudaPendiente:boolean, acreditadaPor:string|null}>>}
+ */
+async function leerFacturadas(exec, ordIds) {
+    const ids = [...new Set((ordIds || []).map(n => parseInt(n, 10)).filter(n => !isNaN(n)))];
+    const out = new Map();
+    if (!ids.length) return out;
+    const req = exec.request();
+    ids.forEach((id, i) => req.input(`of${i}`, sql.Int, id));
+    const r = await req.query(`
+        SELECT od.OrdIdOrden, f.Documento, f.DeudaEstado, f.NotaCredito
+        FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+        CROSS APPLY (
+            SELECT TOP 1 LTRIM(RTRIM(dc.DocSerie)) + '-' + LTRIM(RTRIM(CAST(dc.DocNumero AS VARCHAR(50)))) AS Documento,
+                   ISNULL((SELECT TOP 1 dd.DDeEstado FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+                           WHERE dd.DocIdDocumento = dc.DocIdDocumento), 'PAGADO') AS DeudaEstado,
+                   nc.NotaCredito
+            FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+            JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta AND cc.CliIdCliente = od.CliIdCliente
+            JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+            OUTER APPLY (
+                SELECT TOP 1 LTRIM(RTRIM(n.DocSerie)) + '-' + LTRIM(RTRIM(CAST(n.DocNumero AS VARCHAR(50)))) AS NotaCredito
+                FROM dbo.DocumentosContables n WITH(NOLOCK)
+                WHERE n.DocIdDocumentoRef = dc.DocIdDocumento AND n.DocTipo LIKE '%Nota De Cr%'
+                  AND ISNULL(n.DocEstado, '') <> 'ANULADO'
+                  AND (SELECT SUM(n2.DocTotal) FROM dbo.DocumentosContables n2 WITH(NOLOCK)
+                       WHERE n2.DocIdDocumentoRef = dc.DocIdDocumento AND n2.DocTipo LIKE '%Nota De Cr%'
+                         AND ISNULL(n2.DocEstado, '') <> 'ANULADO') >= dc.DocTotal - 0.01
+                ORDER BY n.DocIdDocumento DESC
+            ) nc
+            WHERE (m.OrdIdOrden = od.OrdIdOrden
+                   OR m.OrdIdOrden IN (SELECT o2.OrdenID FROM dbo.Ordenes o2 WITH(NOLOCK) WHERE o2.CodigoOrden = od.OrdCodigoOrden))
+              AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+              AND ISNULL(dc.DocEstado, '') <> 'ANULADO'
+            ORDER BY CASE WHEN nc.NotaCredito IS NULL THEN 0 ELSE 1 END, m.MovIdMovimiento DESC
+        ) f
+        WHERE od.OrdIdOrden IN (${ids.map((_, i) => `@of${i}`).join(',')})
+          AND ISNULL(od.OrdCostoFinal, 0) > 0.01`);
+    for (const row of r.recordset) {
+        out.set(row.OrdIdOrden, {
+            documento: row.Documento,
+            deudaPendiente: !!row.NotaCredito
+                || ['PENDIENTE', 'PARCIAL', 'VENCIDO'].includes(String(row.DeudaEstado || '').toUpperCase()),
+            acreditadaPor: row.NotaCredito || null,
+        });
+    }
+    return out;
+}
+
+/**
+ * Órdenes de un retiro que quedan FUERA de un cobro y se siguen debiendo (INF-SIS-2026-14, P2):
+ * sin comprobante y sin nada que las cubra (pago, cobranza o billetera), o facturadas con la deuda
+ * viva. No cuentan las facturadas sin deuda, las pagas, las exoneradas (tienen PagIdPago), las de
+ * costo 0 ni las canceladas (10) o perdidas (11). El 9 sí cuenta: crearRetiro pone así las órdenes
+ * al armar el retiro, no solo al entregarlas.
+ * @param {number[]} cobradas — las que cubre el cobro en curso (se saltean)
+ * @returns {Promise<{ordId:number, codigo:string, documento:string|null}[]>}
+ */
+async function ordenesQueQuedanDebiendo(exec, retiroId, cobradas) {
+    const cob = new Set((cobradas || []).map(n => parseInt(n, 10)));
+    const r = await exec.request()
+        .input('Id', sql.Int, retiroId)
+        .query(`
+            SELECT od.OrdIdOrden
+            FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+            WHERE od.OReIdOrdenRetiro = @Id
+              AND ISNULL(od.PagIdPago, 0) = 0
+              AND ISNULL(od.OrdCostoFinal, 0) > 0.01
+              AND od.OrdEstadoActual NOT IN (10, 11)`);
+    const resto = r.recordset.map(x => x.OrdIdOrden).filter(id => !cob.has(id));
+    if (!resto.length) return [];
+    const cobro = await leerOrdenesParaCobro(exec, resto);
+    const fact  = await leerFacturadas(exec, resto);
+    return resto
+        .filter(id => (fact.has(id) ? fact.get(id).deudaPendiente : (cobro.get(id)?.pendiente || 0) > 0.01))
+        .map(id => ({ ordId: id, codigo: cobro.get(id)?.codigo || `#${id}`, documento: fact.get(id)?.documento || null }));
+}
+
+/**
+ * Cierra un retiro sin abonar que ya no debe nada (INF-SIS-2026-14, 1c). Lo usan los cobros que
+ * pagan órdenes sin pasar por el cobro del retiro: Pago de Deudas sobre la factura y el cobro manual
+ * de una factura. 1 y 2 → 3 Abonado; 7 → 8 Empaquetado y abonado (la regla de «Cubrir con billetera»
+ * de caja). Entregados, autorizados y en viaje no se tocan.
+ * @returns {Promise<boolean>} si lo cerró
+ */
+async function cerrarRetiroSiNoDebe(exec, { retiroId, pagId, usuarioId }) {
+    const ret = (await exec.request().input('Id', sql.Int, retiroId)
+        .query('SELECT OReEstadoActual FROM dbo.OrdenesRetiro WITH(UPDLOCK) WHERE OReIdOrdenRetiro = @Id')).recordset[0];
+    if (!ret || ![1, 2, 7].includes(Number(ret.OReEstadoActual))) return false;
+    if ((await ordenesQueQuedanDebiendo(exec, retiroId, [])).length) return false;
+    const nuevo = Number(ret.OReEstadoActual) === 7 ? 8 : 3;
+    await exec.request()
+        .input('Id', sql.Int, retiroId)
+        .input('PagId', sql.Int, pagId || null)
+        .input('Est', sql.Int, nuevo)
+        .input('Usr', sql.Int, usuarioId || 70)
+        .query(`
+            UPDATE dbo.OrdenesRetiro
+            SET PagIdPago            = CASE WHEN ISNULL(PagIdPago, 0) = 0 THEN ISNULL(@PagId, PagIdPago) ELSE PagIdPago END,
+                OReEstadoActual      = @Est,
+                OReFechaEstadoActual = GETDATE(),
+                ORePasarPorCaja      = 0
+            WHERE OReIdOrdenRetiro = @Id;
+
+            INSERT INTO dbo.HistoricoEstadosOrdenesRetiro (OReIdOrdenRetiro, EORIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+            VALUES (@Id, @Est, GETDATE(), @Usr);
+
+            UPDATE dbo.OcupacionEstantes SET Pagado = 1
+            WHERE OrdenRetiro IN (SELECT COALESCE(FormaRetiro, 'R') + '-' + CAST(OReIdOrdenRetiro AS VARCHAR)
+                                  FROM dbo.OrdenesRetiro WITH(NOLOCK) WHERE OReIdOrdenRetiro = @Id);`);
+    logger.info(`[RETIRO] Retiro ${retiroId} sin nada pendiente → estado ${nuevo} (abonado).`);
+    return true;
+}
+
+/**
+ * Al saldar un documento, sus órdenes quedan pagas (INF-SIS-2026-14, P4): PagIdPago del cobro y
+ * estado 7 si no están resueltas, como en el cobro de un retiro. Antes Pago de Deudas sobre la factura
+ * y el cobro manual de editarFactura bajaban la deuda, pero la orden seguía «a cobrar» para el portal,
+ * la caja y la entrega. Después cierra los retiros sin abonar que ya no deben nada.
+ * Solo documentos sin deuda viva y no acreditados enteros por una nota de crédito, y solo órdenes que
+ * todavía se van a retirar: en depósito sin retiro o en un retiro sin abonar (1, 2, 7). Las ya
+ * entregadas no lo necesitan (una factura de ciclo cobrada después de la entrega queda como antes).
+ * @returns {Promise<{ordenes:number[], retiros:number[]}>} órdenes marcadas y retiros cerrados
+ */
+async function marcarOrdenesDeDocumentosPagas(exec, { docIds, pagId, usuarioId }) {
+    const ids = [...new Set((docIds || []).map(n => parseInt(n, 10)).filter(n => n > 0))];
+    if (!ids.length || !pagId) return { ordenes: [], retiros: [] };
+    const r = await exec.request()
+        .input('PagId', sql.Int, pagId)
+        .input('Usr', sql.Int, usuarioId || 70)
+        .query(`
+            DECLARE @ords TABLE (OrdIdOrden INT PRIMARY KEY);
+            DECLARE @cambios TABLE (OrdIdOrden INT, EstadoViejo INT, EstadoNuevo INT);
+
+            INSERT INTO @ords (OrdIdOrden)
+            SELECT DISTINCT od.OrdIdOrden
+            FROM dbo.MovimientosCuenta m WITH(NOLOCK)
+            JOIN dbo.DocumentosContables dc WITH(NOLOCK) ON dc.DocIdDocumento = m.DocIdDocumento
+            JOIN dbo.CuentasCliente cc WITH(NOLOCK) ON cc.CueIdCuenta = m.CueIdCuenta
+            LEFT JOIN dbo.Ordenes o2 WITH(NOLOCK) ON o2.OrdenID = m.OrdIdOrden
+            JOIN dbo.OrdenesDeposito od WITH(NOLOCK)
+              ON od.CliIdCliente = cc.CliIdCliente
+             AND (od.OrdIdOrden = m.OrdIdOrden OR od.OrdCodigoOrden = o2.CodigoOrden)
+            LEFT JOIN dbo.OrdenesRetiro rr WITH(NOLOCK) ON rr.OReIdOrdenRetiro = od.OReIdOrdenRetiro
+            WHERE m.DocIdDocumento IN (${ids.join(',')})
+              AND m.MovTipo IN ('ORDEN','ORDEN_ANTICIPO')
+              AND (m.MovAnulado IS NULL OR m.MovAnulado = 0)
+              AND ISNULL(dc.DocEstado, '') <> 'ANULADO'
+              AND ISNULL(od.PagIdPago, 0) = 0
+              AND ISNULL(od.OrdCostoFinal, 0) > 0.01
+              AND ((od.OReIdOrdenRetiro IS NULL AND od.OrdEstadoActual NOT IN (9, 10, 11))
+                   OR rr.OReEstadoActual IN (1, 2, 7))
+              AND NOT EXISTS (SELECT 1 FROM dbo.DeudaDocumento dd WITH(NOLOCK)
+                              WHERE dd.DocIdDocumento = dc.DocIdDocumento
+                                AND dd.DDeEstado IN ('PENDIENTE','PARCIAL','VENCIDO') AND dd.DDeImportePendiente > 0.01)
+              AND ISNULL((SELECT SUM(n.DocTotal) FROM dbo.DocumentosContables n WITH(NOLOCK)
+                          WHERE n.DocIdDocumentoRef = dc.DocIdDocumento AND n.DocTipo LIKE '%Nota De Cr%'
+                            AND ISNULL(n.DocEstado, '') <> 'ANULADO'), 0) < dc.DocTotal - 0.01;
+
+            UPDATE od
+            SET PagIdPago            = @PagId,
+                OrdEstadoActual      = CASE WHEN od.OrdEstadoActual IN (9,10,11) THEN od.OrdEstadoActual ELSE 7 END,
+                OrdFechaEstadoActual = CASE WHEN od.OrdEstadoActual IN (9,10,11) THEN od.OrdFechaEstadoActual ELSE GETDATE() END
+            OUTPUT inserted.OrdIdOrden, deleted.OrdEstadoActual, inserted.OrdEstadoActual INTO @cambios
+            FROM dbo.OrdenesDeposito od
+            JOIN @ords x ON x.OrdIdOrden = od.OrdIdOrden;
+
+            INSERT INTO dbo.HistoricoEstadosOrdenes (OrdIdOrden, EOrIdEstadoOrden, HEOFechaEstado, HEOUsuarioAlta)
+            SELECT OrdIdOrden, EstadoNuevo, GETDATE(), @Usr FROM @cambios WHERE EstadoViejo <> EstadoNuevo;
+
+            SELECT od.OrdIdOrden, od.OReIdOrdenRetiro
+            FROM dbo.OrdenesDeposito od WITH(NOLOCK) JOIN @ords x ON x.OrdIdOrden = od.OrdIdOrden;`);
+    const ordenes = r.recordset.map(x => x.OrdIdOrden);
+    const retiros = [];
+    for (const retiroId of [...new Set(r.recordset.map(x => x.OReIdOrdenRetiro).filter(Boolean))]) {
+        if (await cerrarRetiroSiNoDebe(exec, { retiroId, pagId, usuarioId })) retiros.push(retiroId);
+    }
+    if (ordenes.length) logger.info(`[RETIRO] Documento(s) ${ids.join(', ')} saldado(s): ${ordenes.length} orden(es) quedan pagas (PagIdPago ${pagId})${retiros.length ? `; retiros cerrados: ${retiros.join(', ')}` : ''}.`);
+    return { ordenes, retiros };
+}
+
+/**
  * Moneda y total de un retiro a partir de sus órdenes. La usan todos los caminos que arman
  * o cobran un retiro (portal, tótem, mostrador, Mercado Pago, Handy, billetera, «Pagos
  * pendientes») y los recálculos al editar o sacar una orden.
@@ -368,15 +560,16 @@ async function leerOrdenesParaCobro(exec, ordIds, { pendiente = true } = {}) {
  * @param exec   pool o transacción
  * @param {Array<{ordId:number, importe?:number}>} items — importe a cobrar de cada orden EN SU
  *        MONEDA; si no viene, el pendiente de cobro (leerOrdenesParaCobro).
- * @param {{cotizacion?:number}} [opts] — cotización fija (la guardada al empezar un pago
- *        online); sin ella, la del día.
+ * @param {{cotizacion?:number, excluirFacturadas?:boolean}} [opts] — cotización fija (la guardada
+ *        al empezar un pago online); sin ella, la del día. excluirFacturadas: las órdenes que ya
+ *        tienen comprobante valen 0 (pagos online, INF-SIS-2026-13) y salen en `facturadas`.
  * @returns {Promise<{moneda:'UYU'|'USD', mezcla:boolean, cotizacion:number|null,
  *           cotizacionDia:string|null, total:number, dolares:number, dolaresEnPesos:number,
  *           items:Array<{ordId, codigo, moneda, importe, importeRetiro}>}>}
  *   mezcla: hay importes a cobrar en las dos monedas. dolares / dolaresEnPesos: lo que se
  *   convirtió (0 si no hay mezcla).
  */
-async function cotizarSeleccion(exec, items, { cotizacion } = {}) {
+async function cotizarSeleccion(exec, items, { cotizacion, excluirFacturadas = false } = {}) {
     const pedidos = new Map();
     for (const it of items || []) {
         const id = parseInt(it.ordId, 10);
@@ -395,6 +588,18 @@ async function cotizarSeleccion(exec, items, { cotizacion } = {}) {
         filas.push({ ordId, codigo: d.codigo, moneda: d.moneda, importe: importe === null ? d.pendiente : importe });
     }
     if (!filas.length) throw new Error('Las órdenes del retiro no existen.');
+
+    // Pagos online: una orden que ya tiene comprobante no se cobra acá (su deuda va por Pago de
+    // Deudas en caja). Si se cobraba, caja rechazaba el registro y la plata quedaba sin anotar.
+    if (excluirFacturadas) {
+        const fact = await leerFacturadas(exec, filas.map(f => f.ordId));
+        for (const f of filas) {
+            const fa = fact.get(f.ordId);
+            // Solo las que se iban a cobrar: una ya paga (su e-Ticket del cobro también es un
+            // comprobante) no es «facturada» para el cliente: sale como paga (INF-SIS-2026-14, P8).
+            if (fa && f.importe > 0.004) { f.importe = 0; f.facturada = fa; }
+        }
+    }
 
     const monedasACobrar = new Set(filas.filter(f => f.importe > 0.004).map(f => f.moneda));
     const mezcla = monedasACobrar.size > 1;
@@ -430,7 +635,94 @@ async function cotizarSeleccion(exec, items, { cotizacion } = {}) {
         total: r2(filas.reduce((s, f) => s + f.importeRetiro, 0)),
         dolares: r2(dolares), dolaresEnPesos: r2(dolaresEnPesos),
         items: filas,
+        facturadas: filas.filter(f => f.facturada).map(f => ({ ordId: f.ordId, codigo: f.codigo, ...f.facturada })),
     };
+}
+
+/** Mensaje para cuando todo lo elegido ya está facturado (pagos online, INF-SIS-2026-13). */
+function mensajeSoloFacturadas(facturadas) {
+    const lista = (facturadas || []).map(f => `${f.codigo} (${f.documento})`).join(', ');
+    const varias = (facturadas || []).length > 1;
+    return `${lista} ya ${varias ? 'están facturadas' : 'está facturada'}: no se ${varias ? 'pagan' : 'paga'} por acá. `
+        + 'Confirmá el retiro sin pagar; si la factura tiene saldo, se paga en caja.';
+}
+
+/**
+ * Pago online de un retiro, justo antes de registrarlo en caja (INF-SIS-2026-14, P3): qué órdenes
+ * cobra y por cuánto. Las que ya tienen comprobante quedan fuera del cobro (caja rechaza el registro
+ * entero si van adentro):
+ *  - las marcadas al armar el link (`facturada`): el link no las cobró, valían 0;
+ *  - las facturadas DESPUÉS de armar el link: el link sí las cobró. Esa parte de la plata no se
+ *    imputa (va a la factura si tiene saldo, o queda a favor: lo decide Finanzas) y el resto se
+ *    registra por las otras órdenes.
+ * El reparto es proporcional a los importes del link (`orders[].amount`, en la moneda del retiro):
+ * vale aunque la pasarela cobre en otra moneda (Mercado Pago pasa los dólares a pesos).
+ * @param {object[]} orders — las órdenes guardadas al armar el link ({ rawId, amount, facturada? })
+ * @returns {Promise<{registrar:boolean, orderNumbers?:number[], monto:number,
+ *           sinImputar:null|{monto:number, ordenes:object[]}, motivo?:string}>}
+ *          orderNumbers sin definir = todas las del retiro (caja las busca, como siempre).
+ */
+async function cobroOnlineSinFacturadas(exec, { ordenRetiroId, orders, monto }) {
+    const total = r2(Number(monto) || 0);
+    const hijas = (await exec.request().input('R', sql.Int, ordenRetiroId).query(
+        'SELECT OrdIdOrden, RTRIM(OrdCodigoOrden) AS Codigo FROM dbo.OrdenesDeposito WITH(NOLOCK) WHERE OReIdOrdenRetiro = @R')).recordset;
+    const codigo = new Map(hijas.map(h => [h.OrdIdOrden, h.Codigo]));
+    const delLink = (orders || []).filter(o => o && parseInt(o.rawId, 10) > 0);
+    const importeDe = (o) => (o.amount === null || o.amount === undefined || o.amount === '') ? NaN : Number(o.amount);
+    // El link no cobró las marcadas facturadas ni las que valían 0 (ya pagas, cubiertas o sin costo)
+    const noCobrada = (o) => !!o.facturada || importeDe(o) <= 0.004;
+    const excluidas = delLink.filter(noCobrada).length;
+    // Las que cobró el link; los links sin el detalle por orden: todas las del retiro, sin importe
+    const cobradas = delLink.length
+        ? delLink.filter(o => !noCobrada(o)).map(o => ({ ordId: parseInt(o.rawId, 10), amount: importeDe(o) }))
+        : hijas.map(h => ({ ordId: h.OrdIdOrden, amount: NaN }));
+    const fact = await leerFacturadas(exec, cobradas.map(c => c.ordId));
+    const nuevas = cobradas.filter(c => fact.has(c.ordId));
+    if (!nuevas.length) {
+        return { registrar: true, monto: total, sinImputar: null,
+                 orderNumbers: excluidas ? cobradas.map(c => c.ordId) : undefined };
+    }
+
+    const sinImputarDe = (m) => ({
+        monto: m,
+        ordenes: nuevas.map(c => ({ ordId: c.ordId, codigo: codigo.get(c.ordId) || `#${c.ordId}`, ...fact.get(c.ordId) })),
+    });
+    const restantes = cobradas.filter(c => !fact.has(c.ordId));
+    const sumaLink = cobradas.reduce((s, c) => s + c.amount, 0);
+    const sumaNuevas = nuevas.reduce((s, c) => s + c.amount, 0);
+    if (!restantes.length) {
+        return { registrar: false, monto: total, sinImputar: sinImputarDe(total), motivo: 'todo lo que cobró el link ya está facturado' };
+    }
+    if (!Number.isFinite(sumaLink) || !(sumaLink > 0)) {
+        return { registrar: false, monto: total, sinImputar: sinImputarDe(total), motivo: 'el link no guardó el importe de cada orden y no se puede repartir' };
+    }
+    const montoSinImputar = r2(total * sumaNuevas / sumaLink);
+    const resto = r2(total - montoSinImputar);
+    if (!(resto > 0.01)) {
+        return { registrar: false, monto: total, sinImputar: sinImputarDe(total), motivo: 'todo lo que cobró el link ya está facturado' };
+    }
+    return { registrar: true, orderNumbers: restantes.map(c => c.ordId), monto: resto, sinImputar: sinImputarDe(montoSinImputar) };
+}
+
+/**
+ * ¿Ya hay en el retiro un cobro de caja de esta transacción online? El retiro con una orden
+ * facturada con saldo queda sin abonar aunque el pago se registre (sigue «pasar por caja»), así
+ * que el aviso repetido de la pasarela no se ve en OrdenesRetiro.PagIdPago: se busca por las
+ * órdenes, con la Tx que caja guarda en las observaciones (INF-SIS-2026-14).
+ */
+async function pagoOnlineYaRegistrado(exec, ordenRetiroId, txId) {
+    if (!txId) return false;
+    const r = await exec.request()
+        .input('R', sql.Int, ordenRetiroId)
+        .input('Tx', sql.NVarChar(300), `%Tx: ${txId})%`)
+        .query(`
+            SELECT TOP 1 1 AS Si
+            FROM dbo.OrdenesDeposito od WITH(NOLOCK)
+            JOIN dbo.Pagos p WITH(NOLOCK) ON p.PagIdPago = od.PagIdPago
+            JOIN dbo.TransaccionesCaja tc WITH(NOLOCK) ON tc.TcaIdTransaccion = p.PagTcaIdTransaccion
+            WHERE od.OReIdOrdenRetiro = @R
+              AND tc.TcaObservaciones LIKE @Tx`);
+    return r.recordset.length > 0;
 }
 
 /**
@@ -1088,4 +1380,4 @@ async function registrarPago(transaction, { ordenRetiroId, metodoPagoId, monedaI
     return { pagoId };
 }
 
-module.exports = { crearRetiro, marcarEntregado, registrarPago, cotizarSeleccion, recalcularTotalRetiro, cotizacionDelDia };
+module.exports = { crearRetiro, marcarEntregado, registrarPago, cotizarSeleccion, leerFacturadas, mensajeSoloFacturadas, leerOrdenesParaCobro, cobroOnlineSinFacturadas, pagoOnlineYaRegistrado, ordenesQueQuedanDebiendo, cerrarRetiroSiNoDebe, marcarOrdenesDeDocumentosPagas, recalcularTotalRetiro, cotizacionDelDia };
