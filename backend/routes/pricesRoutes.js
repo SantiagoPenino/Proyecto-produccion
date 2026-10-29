@@ -22,5 +22,11 @@ router.get('/por-cantidad', controller.getPreciosPorCantidad);
 // Tarifas por dato técnico (bordado: puntadas; estampado: bajadas), en ConfiguracionPrecios: las muestra y edita Precios Estándar
 router.get('/tarifa/:tipo', controller.getTarifa);
 router.put('/tarifa/:tipo', controller.saveTarifa);
+// Lista de precios dinámica (29/10/2026, /admin/lista-precios-dinamica): tela × consumo + confección + margen por franja
+const listaDinamica = require('../controllers/listaPreciosDinamicaController');
+router.get('/lista-dinamica', listaDinamica.getDatos);
+router.put('/lista-dinamica/config', listaDinamica.saveConfig);
+router.post('/lista-dinamica/cotizar', listaDinamica.cotizar);
+router.get('/lista-dinamica/producto/:proId', listaDinamica.getProducto);
 
 module.exports = router;

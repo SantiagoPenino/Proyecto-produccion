@@ -1,5 +1,7 @@
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// Historial de perfiles: cada cambio deja antes, después y quién (ver services/historialPrecios.js)
+const { leerPerfil, registrarCambioPerfil, registrarAsignaciones, leerPerfilesCliente } = require('../services/historialPrecios');
 
 // --- PERFILES ---
 
@@ -22,8 +24,10 @@ const getProfileDetails = async (req, res) => {
         const pool = await getPool();
         const profile = await pool.request().input('ID', sql.Int, id).query("SELECT * FROM PerfilesPrecios WHERE ID = @ID");
         const items = await pool.request().input('ID', sql.Int, id).query(`
+            -- Hay reglas cargadas solo con el código de artículo (sin producto ni familia): el motor las
+            -- aplica por código. Antes la API las devolvía con CodArticulo NULL y «Guardar perfil» las borraba.
             SELECT PI.ID, PI.PerfilID, 
-                   LTRIM(RTRIM(COALESCE(PI.CodGrupo, A.CodArticulo, CASE WHEN PI.ProIdProducto = 0 THEN 'TOTAL' ELSE CAST(PI.ProIdProducto AS VARCHAR) END))) as CodArticulo, 
+                   LTRIM(RTRIM(COALESCE(PI.CodGrupo, A.CodArticulo, NULLIF(LTRIM(RTRIM(PI.CodArticulo)), ''), CASE WHEN PI.ProIdProducto = 0 THEN 'TOTAL' ELSE CAST(PI.ProIdProducto AS VARCHAR) END))) as CodArticulo, 
                    PI.ProIdProducto, PI.CodGrupo, PI.TipoRegla, PI.Valor, CASE WHEN PI.MonIdMoneda = 2 THEN 'USD' ELSE 'UYU' END as Moneda, PI.CantidadMinima 
             FROM PerfilesItems PI
             LEFT JOIN Articulos A ON PI.ProIdProducto = A.ProIdProducto
@@ -55,6 +59,7 @@ const saveProfile = async (req, res) => {
 
     try {
         await transaction.begin();
+        const antes = id ? await leerPerfil(transaction, parseInt(id, 10)) : null;
 
         let profileId = id;
         const isGlobalBit = esGlobal ? 1 : 0;
@@ -105,7 +110,9 @@ const saveProfile = async (req, res) => {
                     finalCodArticulo = finalCodGrupo;
                 }
 
-                if (finalProIdProducto !== null || finalCodGrupo !== null) {
+                // Regla con solo el código de artículo (sin producto ni familia): se guarda igual, como vino.
+                // Antes se salteaba y «Guardar perfil» la borraba (perfil 5: 23 reglas así).
+                if (finalProIdProducto !== null || finalCodGrupo !== null || codArtStr.trim() !== '') {
                     await new sql.Request(transaction)
                         .input('pid',    sql.Int,          profileId)
                         .input('proId',  sql.Int,          finalProIdProducto)
@@ -119,6 +126,8 @@ const saveProfile = async (req, res) => {
                 }
             }
         }
+
+        await registrarCambioPerfil(transaction, { perfilId: parseInt(profileId, 10), origen: 'GUARDAR_PERFIL', user: req.user, antes });
 
         await transaction.commit();
         res.json({ success: true, id: profileId });
@@ -136,7 +145,9 @@ const deleteProfile = async (req, res) => {
         const usage = await pool.request().input('ID', sql.Int, id).query("SELECT TOP 1 1 FROM PreciosEspeciales WHERE PerfilID = @ID");
         if (usage.recordset.length > 0) return res.status(400).json({ error: "No se puede eliminar: Hay clientes usando este perfil." });
 
+        const antes = await leerPerfil(pool, parseInt(id, 10));
         await pool.request().input('ID', sql.Int, id).query("UPDATE PerfilesPrecios SET Activo = 0 WHERE ID = @ID"); // Soft delete
+        await registrarCambioPerfil(pool, { perfilId: parseInt(id, 10), origen: 'DESACTIVAR_PERFIL', user: req.user, antes });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -213,6 +224,8 @@ const assignProfileToCustomer = async (req, res) => {
             targetCodCliente = clientRes.recordset[0].CodCliente;
         }
 
+        const perfilesAntes = await leerPerfilesCliente(pool, targetCliId, targetCodCliente);
+
         // Upsert en PreciosEspeciales bajo targetCliId
         await pool.request()
             .input('CID', sql.Int, targetCliId)
@@ -233,6 +246,8 @@ const assignProfileToCustomer = async (req, res) => {
                 END
             `);
 
+        await registrarAsignaciones(pool, { cliId: targetCliId, perfilesAntes, perfilesDespues: pidsStr, user: req.user, desde: 'Asignación a clientes' });
+
         res.json({ success: true });
     } catch (e) {
         logger.error("Error assigning profile:", e);
@@ -246,10 +261,12 @@ const updateCategoria = async (req, res) => {
     if (!id) return res.status(400).json({ error: 'ID requerido.' });
     try {
         const pool = await getPool();
+        const antes = await leerPerfil(pool, parseInt(id, 10));
         await pool.request()
             .input('ID',  sql.Int,     parseInt(id))
             .input('Cat', sql.VarChar, categoria || 'Todos')
             .query("UPDATE PerfilesPrecios SET Categoria = @Cat WHERE ID = @ID AND Activo = 1");
+        await registrarCambioPerfil(pool, { perfilId: parseInt(id, 10), origen: 'CAMBIAR_AREA', user: req.user, antes });
         res.json({ success: true });
     } catch (e) {
         res.status(500).json({ error: e.message });

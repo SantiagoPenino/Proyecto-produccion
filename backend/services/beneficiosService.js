@@ -22,6 +22,8 @@
 // ─────────────────────────────────────────────────────────────────────────────
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// Historial de perfiles (ver services/historialPrecios.js): las reglas de un beneficio son un perfil
+const { leerPerfil, registrarCambioPerfil } = require('./historialPrecios');
 const { beneficiosActivos } = require('../utils/beneficiosFlag');
 
 const r2 = (n) => Math.round(Number(n || 0) * 100) / 100;
@@ -194,8 +196,9 @@ function textoRegla(rg) {
 }
 
 /** Crea o reemplaza el PerfilesPrecios + PerfilesItems de un beneficio. Devuelve PerfilID. */
-async function guardarPerfilBeneficio(transaction, { perfilId = null, nombre, reglas }) {
+async function guardarPerfilBeneficio(transaction, { perfilId = null, nombre, reglas, user = null }) {
   const req = () => new sql.Request(transaction);
+  const antes = perfilId ? await leerPerfil(transaction, perfilId) : null;
   const nombrePerfil = `BENEFICIO · ${String(nombre).trim()}`.slice(0, 100);
   let id = perfilId;
   if (id) {
@@ -216,6 +219,7 @@ async function guardarPerfilBeneficio(transaction, { perfilId = null, nombre, re
       .query(`INSERT INTO dbo.PerfilesItems (PerfilID, ProIdProducto, CodArticulo, CodGrupo, TipoRegla, Valor, Moneda, MonIdMoneda, CantidadMinima)
               VALUES (@P, @Pro, @Cod, @Gru, @Tipo, @Val, @Mon, @MonId, @Min)`);
   }
+  await registrarCambioPerfil(transaction, { perfilId: id, origen: 'BENEFICIO', user, antes });
   return id;
 }
 
@@ -550,7 +554,7 @@ async function crearPlantilla(pool, data, user) {
   const estado = (await puedeAprobar(pool, user)) ? 'PUBLICADA' : 'PENDIENTE';
   const tx = pool.transaction(); await tx.begin();
   try {
-    const perfilId = await guardarPerfilBeneficio(tx, { nombre: d.nombre, reglas: d.reglas });
+    const perfilId = await guardarPerfilBeneficio(tx, { user, nombre: d.nombre, reglas: d.reglas });
     const ins = await new sql.Request(tx)
       .input('N', sql.NVarChar(120), d.nombre).input('D', sql.NVarChar(500), d.descripcion).input('P', sql.Int, perfilId)
       .input('Mon', sql.Int, d.monedaId).input('Carga', sql.Decimal(18, 2), d.carga).input('Min', sql.Bit, d.cargaEsMinimo ? 1 : 0)
@@ -581,7 +585,7 @@ async function editarPlantilla(pool, benId, data, user) {
   const estado = (await puedeAprobar(pool, user)) ? (actual.estado === 'PAUSADA' ? 'PAUSADA' : 'PUBLICADA') : 'PENDIENTE';
   const tx = pool.transaction(); await tx.begin();
   try {
-    const perfilId = await guardarPerfilBeneficio(tx, { perfilId: tieneVivas ? null : actual.perfilId, nombre: d.nombre, reglas: d.reglas });
+    const perfilId = await guardarPerfilBeneficio(tx, { user, perfilId: tieneVivas ? null : actual.perfilId, nombre: d.nombre, reglas: d.reglas });
     await new sql.Request(tx)
       .input('Id', sql.Int, benId).input('N', sql.NVarChar(120), d.nombre).input('D', sql.NVarChar(500), d.descripcion).input('P', sql.Int, perfilId)
       .input('Mon', sql.Int, d.monedaId).input('Carga', sql.Decimal(18, 2), d.carga).input('Min', sql.Bit, d.cargaEsMinimo ? 1 : 0)
@@ -646,7 +650,7 @@ async function proponerPacto(pool, data, user) {
   const evaluacion = await evaluarReglas(pool, { cliId, reglas: d.reglas, monedaId: d.monedaId });
   const tx = pool.transaction(); await tx.begin();
   try {
-    const perfilId = await guardarPerfilBeneficio(tx, { nombre: `${d.nombre} · ${String(cli.Nombre).trim().slice(0, 40)}`, reglas: d.reglas });
+    const perfilId = await guardarPerfilBeneficio(tx, { user, nombre: `${d.nombre} · ${String(cli.Nombre).trim().slice(0, 40)}`, reglas: d.reglas });
     const ins = await new sql.Request(tx)
       .input('N', sql.NVarChar(120), d.nombre).input('D', sql.NVarChar(500), d.descripcion).input('P', sql.Int, perfilId)
       .input('Mon', sql.Int, d.monedaId).input('Carga', sql.Decimal(18, 2), d.carga).input('Min', sql.Bit, d.cargaEsMinimo ? 1 : 0)
@@ -681,7 +685,7 @@ async function editarPacto(pool, benId, data, user) {
   const evaluacion = await evaluarReglas(pool, { cliId: actual.cliId, reglas: d.reglas, monedaId: d.monedaId });
   const tx = pool.transaction(); await tx.begin();
   try {
-    await guardarPerfilBeneficio(tx, { perfilId: actual.perfilId, nombre: `${d.nombre} · ${String(cli?.Nombre || '').trim().slice(0, 40)}`, reglas: d.reglas });
+    await guardarPerfilBeneficio(tx, { user, perfilId: actual.perfilId, nombre: `${d.nombre} · ${String(cli?.Nombre || '').trim().slice(0, 40)}`, reglas: d.reglas });
     await new sql.Request(tx)
       .input('Id', sql.Int, benId)
       .input('N', sql.NVarChar(120), d.nombre).input('D', sql.NVarChar(500), d.descripcion)

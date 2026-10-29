@@ -12,6 +12,7 @@ import PasoVariantes from './ConfiguradorVariantes';   // [VARIANTES] producto p
 import ConfiguradorAMedida, { IconoForma } from './ConfiguradorAMedida';   // [A MEDIDA] pañuelos, toallas, banderas (13/10)
 import { useConfirmar } from './ventas/solicitudesComunes';   // ventana de confirmar (en vez de window.confirm)
 import { precioPorCantidad, textoEscalas } from '../../utils/escalasPrecio';   // [ESCALAS] precios por cantidad (27/10)
+import ListaDinamicaProducto from './ListaDinamicaProducto';   // [LISTA DINÁMICA 29/10] paso Precios
 import { PaintBucket, Flag, Image as IconoImagen, Scissors, Shirt, Spool, Sticker, Palette, Factory, Check, ChevronDown, Pencil, Save, Star, Store, Handshake, Shuffle, TriangleAlert, X, RefreshCw, FolderOpen, CircleCheck, Lock, Upload, Printer, RotateCcw, Package, Boxes, SlidersHorizontal, Tag, ChevronRight, Box, Info, Copy, Trash2 } from 'lucide-react';
 
 /*
@@ -424,6 +425,13 @@ const fichaToForm = (d) => ({
     // Días hábiles de entrega ('' = la fecha prometida sale del plan de cada área, como siempre)
     diasEntrega: d.config?.DiasEntrega || '',
     diasEntregaDisponible: !d.config || d.config.DiasEntrega !== undefined,
+    // [LISTA DINÁMICA 29/10] Corte y costura por unidad del producto (vacío = el general de la lista)
+    corteCosto: d.config?.CorteCosturaCosto != null ? String(Number(d.config.CorteCosturaCosto)) : '',
+    corteMoneda: String(d.config?.CorteCosturaMoneda || '').trim() || 'USD',
+    corteDisponible: !d.config || d.config.CorteCosturaCosto !== undefined,
+    // [LISTA DINÁMICA 29/10] Valores agregados: % o monto por prenda que suben el precio dinámico (sin la tabla, no viene)
+    valoresAgregados: (d.valoresAgregados || []).map(v => ({ nombre: v.Nombre || '', tipo: v.Tipo === 'MONTO' ? 'MONTO' : 'PORCENTAJE', valor: String(Number(v.Valor)), moneda: v.Moneda || 'UYU' })),
+    valoresDisponible: !d.config || Array.isArray(d.valoresAgregados),
     tecnicas: Object.fromEntries(AREAS.map(a => {
         const t = (d.tecnicas || []).find(x => x.AreaID === a.id);
         return [a.id, t
@@ -435,7 +443,7 @@ const fichaToForm = (d) => ({
     surtido: new Set((d.surtido || []).map(s => s.WmsVarianteId)),
     // Molde de TizadaPro: qué modelos y qué telas (con precio propio) se venden
     modelos: new Map((d.modelos || []).map(m => [m.ModeloClave, { nombre: m.ModeloNombre || '', esDefault: !!m.EsDefault }])),
-    telas: new Map((d.telas || []).map(t => [t.TelaProIdProducto, { codArticulo: t.CodArticulo || '', material: t.Material || '', esDefault: !!t.EsDefault }])),
+    telas: new Map((d.telas || []).map(t => [t.TelaProIdProducto, { codArticulo: t.CodArticulo || '', material: t.Material || '', esDefault: !!t.EsDefault, consumoM: t.ConsumoM != null ? String(Number(t.ConsumoM)) : '' }])),
     apliques: (d.apliques || []).map(a => ({
         ...partirPosicion(a.Posicion), areaId: a.AreaID, tecnicaOpcionId: a.TecnicaOpcionID || '',
         cantidad: a.Cantidad || 1, incluido: !!a.Incluido
@@ -509,6 +517,8 @@ const formToPayload = (f) => ({
     ...(f.esCombo || !f.mesasExtraDisponible ? {} : { tizadaSepararDisenos: !!f.tizadaSepararDisenos, tizadaLargoMaxM: f.tizadaLargoMaxM === '' ? null : f.tizadaLargoMaxM }),
     ...(f.esCombo || !f.gruposTalleDisponible ? {} : { gruposTalle: f.gruposTalle || [] }),
     ...(f.diasEntregaDisponible ? { diasEntrega: Number(f.diasEntrega) > 0 ? Number(f.diasEntrega) : null } : {}),
+    ...(f.corteDisponible ? { corteCostura: { costo: f.corteCosto === '' || f.corteCosto == null ? null : Number(f.corteCosto), moneda: f.corteMoneda } } : {}),
+    ...(f.valoresDisponible ? { valoresAgregados: (f.valoresAgregados || []).map(v => ({ nombre: String(v.nombre || '').trim(), tipo: v.tipo, valor: Number(v.valor), moneda: v.tipo === 'MONTO' ? v.moneda : null })) } : {}),
     ...(f.esCombo ? {} : { tecnicaPrincipal: f.tecnicaPrincipal || 'SB', molde: f.molde || 'OBLIGATORIO', um: f.um || 'u', anchoM: f.anchoM === '' ? null : Number(f.anchoM), altoM: f.altoM === '' ? null : Number(f.altoM), bordeCm: f.bordeCm === '' ? null : Number(f.bordeCm) }),
     visiblePortal: !!f.visiblePortal, visibleTienda: !!f.visibleTienda, visibleInterno: f.visibleInterno !== false,
     origenTipo: f.origenTipo,
@@ -536,7 +546,7 @@ const formToPayload = (f) => ({
     opcionesPermitidas: [...f.opcionesPermitidas],
     surtido: [...f.surtido],
     modelos: [...f.modelos.entries()].map(([clave, m]) => ({ clave, nombre: m.nombre, esDefault: m.esDefault })),
-    telas: [...f.telas.entries()].map(([telaProIdProducto, t]) => ({ telaProIdProducto, esDefault: t.esDefault })),
+    telas: [...f.telas.entries()].map(([telaProIdProducto, t]) => ({ telaProIdProducto, esDefault: t.esDefault, consumoM: t.consumoM === '' || t.consumoM == null ? null : Number(t.consumoM) })),
     apliques: f.apliques
         .map(a => ({ ...a, posicion: unirPosicion(a.pieza, a.detalle) }))
         .filter(a => a.posicion)
@@ -1809,6 +1819,71 @@ export default function ConfigurarProductosPage() {
     const claseEtiquetaCampo = 'text-[11px] font-bold text-slate-500';
     // Campo dentro de un renglón de una lista (accesorio, aplique, avío, nota…): un poco más bajo
     const claseCampoFila = 'border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm text-slate-800 outline-none focus:ring-2 focus:ring-indigo-200';
+    // [LISTA DINÁMICA 29/10] Norma de consumo de una tela elegida: metros de esa tela por unidad. Vacío = sin cargar
+    // (el producto no entra en la Lista de precios dinámica con esa tela).
+    const campoConsumo = (id, v, nombre) => (
+        <label className="inline-flex items-center gap-1 text-[11px] font-bold text-slate-500"
+            title="Norma de consumo: metros de esta tela por unidad. La usa la Lista de precios dinámica. Solo en la tela principal (la que más lleva): la del cuello o los costadillos no se carga.">
+            Consumo
+            <input type="number" step="0.01" min="0" value={v?.consumoM ?? ''} placeholder="—"
+                onChange={e => { const next = new Map(form.telas); next.set(id, { ...next.get(id), consumoM: e.target.value }); setF({ telas: next }); }}
+                className={`w-20 text-right ${claseCampoFila}`} aria-label={`Consumo de ${nombre} en metros por unidad`} />
+            m/u
+        </label>
+    );
+    // [LISTA DINÁMICA 29/10] Corte y costura por unidad de ESTE producto (un short no cuesta lo mismo que una campera).
+    // Un solo valor por producto; lo que cambia con la cantidad es el margen de cada franja de la lista.
+    const claseSelFila = claseSel('border border-slate-200 rounded-lg px-2.5 py-1.5 text-sm font-bold text-slate-800 min-w-[90px]');
+    const campoCorteCostura = () => (
+        <>
+            {form.corteDisponible && (
+                <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-2">
+                    <span className="text-xs font-bold text-slate-600">Corte y costura por unidad</span>
+                    <input type="number" step="0.01" min="0" value={form.corteCosto} placeholder="—" onChange={e => setF({ corteCosto: e.target.value })}
+                        className={`w-24 text-right ${claseCampoFila}`} aria-label="Corte y costura por unidad de este producto" />
+                    <Selector value={form.corteMoneda} onChange={e => setF({ corteMoneda: e.target.value })} claseBoton={claseSelFila} aria-label="Moneda del corte y costura">
+                        <option value="USD">US$</option><option value="UYU">$</option>
+                    </Selector>
+                    <span className="text-[11px] text-slate-400">Lo usa la Lista de precios dinámica. Vacío: el general de la lista.</span>
+                </div>
+            )}
+            {form.valoresDisponible && campoValoresAgregados()}
+        </>
+    );
+    // [LISTA DINÁMICA 29/10] Valores agregados: lo que hace a este producto más caro que otro con la misma tela y costura
+    // (complejidad, riesgo…). % sobre el precio o monto por prenda; se suman todos al precio de la lista dinámica.
+    const setValor = (i, patch) => setF({ valoresAgregados: form.valoresAgregados.map((v, k) => (k === i ? { ...v, ...patch } : v)) });
+    const campoValoresAgregados = () => (
+        <div className="mt-3 pt-3 border-t border-slate-100 space-y-1.5">
+            <div className="flex flex-wrap items-baseline gap-2">
+                <span className="text-xs font-bold text-slate-600">Valores agregados</span>
+                <span className="text-[11px] text-slate-400">Suben el precio de la lista dinámica de este producto. Ej.: «Complejidad / riesgo» +5 %.</span>
+            </div>
+            {form.valoresAgregados.map((v, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2">
+                    <input value={v.nombre} maxLength={100} placeholder="Nombre (ej. Complejidad / riesgo)" onChange={e => setValor(i, { nombre: e.target.value })}
+                        className={`min-w-[220px] flex-1 ${claseCampoFila}`} aria-label={`Valor agregado ${i + 1}: nombre`} />
+                    <Selector value={v.tipo} onChange={e => setValor(i, { tipo: e.target.value })} claseBoton={claseSelFila} aria-label={`Valor agregado ${i + 1}: tipo`}>
+                        <option value="PORCENTAJE">% del precio</option><option value="MONTO">monto por prenda</option>
+                    </Selector>
+                    {v.tipo === 'MONTO' && (
+                        <Selector value={v.moneda} onChange={e => setValor(i, { moneda: e.target.value })} claseBoton={claseSelFila} aria-label={`Valor agregado ${i + 1}: moneda`}>
+                            <option value="UYU">$</option><option value="USD">US$</option>
+                        </Selector>
+                    )}
+                    <input type="number" step="0.01" min="0" value={v.valor} placeholder="0" onChange={e => setValor(i, { valor: e.target.value })}
+                        className={`w-24 text-right ${claseCampoFila}`} aria-label={`Valor agregado ${i + 1}: ${v.tipo === 'MONTO' ? 'monto' : 'porcentaje'}`} />
+                    {v.tipo === 'PORCENTAJE' && <span className="text-xs font-bold text-slate-500">%</span>}
+                    <button type="button" onClick={() => setF({ valoresAgregados: form.valoresAgregados.filter((_, k) => k !== i) })}
+                        className="w-8 h-8 rounded-lg border border-slate-200 text-slate-400 hover:text-rose-600 hover:bg-rose-50 flex items-center justify-center" title="Quitar" aria-label={`Quitar valor agregado ${i + 1}`}>
+                        <Trash2 size={14} aria-hidden="true" />
+                    </button>
+                </div>
+            ))}
+            <button type="button" onClick={() => setF({ valoresAgregados: [...form.valoresAgregados, { nombre: '', tipo: 'PORCENTAJE', valor: '', moneda: 'UYU' }] })}
+                className="text-xs font-bold text-indigo-600 hover:underline">+ Agregar valor agregado</button>
+        </div>
+    );
     // Etiqueta de la tarjeta de vista previa (Revisar y publicar): todas iguales, sin un color por área
     const claseChipPrevia = 'inline-flex items-center gap-1 rounded-md bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600';
     // "+ Agregar…" al pie de una lista, a todo el ancho
@@ -2364,6 +2439,7 @@ export default function ConfigurarProductosPage() {
                                                                                 <Toggle on={sel} onChange={on => { const next = new Map(form.telas); if (on) next.set(id, { codArticulo: m.CodArticulo, material: m.Material, esDefault: next.size === 0 }); else next.delete(id); setF({ telas: next }); }} />
                                                                                 <span className="text-sm font-bold flex-1 min-w-[160px] text-slate-700">{m.Material}<span className="block text-[10px] font-normal text-slate-400">{m.Variante}{m.Ancho ? ` · ancho ${Number(m.Ancho).toFixed(2)} m` : ''}{m.Largo ? ` · largo fijo ${Number(m.Largo).toFixed(2)} m` : ''}</span></span>
                                                                                 <span className="text-[11px] text-slate-500">{m.PrecioBase != null ? fmtPrecio(m.PrecioBase, m.Moneda) : 'sin precio en la lista'}</span>
+                                                                                {sel && campoConsumo(id, v, m.Material)}
                                                                                 {sel && <button type="button" onClick={() => { const next = new Map(form.telas); next.forEach((x, k) => next.set(k, { ...x, esDefault: k === id })); setF({ telas: next }); }}
                                                                                     className={`inline-flex items-center gap-1 text-[11px] font-bold px-2 py-1 rounded-full border ${v.esDefault ? 'bg-amber-100 border-amber-300 text-amber-700' : 'border-slate-200 text-slate-400 hover:border-slate-400'}`}>
                                                                                     {v.esDefault ? <><Star size={11} className="fill-current" aria-hidden="true" />por defecto</> : 'hacer por defecto'}
@@ -2373,6 +2449,7 @@ export default function ConfigurarProductosPage() {
                                                                     })}
                                                                 </div>
                                                             )}
+                                                            {campoCorteCostura()}
                                                         </div>
                                                     )}
                                                 </div>
@@ -2701,7 +2778,7 @@ export default function ConfigurarProductosPage() {
 
                                                     {moldeSel && (
                                                         <div className="border border-slate-200 rounded-xl p-4">
-                                                            {tituloSeccion('Telas que se ofrecen', 'Solo las que el molde admite en TizadaPro. La estrella marca la que se ofrece primero. El precio que se muestra es el de la lista de precios de la tela: acá no se cambia.')}
+                                                            {tituloSeccion('Telas que se ofrecen', 'Solo las que el molde admite en TizadaPro. La estrella marca la que se ofrece primero. El precio que se muestra es el de la lista de precios de la tela: acá no se cambia. El consumo (metros de esa tela por unidad) lo usa la Lista de precios dinámica: va en las telas principales, no en la del cuello o los costadillos.')}
                                                             {moldeSel.telas.length === 0 ? (
                                                                 <p className="text-xs text-amber-600 font-bold">El molde no tiene telas permitidas cargadas en TizadaPro. Cargalas allá y tocá Actualizar.</p>
                                                             ) : (
@@ -2721,6 +2798,7 @@ export default function ConfigurarProductosPage() {
                                                                                 <span className={`text-sm font-bold flex-1 min-w-[160px] ${id == null ? 'text-rose-600' : 'text-slate-700'}`} title={t.aviso || ''}>{t.nombre}{t.aviso ? <span className="block text-[10px] font-normal">{t.aviso}</span> : null}</span>
                                                                                 {t.anchoCm && <span className="text-[11px] text-slate-400">{t.anchoCm} cm</span>}
                                                                                 <span className="text-[11px] text-slate-500" title="Precio base de la tela en la lista de precios. Se cambia desde Precios, no acá.">{t.precioBase != null ? fmtPrecio(t.precioBase, t.moneda) : 'sin precio en la lista'}</span>
+                                                                                {sel && campoConsumo(id, v, t.nombre)}
                                                                                 {sel && (
                                                                                     <button type="button" title="Tela que se ofrece primero"
                                                                                         onClick={() => { const next = new Map(form.telas); next.forEach((x, k) => next.set(k, { ...x, esDefault: k === id })); setF({ telas: next }); }}
@@ -2736,6 +2814,7 @@ export default function ConfigurarProductosPage() {
                                                             {Object.keys(moldeSel.telasPorPieza || {}).length > 0 && (
                                                                 <p className="text-[11px] text-slate-500 mt-3">Las telas de arriba son para el cuerpo. {Object.keys(moldeSel.telasPorPieza).join(', ')} van en la tela fija que dice el molde (ver Piezas y talles, más arriba). Eso se cambia en TizadaPro.</p>
                                                             )}
+                                                            {campoCorteCostura()}
                                                         </div>
                                                     )}
 
@@ -3430,6 +3509,11 @@ export default function ConfigurarProductosPage() {
                                                                     </div>
                                                                 )}
                                                             </div>
+                                                        )}
+                                                        {/* [LISTA DINÁMICA 29/10] al lado del de catálogo, lo que da la lista dinámica en cada franja */}
+                                                        {!form.esCombo && !paquete && form.proId && (
+                                                            <ListaDinamicaProducto proId={form.proId} version={leidoRef.current[form.proId]?.firma} precioLista={form.precio}
+                                                                monedaLista={form.moneda} escalas={escalasVivas} hayCambios={hayCambios} />
                                                         )}
                                                     </div>
                                                 );

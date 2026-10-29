@@ -434,6 +434,29 @@ class PricingService {
 
         let nuevoPrecioBase = precioBase;
 
+        // --- LISTA DE PRECIOS DINÁMICA (29/10/2026, services/listaPreciosDinamica.js) ---
+        // Producto confeccionado con consumo de tela cargado y la lista prendida: su precio sale de tela × consumo +
+        // confección + margen de la franja de unidades, y REEMPLAZA a su precio de lista y a sus escalas (perfil
+        // PRODUCTOS ESCALONADOS, que se saltea abajo). Los perfiles y excepciones del cliente se aplican encima, como
+        // siempre. La tela: la que venga (variables.telaProIdProducto), si no la de las órdenes del pedido
+        // (variables.telasDelPedido, la manda el sync), si no la ★ del producto.
+        let perfilEscalasOmitido = null;
+        if (!overrideTecnico && resolvedProId > 0 && !variables.skipListaDinamica) {
+            try {
+                const ld = await require('./listaPreciosDinamica').precioParaLinea(pool, resolvedProId, cantidad, {
+                    tela: variables.telaProIdProducto, candidatas: variables.telasDelPedido, tipoCambio: actualExchangeRate,
+                });
+                if (ld) {
+                    nuevoPrecioBase = toTarget(ld.precio, ld.moneda);
+                    breakdown.push({ tipo: 'OVERRIDE', valor: nuevoPrecioBase, desc: ld.detalle });
+                    overrideTecnico = { valor: nuevoPrecioBase, motivo: ld.detalle };
+                    perfilEscalasOmitido = await require('./escalasProducto').perfilId(pool);
+                }
+            } catch (eLd) {
+                logger.warn('[PricingService] Lista dinámica: no se pudo calcular (' + eLd.message + '); se cotiza con la lista.');
+            }
+        }
+
         // --- ESPECIAL: CÁLCULO DINÁMICO ESTAMPADO POR BAJADAS ---
         const areasCalculoBajadas = (globalConfigs['AREAS_CALCULO_BAJADAS'] || 'EST,COR,DF').split(',').map(s => s.trim().toUpperCase());
         const isEstampadoByDesc = variables._desc && variables._desc.toLowerCase().includes('estampado');
@@ -670,8 +693,11 @@ class PricingService {
                 ORDER BY PrioridadPerfil DESC, CantidadMinima DESC
             `);
 
-        // Filtro: Mejor regla por PerfilID
-        const todasLasReglas = rulesRes.recordset;
+        // Filtro: Mejor regla por PerfilID. Con lista dinámica (arriba) no cuentan las escalas del producto: su precio ya
+        // sale de la franja de unidades. Las excepciones del cliente traen su CliIdCliente como PerfilID: no se tocan.
+        const todasLasReglas = perfilEscalasOmitido
+            ? rulesRes.recordset.filter(r => !(r.PerfilID === perfilEscalasOmitido && r.NombrePerfil !== 'Excepción Cliente'))
+            : rulesRes.recordset;
         let traceDecision = `\n--- ANALISIS DE PRECIOS PARA ${cleanCod} (Cant: ${cantidad}) ---\n`;
         traceDecision += `Perfiles Activos: ${(extraProfileIds || []).join(',')} | Area: ${resolvedAreaId} (Nombre: ${resolvedAreaNombre})\n`;
         if (typeof injectedUrgencia !== 'undefined' && injectedUrgencia) {

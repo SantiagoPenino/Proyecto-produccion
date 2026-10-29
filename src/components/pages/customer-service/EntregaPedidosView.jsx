@@ -5,7 +5,7 @@ import api from '../../../services/api';
 import { logisticsService } from '../../../services/modules/logisticsService';
 import { socket } from '../../../services/socketService';
 import useRecargaConFreno from '../../../hooks/useRecargaConFreno';
-import { Package, Truck, Search, QrCode, FileText, CheckCircle, RefreshCcw, DollarSign, ChevronDown, ChevronRight, Printer, ClipboardList, Tag, History, ChevronUp, FileImage, Store, Loader2, X, Check, Hourglass } from 'lucide-react';
+import { Package, Truck, Search, QrCode, FileText, CheckCircle, RefreshCcw, DollarSign, ChevronDown, ChevronRight, Printer, ClipboardList, Tag, History, ChevronUp, FileImage, Store, Loader2, X, Check, Hourglass, Upload } from 'lucide-react';
 import { toast } from 'sonner';
 import Swal from 'sweetalert2';
 import AlertaAutorizacionModal from '../../modals/AlertaAutorizacionModal';
@@ -204,6 +204,10 @@ const EntregaPedidosView = () => {
     const [selectedHistorial, setSelectedHistorial] = useState(new Set());
     const [filtroFechaHistorial, setFiltroFechaHistorial] = useState(new Date().toISOString().split('T')[0]);
     const [filtroLugarHistorial, setFiltroLugarHistorial] = useState('2'); // Por defecto '2' (Encomiendas)
+    // Comprobante de una encomienda ya entregada sin foto (29/10/2026, caso RW-35433)
+    const [subiendoComprobante, setSubiendoComprobante] = useState(null); // ordenDeRetiro en curso
+    const comprobanteInputRef = useRef(null);
+    const comprobanteDestinoRef = useRef(null);
 
     // Modal: Generar Retiro desde Órdenes sin Retiro
     const [retiroModal, setRetiroModal] = useState(null); // { ordenes: [] } | null
@@ -304,6 +308,31 @@ const EntregaPedidosView = () => {
             console.error('[Historial] Error:', err);
         } finally {
             setLoadingHistorial(false);
+        }
+    };
+
+    // Encomienda entregada sin comprobante (se tocó «Entregar» sin Generar Remito, o se confirmó en
+    // En Viaje sin foto): la foto se guarda sin cambiar el estado ni la fecha de entrega.
+    const elegirComprobante = (enc) => {
+        comprobanteDestinoRef.current = enc.ordenDeRetiro;
+        comprobanteInputRef.current?.click();
+    };
+
+    const subirComprobanteElegido = async (e) => {
+        const file = e.target.files?.[0];
+        e.target.value = null;
+        const codigo = comprobanteDestinoRef.current;
+        comprobanteDestinoRef.current = null;
+        if (!file || !codigo) return;
+        setSubiendoComprobante(codigo);
+        try {
+            await logisticsService.subirComprobanteEncomienda(codigo, file);
+            toast.success(`Comprobante de ${codigo} guardado`);
+            loadHistorialHoy();
+        } catch (err) {
+            toast.error(err.response?.data?.error || 'No se pudo subir el comprobante');
+        } finally {
+            setSubiendoComprobante(null);
         }
     };
 
@@ -1248,6 +1277,13 @@ const EntregaPedidosView = () => {
             {/* TAB: HISTORIAL DEL DÍA */}
             {activeTab === 'historial' && (
                 <div className="flex flex-col gap-3">
+                    <input
+                        type="file"
+                        ref={comprobanteInputRef}
+                        className="hidden"
+                        accept="image/*"
+                        onChange={subirComprobanteElegido}
+                    />
                     <div className={`${CARD} p-4 md:p-5 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-3`}>
                         <div className="min-w-0">
                             <h2 className="text-lg font-black text-zinc-800">Historial de fecha</h2>
@@ -1367,6 +1403,19 @@ const EntregaPedidosView = () => {
                                                         >
                                                             <FileImage size={14} />
                                                         </a>
+                                                    )}
+                                                    {!enc.comprobanteEntrega && enc.OReEstadoActual === 5 && String(enc.formaEnvioId) === '2' && (
+                                                        <button
+                                                            title="Subir comprobante de la agencia"
+                                                            aria-label="Subir comprobante de la agencia"
+                                                            onClick={() => elegirComprobante(enc)}
+                                                            disabled={subiendoComprobante !== null}
+                                                            className={BTN_ICONO}
+                                                        >
+                                                            {subiendoComprobante === enc.ordenDeRetiro
+                                                                ? <Loader2 size={14} className="animate-spin" />
+                                                                : <Upload size={14} />}
+                                                        </button>
                                                     )}
                                                     <button
                                                         title="Reimprimir etiqueta"

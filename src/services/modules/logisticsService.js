@@ -64,6 +64,18 @@ const logisticsService = {
         return response.data;
     },
 
+    // Comprobante de una encomienda ya entregada (sin remito, o bulto confirmado sin foto).
+    // codigoRetiro: "RW-35433"; bultoId: el bulto elegido en En Viaje (opcional).
+    subirComprobanteEncomienda: async (codigoRetiro, file, bultoId = null) => {
+        const formData = new FormData();
+        if (bultoId) formData.append('bultoId', String(bultoId));
+        formData.append('comprobante', file);
+        const response = await api.post(`/logistics/encomiendas/${encodeURIComponent(codigoRetiro)}/comprobante`, formData, {
+            headers: { 'Content-Type': 'multipart/form-data' }
+        });
+        return response.data;
+    },
+
     createRemitoFromOrders: async (data) => {
         return postRemitoConAviso('/logistics/remitos/from-orders', data);
     },

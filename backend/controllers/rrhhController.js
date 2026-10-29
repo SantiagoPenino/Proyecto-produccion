@@ -17,6 +17,8 @@
 // documento (el RUT de su empresa, por ejemplo).
 const { getPool, sql } = require('../config/db');
 const logger = require('../utils/logger');
+// Historial de perfiles (ver services/historialPrecios.js): aplicar o quitar el descuento queda registrado en el perfil
+const { leerPerfilesCliente, registrarAsignaciones } = require('../services/historialPrecios');
 
 const RUTA_DESCUENTO = '/rrhh/descuento-trabajadores';
 const SQL_MENU = 'backend/scripts/menu_rrhh_descuento_trabajadores.sql';
@@ -466,7 +468,10 @@ const aplicar = async (req, res) => {
         await tx.begin();
         const cliente = await leerCliente(new sql.Request(tx), id);
         if (!cliente) throw conStatus(404, 'El cliente no existe.');
+        const codCli = cliente.CodCliente ?? cliente.CliIdCliente;
+        const perfilesAntes = await leerPerfilesCliente(tx, cliente.CliIdCliente, codCli);
         await aplicarEnTx(tx, cliente, perfil);
+        await registrarAsignaciones(tx, { cliId: cliente.CliIdCliente, perfilesAntes, perfilesDespues: await leerPerfilesCliente(tx, cliente.CliIdCliente, codCli), tipo: 'RRHH', user: req.user });
         await tx.commit();
 
         await auditar(pool, req, 'RRHH_DESCUENTO_APLICAR',
@@ -500,6 +505,7 @@ const quitar = async (req, res) => {
             SELECT ID, PerfilID, PerfilesIDs FROM dbo.PreciosEspeciales WITH (UPDLOCK, HOLDLOCK)
             WHERE CliIdCliente IN (${cliIds.map((_, i) => `@C${i}`).join(', ')})`);
 
+        const perfilesAntes = await leerPerfilesCliente(tx, cliIds[0], cliIds[1] ?? cliIds[0]);
         let cambiadas = 0;
         for (const fila of filas.recordset) {
             const ids = idsDeFila(fila);
@@ -515,6 +521,9 @@ const quitar = async (req, res) => {
                             UltimaActualizacion = GETDATE()
                         WHERE ID = @ID`);
             cambiadas++;
+        }
+        if (cambiadas > 0) {
+            await registrarAsignaciones(tx, { cliId: cliente ? cliente.CliIdCliente : id, perfilesAntes, perfilesDespues: await leerPerfilesCliente(tx, cliIds[0], cliIds[1] ?? cliIds[0]), tipo: 'RRHH', user: req.user });
         }
         await tx.commit();
 

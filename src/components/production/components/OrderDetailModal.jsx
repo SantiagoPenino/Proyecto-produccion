@@ -20,6 +20,7 @@ import ModalLiberacionFalla from './ModalLiberacionFalla';
 import ModalConsultaCliente from './ModalConsultaCliente';
 import BandaConsultaCliente from './BandaConsultaCliente';
 import { CicloOrdenBadge } from './IndicadorCicloArea';
+import { useFechasOrden, FechasOrdenFranja, FechasOrdenDetalle } from './FechasOrden';
 import Swal from 'sweetalert2';
 
 // Visor 3D del parche TPU (el mismo del portal, en modo interno: el diseñador elige las texturas).
@@ -1570,6 +1571,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
         && !consultaAbierta
         && !!elegibilidad?.puede;
 
+    // Fechas de la orden y de su pedido (franja de arriba + pestaña «Fechas»); se vuelven a pedir al cambiar el estado.
+    const fechas = useFechasOrden(currentOrder?.id, `${currentOrder?.status}|${currentOrder?.areaStatus}`);
+
     if (!order || !currentOrder) return null;
 
     // Helper para acciones de archivo (Definido aquí para acceder al scope)
@@ -2000,6 +2004,9 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                     </div>
                     )}
 
+                    {/* ¿Vamos a tiempo? Esta orden, el pedido y lo que pidió el cliente */}
+                    <FechasOrdenFranja datos={fechas.datos} onVerDetalle={() => setActiveTab('fechas')} />
+
                     {/* Header Grid: Datos Clave */}
                     <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3 mb-6 bg-zinc-50 p-4 rounded-xl border border-zinc-100 shadow-sm">
 
@@ -2241,6 +2248,7 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                     ? [{ id: 'flujo', label: 'Flujo del Pedido', count: rutaPedido.length, icon: 'fa-timeline' },
                                        { id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' }]
                                     : [{ id: 'labels', label: 'Etiquetas', count: labels.length, icon: 'fa-tags' }]),
+                                { id: 'fechas', label: 'Fechas', count: 0, icon: 'fa-calendar-days' },
                                 { id: 'reqs', label: 'Requisitos', count: 0, icon: 'fa-list-check' },
                                 { id: 'notas', label: 'Notas', count: notasProduccion.length, icon: 'fa-comment-dots' }
                             ].map(tab => (
@@ -2325,6 +2333,11 @@ const OrderDetailModal = ({ order, onClose, onOrderUpdated, readOnly = false }) 
                                         );
                                     })()}
                                 </div>
+                            )}
+
+                            {/* PESTAÑA: FECHAS (orden, pedido por área, cliente y depósito) */}
+                            {activeTab === 'fechas' && (
+                                <FechasOrdenDetalle datos={fechas.datos} cargando={fechas.cargando} error={fechas.error} />
                             )}
 
                             {/* PESTAÑA: REQUISITOS (Nueva) */}

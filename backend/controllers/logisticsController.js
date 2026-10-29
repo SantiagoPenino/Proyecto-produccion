@@ -3399,6 +3399,108 @@ exports.confirmRemitoDelivery = async (req, res) => {
     }
 };
 
+// Comprobante de una encomienda YA ENTREGADA (29/10/2026, caso RW-35433). El camino normal es Generar
+// Remito → En Viaje → Entregas (confirmRemitoDelivery), pero si se tocó «Entregar» sin remito la
+// encomienda no tiene bulto y no había dónde subir la foto; y un bulto confirmado sin foto quedaba
+// «Ya Entregado — Sin archivo» para siempre. Acá SOLO se guarda el archivo: no cambia el estado ni la
+// fecha de entrega del retiro, ni toca remitos.
+//   :code = "RW-35433" o "35433" (el multer arma el nombre del archivo con él: RW-35433-hhmmss.webp)
+//   bultoId (opcional, desde En Viaje): ese bulto. Sin bultoId: el último bulto de la encomienda (el
+//   que leen las listas como comprobanteEntrega); si no tiene ninguno, se crea uno ya ENTREGADO en
+//   CLIENTE_FINAL, sin remito, solo para guardar el comprobante.
+exports.subirComprobanteEncomienda = async (req, res) => {
+    const m = String(req.params.code || '').trim().match(/^[A-Za-z]{0,3}-?(\d{1,9})$/);
+    const retiroId = m ? parseInt(m[1], 10) : null;
+    const bultoId = req.body?.bultoId ? parseInt(req.body.bultoId, 10) : null;
+    const usuarioId = req.user?.id || 70;
+    // El multer ya grabó la foto en disco: si no se usa, se borra para no dejar archivos sueltos.
+    const descartarArchivo = () => {
+        if (req.file?.path) require('fs').promises.unlink(req.file.path).catch(() => { /* ya no está */ });
+    };
+
+    if (!req.file) return res.status(400).json({ error: 'Falta la foto del comprobante.' });
+    if (!retiroId) { descartarArchivo(); return res.status(400).json({ error: 'Número de retiro inválido.' }); }
+    const comprobanteUrl = `/comprobantesEncomiendas/${req.file.filename}`;
+
+    try {
+        const pool = await getPool();
+        const transaction = new sql.Transaction(pool);
+        await transaction.begin();
+        try {
+            const rRet = await new sql.Request(transaction)
+                .input('ID', sql.Int, retiroId)
+                .query(`SELECT RTRIM(FormaRetiro) AS FormaRetiro, LReIdLugarRetiro, OReEstadoActual
+                        FROM OrdenesRetiro WHERE OReIdOrdenRetiro = @ID`);
+            const retiro = rRet.recordset[0];
+            const codigoRetiro = `${retiro?.FormaRetiro || 'R'}-${retiroId}`;
+
+            const rBul = await new sql.Request(transaction)
+                .input('ID', sql.Int, retiroId)
+                .query(`SELECT BultoID, CodigoEtiqueta, Estado, ComprobantePath
+                        FROM Logistica_Bultos WITH (UPDLOCK)
+                        WHERE Tipocontenido = 'ENCOMIENDA' AND OrdenID = @ID
+                        ORDER BY BultoID DESC`);
+            const bultos = rBul.recordset;
+
+            let error = null;
+            if (!retiro) error = [404, `No existe el retiro ${retiroId}.`];
+            else if (retiro.LReIdLugarRetiro !== 2 && bultos.length === 0) error = [409, `${codigoRetiro} no es una encomienda.`];
+            else if (retiro.OReEstadoActual !== 5) error = [409, `${codigoRetiro} todavía no está entregada: el comprobante se sube en En Viaje, al confirmar la entrega del remito.`];
+
+            const bulto = bultoId ? bultos.find(b => b.BultoID === bultoId) : bultos[0];
+            if (!error && bultoId && !bulto) error = [409, `El bulto ${bultoId} no es de ${codigoRetiro}.`];
+            if (!error && bulto?.ComprobantePath) error = [409, `${codigoRetiro} ya tiene comprobante.`];
+            if (error) {
+                await transaction.rollback();
+                descartarArchivo();
+                return res.status(error[0]).json({ error: error[1] });
+            }
+
+            let codigoBulto;
+            if (bulto) {
+                codigoBulto = bulto.CodigoEtiqueta;
+                await new sql.Request(transaction)
+                    .input('BID', sql.Int, bulto.BultoID)
+                    .input('Path', sql.NVarChar, comprobanteUrl)
+                    .query(`UPDATE Logistica_Bultos SET ComprobantePath = @Path WHERE BultoID = @BID`);
+            } else {
+                codigoBulto = `PAQ-${retiroId}-${Math.floor(Math.random() * 1000)}`;
+                await new sql.Request(transaction)
+                    .input('Cod', sql.VarChar, codigoBulto)
+                    .input('OID', sql.Int, retiroId)
+                    .input('Desc', sql.NVarChar, `Encomienda ${codigoRetiro}: comprobante cargado después de la entrega`)
+                    .input('UID', sql.Int, usuarioId)
+                    .input('Path', sql.NVarChar, comprobanteUrl)
+                    .query(`
+                        INSERT INTO Logistica_Bultos (CodigoEtiqueta, Tipocontenido, OrdenID, Descripcion, UbicacionActual, Estado, UsuarioCreador, ComprobantePath)
+                        VALUES (@Cod, 'ENCOMIENDA', @OID, @Desc, 'CLIENTE_FINAL', 'ENTREGADO', @UID, @Path)
+                    `);
+            }
+
+            await registrarMovimiento(transaction, {
+                codigoBulto,
+                tipo: 'COMPROBANTE',
+                area: 'LOGISTICA_ENCOMIENDAS',
+                usuario: usuarioId,
+                obs: `Comprobante de ${codigoRetiro} cargado después de la entrega${bulto ? '' : ' (se entregó sin remito)'}`,
+                estAnt: 'ENTREGADO',
+                estNew: 'ENTREGADO',
+                esRecep: false
+            });
+
+            await transaction.commit();
+            res.json({ success: true, comprobanteEntrega: comprobanteUrl, codigoBulto });
+        } catch (innerErr) {
+            try { await transaction.rollback(); } catch (e) { /* ya abortada */ }
+            throw innerErr;
+        }
+    } catch (err) {
+        descartarArchivo();
+        logger.error('Error subirComprobanteEncomienda:', err);
+        res.status(500).json({ error: err.message });
+    }
+};
+
 // Lista de "Transporte" / "En Viaje" (TransportView). Los filtros van en la consulta, ANTES
 // del TOP 200: hasta el 28/09/2026 se traían los últimos 200 remitos de todo tipo (los de
 // producción entre áreas incluidos) y recién el navegador filtraba encomiendas y estado, así

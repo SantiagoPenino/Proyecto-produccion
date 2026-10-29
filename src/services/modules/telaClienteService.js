@@ -2,11 +2,11 @@ import api from '../api';
 
 // Devolución física de excedente — ver backend/services/telaClienteDevolucionFisicaService.js
 export const telaClienteService = {
-    // Solicitar devolución/descarte desde la vista interna de la bobina. El canal
-    // (Retiro/Encomienda) y la dirección de envío ya NO se piden acá — se definen
-    // recién cuando el cliente retira de verdad, por el circuito normal de retiros.
-    solicitarDevolucion: async (clienteId, bobinaId, { accion, observaciones }) => {
-        const response = await api.post(`/tela-cliente/${clienteId}/bobinas/${bobinaId}/solicitar`, {
+    // Botón ↶ de la bobina (vista interna), sin pasar por la bandeja: DEVOLVER aprueba y empaqueta
+    // (devuelve la orden DEV-<n> y los datos de la etiqueta); DESCARTAR cierra la bobina. El canal
+    // (Retiro/Encomienda) se define recién cuando el cliente retira, por el circuito normal de retiros.
+    devolverDesdeInventario: async (clienteId, bobinaId, { accion, observaciones }) => {
+        const response = await api.post(`/tela-cliente/${clienteId}/bobinas/${bobinaId}/devolver-ahora`, {
             accion, observaciones,
         });
         return response.data;

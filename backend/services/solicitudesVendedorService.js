@@ -1267,8 +1267,24 @@ async function obtener(pool, user, solicitudId) {
     const k = p.ProIdProducto ? catPorId.get(Number(p.ProIdProducto)) : null;
     const esc = k ? escPorId.get(Number(p.ProIdProducto)) || null : null;
     const porCant = k && k.Precio != null ? require('./escalasProducto').precioPara(k.Precio, esc, p.Cantidad) : null;
+    // [LISTA DINÁMICA 29/10] Al lado del de catálogo, el precio de la Lista de precios dinámica (tela × consumo + corte y
+    // costura + margen de la franja de SU cantidad), para elegir con cuál pactar: se muestra aunque la lista todavía no se
+    // aplique en los pedidos. La tela es la que la solicitud eligió para el cuerpo (la de más piezas); sin elegir, la ★.
+    let ld = null;
+    if (k && Number(p.Cantidad) > 0) {
+      try {
+        const cuenta = new Map();
+        (p.Datos?.sublimacion?.piezas || []).filter(x => !x.fija && x.telaProIdProducto).forEach(x => {
+          const id = Number(x.telaProIdProducto);
+          cuenta.set(id, (cuenta.get(id) || 0) + 1);
+        });
+        const candidatas = [...cuenta.entries()].sort((a, b) => b[1] - a[1]).map(([id]) => id);
+        ld = await require('./listaPreciosDinamica').precioParaLinea(pool, p.ProIdProducto, Number(p.Cantidad), { candidatas, aunqueApagada: true });
+      } catch (e) { logger.warn(`[SOLICITUDES] lista dinámica del producto ${p.ProIdProducto}: ${e.message}`); }
+    }
     p.Catalogo = k ? { codigo: k.CodArticulo || null, familia: k.Categoria || null, foto: k.Imagen || null, precio: k.Precio != null ? (porCant.precio ?? Number(k.Precio)) : null, moneda: k.Moneda || null,
                              lista: k.Precio != null ? Number(k.Precio) : null, escalaDesde: porCant?.desde || null, escalas: esc,   // [ESCALAS 27/10]
+                             dinamica: ld ? { precio: ld.precio, moneda: ld.moneda, tela: ld.tela, detalle: ld.detalle } : null,
                              minima: Number(k.CantidadMinima) || null, fija: Number(k.CantidadFija) || null } : null;   // paquete fijo / mínimo (guardarDatos)
     const nombreArea = { DIRECTA: 'impresión directa', ECOUV: 'gran formato', DF: 'DTF' }[p.Config?.TecnicaPrincipal];
     if (nombreArea) p.Partes.forEach(pa => { if (pa.Tipo === 'PRINCIPAL') pa.Nombre = `Producción principal (${nombreArea})`; });

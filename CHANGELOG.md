@@ -9,6 +9,16 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 
 ## [Sin deployar]
 
+### Agregado
+- **Detalle de la orden (el ojito): fechas de la orden y del pedido, con semáforo de atraso (29/10).** Antes la ventana no mostraba ninguna fecha.
+  - **Franja arriba, siempre visible:** la fecha comprometida de esta orden, la fecha final del pedido si tiene varias áreas, y la fecha que necesita el cliente si el pedido salió de una Solicitud (en rojo si la fecha final queda después).
+  - **Pestaña «Fechas»:** ingreso, plan del área, comprometida, impresa, pronta y aprobación del cliente (TPU); una fila por área del pedido en el orden del recorrido; y el depósito (llegó, avisado, estado actual).
+  - **Semáforo:** A tiempo · Vence mañana · Vence hoy · Atrasada N días hábiles · Terminó a tiempo · Terminó N días tarde. Se mide contra la fecha comprometida (si falta, contra el plan), en días hábiles del área (horario laboral y feriados).
+  - **Fecha final del pedido:** la comprometida más tarde de sus órdenes, sin contar fallas (-F) ni canceladas. Cada área calcula su fecha desde el mismo ingreso, no desde que terminó la anterior.
+  - **Fecha del cliente:** vive solo en `SolicitudesVendedor.FechaEntrega` / `FechaEntregaHasta`; se lee por `SolicitudesVendedorProductos.PedidoNoDocERP`, no se copia a la orden.
+  - **Archivos:** ruta nueva `GET /api/orders/fechas/:id` (`services/fechasOrdenService.js`, `controllers/fechasOrdenController.js`, `routes/ordersRoutes.js`). Front: nuevo `production/components/FechasOrden.jsx` y `OrderDetailModal.jsx`.
+  - **Probado en local** (solo lectura) con los pedidos 31895, 31896 (con falla) y 31897 (de la Solicitud 2038: el cliente lo necesita 29/10 → 31/10 y la fecha final es 03/11), una orden terminada 3 días tarde, una sin pedido y una que no existe. **No probado:** la pantalla en el navegador (necesita sesión).
+
 ### Cambiado
 - **Tiempo de respuesta de las áreas: 7 días por defecto y demora por paso (28–29/10).** El indicador salió en el deploy del 28/10; esto es lo que vino después.
   - **7 días:** el chip de la cabecera y el detalle muestran los últimos 7 días; antes, 30. Al cambiar de período en el detalle, lo anterior queda atenuado y con una ruedita hasta que llega lo nuevo. Antes el cuerpo pasaba a la ruedita sola y el modal se achicaba y volvía a crecer.
@@ -19,6 +29,23 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - **Límites:** el desglose vale lo que valen las marcas. Si la orden no se tildó impresa (el sistema la tilda solo al completarla) y el lote no marcó «Fin impresión», el control queda dentro de producción; en DTF pasa en 1 de cada 5. En Terminaciones el material se escanea minutos antes de terminar, así que casi todo cae en «Hasta recibir el material». Si un lote quedó «en producción» días sin marcar el fin, cuenta como producción: en la copia, la orden más lenta de SUB tiene 97 h de calandra.
     - **Cómo se calcula:** columna nueva `OrdenesCicloPlanta.Pasos` (JSON con los minutos de cada paso; los pasos suman el ciclo exacto). La calcula el mismo job, que completa también las filas que ya estaban sin la columna. Sin la columna, el ciclo anda igual pero sin el detalle por paso.
     - **Probado:** 11 pruebas unitarias nuevas (`__tests__/cicloPasos.test.js`; 4 del tilde, del 29/10). En la copia local se recalcularon las 35.097 órdenes en 19 s, y en todas los pasos suman el ciclo. Revisé a mano tres órdenes de DTF y una de SUB contra su historial. El detalle se vio en el navegador el 28/10, a 1440 y 390 px; el cambio del 29/10 no se miró en el navegador.
+- **Tela de cliente: la devolución que se hace desde el inventario sale de una, sin pasar por la Bandeja de devoluciones (29/10).** Antes, el botón ↶ de la bobina solo mandaba una solicitud a la bandeja, y ahí alguien tenía que «Aprobar» y después «Empaquetar».
+  - **Devolver:** un solo botón, «Empaquetar e imprimir etiqueta». Aprueba, cierra la bobina con un movimiento DEVOLUCION_FISICA_CLIENTE, arma la orden `DEV-<n>` con su bulto en el área de la bobina e imprime la etiqueta. Es lo mismo que hacían «Aprobar» y «Empaquetar».
+  - **El remito no cambia:** el bulto va a depósito en un remito, como cualquier orden. Al recibirlo en Depósito sale el WhatsApp y el cliente lo retira por el circuito de siempre.
+  - **Descartar:** «Descartar y cerrar la bobina» la cierra en el momento con un movimiento DESCARTE_CLIENTE, sin bulto.
+  - **Queda registrada** como una solicitud INTERNO ya aprobada por quien tocó el botón. En la bandeja aparece como «Empaquetada — esperando remito a depósito», con «Imprimir etiqueta» para reimprimir. Si la bobina tenía un aviso de excedente pendiente, se cierra solo.
+  - **Lo que frena:**
+    - Una bobina «En Uso» no se puede devolver: el modal lo avisa y apaga el botón, y el servidor contesta 409.
+    - Si el cliente ya la había pedido desde el portal, contesta 409 y se resuelve en la bandeja (ahí la tarjeta muestra «Devolución pedida», no ↶).
+    - El cliente del portal no puede usar la ruta nueva: 403.
+  - **Las solicitudes del portal no cambian:** siguen yendo a la bandeja para aprobar o rechazar.
+  - **Archivos:** ruta nueva `POST /api/tela-cliente/:clienteId/bobinas/:bobinaId/devolver-ahora`. En `services/telaClienteDevolucionFisicaService.js`, el «Empaquetar» y el descarte de la bandeja pasaron a funciones que se comparten con la ruta nueva; la bandeja hace lo mismo que antes. Front: `modals/inventory/SolicitarDevolucionTelaModal.jsx`, `services/modules/telaClienteService.js` y el texto del botón en `pages/TelaClienteInventarioPage.jsx`.
+  - **Probado en local**, en transacciones con rollback:
+    - Devolver BOB-234 (2,45 m) armó DEV-31 con su bulto en SB y su etiqueta, cerró la bobina y cerró su aviso.
+    - Descartar BOB-241 la cerró con −2,10 m.
+    - La solicitud del portal abierta, la bobina agotada, otro cliente, una acción inválida y «En Uso» frenan sin escribir. El cliente del portal recibe 403.
+    - Las cuentas de la base quedaron iguales que antes. La ruta responde en el backend local y Vite compila las tres pantallas.
+    - **No probado:** el botón en el navegador (necesita sesión) ni la impresión real de la etiqueta.
 
 ### Arreglado
 - **Control: el botón «Finalizar orden» ya no aparece en una orden que ya salió de Control (29/10).** Aparecía en las órdenes Pronto (el botón miraba el estado general, que sigue en «Produccion» hasta que el depósito la recibe). Tocarlo no cambiaba nada, porque el servidor saltea las ya cerradas, pero la pantalla mostraba el aviso de «completada». Ahora no sale en las Pronto, en tránsito, recibidas en otra área ni finalizadas, y esas muestran el cartel «COMPLETA» en la cabecera, que antes nunca aparecía. «Finalizar lote completo» sale solo si queda alguna orden sin cerrar, y nunca sin una orden elegida (sin elección, el botón no hacía nada). Probado en la copia con el lote #6384: en DTF-38763 (Pronto) no aparece. Simulando en el navegador los archivos controlados, sin tocar la base, aparece «Finalizar orden» en una orden sin cerrar y «Finalizar lote completo» en el #6375. No se tocó nada en la base. Solo front: `pages/FilePrintControl.jsx`.
@@ -162,6 +189,13 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - Las texturas van en el build: Vite copia `public/assets/textures` a `backend/public/assets/textures`, que en el servidor es `/var/www/sistema-produccion/public/assets/textures`. De ahí leen el generador (el job de TPU-38211 lo muestra) y el visor. Si se suben sueltas: los 8 SVG corregidos, `texturas.json` y `README.md`.
   - `Tpu3DViewer.jsx` va en el build. `controllers/webOrdersController.js`, con reinicio, también tiene cambios de pagos online (INF-SIS-2026-13). Si lo de TPU tiene que salir antes, puede ir sin ese archivo: las 11 texturas ocultas solo se siguen ofreciendo, no se rompe nada.
   - **Después:** las órdenes ya generadas no cambian solas. En `Escritorio\TPU regeneradas INF-16` están los archivos de impresión y control nuevos de TPU-38159, 38210, 38212 y 38806, que en la copia del 27/10 estaban sin imprimir. Antes de reemplazarlos, confirmar con la consulta 1 del plan que siguen sin imprimir. El corte no cambia.
+- **Fechas en el detalle de la orden (29/10):** sin SQL. Backend y front juntos: con el front nuevo y el backend viejo, la franja no aparece y la pestaña «Fechas» dice que no se pudieron cargar.
+  - **Backend, con reinicio:** `services/fechasOrdenService.js`, `controllers/fechasOrdenController.js` y `routes/ordersRoutes.js`.
+  - **Front, en el build:** `production/components/FechasOrden.jsx` y `production/components/OrderDetailModal.jsx`.
+- **Devolución de tela desde el inventario, de una (29/10):** sin SQL. Backend y front juntos: con el front nuevo y el backend viejo, la ruta no existe y el botón da «Error al empaquetar la devolución».
+  - **Backend, con reinicio:** `services/telaClienteDevolucionFisicaService.js`, `controllers/telaClienteController.js` y `routes/telaClienteRoutes.js`.
+  - **Front, en el build:** `modals/inventory/SolicitarDevolucionTelaModal.jsx`, `services/modules/telaClienteService.js` y `pages/TelaClienteInventarioPage.jsx`.
+  - **Después del deploy:** avisarle a planta que el botón ↶ ya empaqueta e imprime la etiqueta en el momento, y que el bulto va a depósito en un remito como siempre.
 
 ## [2026-10-28] — deployado el 28/10 (cambios del 26/10 a la tarde al 28/10)
 
@@ -3094,12 +3128,10 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
        - Adentro del panel lateral y de una ventana, sin que se cierren.
      - La pantalla completa no la vi en el navegador.
 
-
 ## [2026-09-28] — ajuste en el servidor, ya aplicado (sin deploy)
 
 ### Arreglado
 - **Las fotos de las encomiendas vuelven a estar todas en una carpeta y se ven todas en el sistema.** Desde el 12/06 el `.env` de producción tenía `COMPROBANTES_ENCOMIENDAS_PATH` dos veces y ganaba la segunda, una ruta relativa: las fotos nuevas se guardaban dentro de la carpeta del sistema (`/var/www/sistema-produccion/Comprobantes/encomiendas`, expuesta a perderse en un deploy) y las anteriores al 12/06, que siguieron en `/home/comprobantes/encomiendas`, dejaron de verse en Transporte y en el portal. Se copiaron las 2.349 nuevas a `/home` (quedaron 3.489, sin nombres repetidos), se comentaron la línea duplicada y su `VITE_` (que el backend no usa y el build no incluye) y se reinició. Verificado: una foto de antes del 12/06 y una de septiembre responden 200. La carpeta vieja de `/var/www` queda para borrar.
-
 
 ## [2026-09-24] — tercer deploy del día
 

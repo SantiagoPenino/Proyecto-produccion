@@ -363,6 +363,8 @@ async function leerFicha(pool, proId) {
         const conF1 = await tieneF1(pool);
         const conPaso = await tieneCosturasPaso(pool);   // [PASO A PASO]
         const conTalle = conTizada && await tieneAviosTalle(pool);   // [AVÍOS POR TALLE]
+        const conConsumo = conTizada && await require('../services/listaPreciosDinamica').hayConsumo(pool);   // [LISTA DINÁMICA] consumo por tela
+        const conCorte = await require('../services/listaPreciosDinamica').hayCorteCostura(pool);   // [LISTA DINÁMICA] corte y costura del producto
         const conAM = await tieneAMedida(pool);   // [A MEDIDA]
         const conMesas = await tieneMesasModo(pool);   // cómo arma TIZADA los archivos
         const conMesasExtra = conMesas && await tieneMesasExtra(pool);   // [MESAS 16/10] separar diseños + largo máximo
@@ -395,7 +397,7 @@ async function leerFicha(pool, proId) {
                                ValidarStock, Estado, EsCombo, FechaRegistro, FechaModif,
                                ${await variantesSvc.tieneVariantes(pool) ? 'PadreProIdProducto, ModeloClave,' : ''}
                                ${conTizada ? 'TizadaProMoldeRef' : 'CAST(NULL AS NVARCHAR(128)) AS TizadaProMoldeRef'}
-                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conMesasExtra ? ', TizadaSepararDisenos, TizadaLargoMaxM' : ''}${conGrupos ? ', GruposTalle' : ''}${conDias ? ', DiasEntrega' : ''}
+                               ${conF1 ? ', ' + F1_COLS : ''}${conAM ? ', AMedidaJson' : ''}${conMesas ? ', TizadaMesasModo' : ''}${conMesasExtra ? ', TizadaSepararDisenos, TizadaLargoMaxM' : ''}${conGrupos ? ', GruposTalle' : ''}${conDias ? ', DiasEntrega' : ''}${conCorte ? ', CorteCosturaCosto, CorteCosturaMoneda' : ''}
                         FROM dbo.ProductoVentaConfig WHERE ProIdProducto = @PID`),
             rq().query(`SELECT AreaID, Obligatorio, Modo, Cobro
                         FROM dbo.ProductoTerminadoServicios WHERE ProIdProducto = @PID`),
@@ -410,7 +412,7 @@ async function leerFicha(pool, proId) {
             // Modelos y telas ofrecidos (docs/migrations/configurador_tizadapro.sql); sin el script, vacíos
             conTizada ? rq().query(`SELECT ModeloClave, ModeloNombre, EsDefault, Orden FROM dbo.ProductoModelos
                                     WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID`) : { recordset: [] },
-            conTizada ? rq().query(`SELECT t.TelaProIdProducto, t.EsDefault, t.Orden,
+            conTizada ? rq().query(`SELECT t.TelaProIdProducto, t.EsDefault, t.Orden, ${conConsumo ? 't.ConsumoM,' : ''}
                                            LTRIM(RTRIM(a.CodArticulo)) AS CodArticulo, LTRIM(RTRIM(a.Descripcion)) AS Material, a.anchoimprimible AS Ancho
                                     FROM dbo.ProductoTelas t
                                     LEFT JOIN dbo.Articulos a ON a.ProIdProducto = t.TelaProIdProducto
@@ -488,6 +490,10 @@ async function leerFicha(pool, proId) {
                 surtido: surtido.recordset,
                 modelos: modelos.recordset,
                 telas: telas.recordset,
+                // [LISTA DINÁMICA 29/10] sin la tabla (falta el SQL), no viene: la pantalla no muestra el bloque
+                valoresAgregados: await require('../services/listaPreciosDinamica').hayValoresAgregados(pool)
+                    ? (await rq().query('SELECT Nombre, Tipo, Valor, LTRIM(RTRIM(Moneda)) AS Moneda FROM dbo.ProductoValoresAgregados WHERE ProIdProducto = @PID ORDER BY ISNULL(Orden, 999), ID')).recordset
+                    : undefined,
                 avios: avios.recordset.map(a => ({ ...a, talles: aviosTalle.recordset.filter(t => t.AvioOrden === a.Orden) })),
                 aviosPorTalle: conTalle,   // false = falta el SQL de avíos por talle (la pantalla avisa)
                 medidas: medidas.recordset.map(m => ({ ...m, talles: medidasTalle.recordset.filter(t => t.MedidaOrden === m.Orden).map(t => ({ talle: t.Talle, valor: t.Valor == null ? null : Number(t.Valor) })) })),
@@ -573,6 +579,38 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
         .input('PID', sql.Int, proId)
         .query(`DELETE FROM dbo.${tabla} WHERE ProIdProducto = @PID`);
 
+    // [LISTA DINÁMICA 29/10] Corte y costura por unidad del producto, con su moneda (vacío = el general de la lista).
+    // La fila de ProductoVentaConfig ya existe: los dos que llaman la crean antes.
+    if (body.corteCostura !== undefined && await require('../services/listaPreciosDinamica').hayCorteCostura(transaction)) {
+        const costo = body.corteCostura?.costo;
+        const vacio = costo == null || costo === '';
+        if (!vacio && !(Number(costo) >= 0)) throw Object.assign(new Error('El corte y costura por unidad tiene que ser un número de 0 o más.'), { status: 400 });
+        await new sql.Request(transaction)
+            .input('PID', sql.Int, proId)
+            .input('C', sql.Decimal(12, 2), vacio ? null : Number(costo))
+            .input('M', sql.Char(3), vacio ? null : (body.corteCostura?.moneda === 'UYU' ? 'UYU' : 'USD'))
+            .query('UPDATE dbo.ProductoVentaConfig SET CorteCosturaCosto = @C, CorteCosturaMoneda = @M WHERE ProIdProducto = @PID');
+    }
+    // [LISTA DINÁMICA 29/10] Valores agregados del producto: nombre + % o monto por prenda (con su moneda). Se reemplazan todos.
+    if (body.valoresAgregados !== undefined && await require('../services/listaPreciosDinamica').hayValoresAgregados(transaction)) {
+        const malo = (msg) => Object.assign(new Error(msg), { status: 400 });
+        await del('ProductoValoresAgregados');
+        let orden = 1;
+        for (const v of (body.valoresAgregados || [])) {
+            const nombre = String(v?.nombre || '').trim();
+            const tipo = v?.tipo === 'MONTO' ? 'MONTO' : 'PORCENTAJE';
+            const valor = Number(v?.valor);
+            if (!nombre) throw malo('Cada valor agregado necesita un nombre (por ejemplo «Complejidad / riesgo»).');
+            if (!(valor > 0)) throw malo(`«${nombre}»: el valor tiene que ser mayor a 0.`);
+            if (tipo === 'PORCENTAJE' && valor > 500) throw malo(`«${nombre}»: el porcentaje no puede pasar de 500 %.`);
+            await new sql.Request(transaction)
+                .input('PID', sql.Int, proId).input('Nom', sql.NVarChar(100), nombre.slice(0, 100)).input('Tipo', sql.VarChar(10), tipo)
+                .input('Val', sql.Decimal(12, 2), valor).input('Mon', sql.Char(3), tipo === 'MONTO' ? (v.moneda === 'USD' ? 'USD' : 'UYU') : null)
+                .input('Ord', sql.Int, orden++)
+                .query('INSERT INTO dbo.ProductoValoresAgregados (ProIdProducto, Nombre, Tipo, Valor, Moneda, Orden) VALUES (@PID, @Nom, @Tipo, @Val, @Mon, @Ord)');
+        }
+    }
+
     if (body.tecnicas !== undefined) {
         await del('ProductoTerminadoServicios');
         for (const t of (body.tecnicas || [])) {
@@ -621,17 +659,25 @@ async function aplicarSetsHijos(transaction, proId, body, conTizada = false, con
             orden++;
         }
     }
-    // Telas ofrecidas (el precio es el de PreciosBase de la tela; acá no se edita)
+    // Telas ofrecidas (el precio es el de PreciosBase de la tela; acá no se edita). [LISTA DINÁMICA 29/10] Cada tela
+    // principal lleva su consumo en metros por unidad (vacío = sin cargar); sin el SQL de la lista, no se guarda.
     if (body.telas !== undefined && conTizada) {
+        const conConsumo = await require('../services/listaPreciosDinamica').hayConsumo(transaction);
         await del('ProductoTelas');
         let orden = 1;
         for (const t of (body.telas || [])) {
             const telaId = Number(t.telaProIdProducto ?? t);
             if (!Number.isInteger(telaId) || telaId <= 0) continue;
+            const consumo = Number(t.consumoM);
+            if (t.consumoM != null && t.consumoM !== '' && !(consumo > 0 && consumo < 100)) {
+                throw Object.assign(new Error('El consumo de cada tela va en metros por unidad: un número mayor a 0 (por ejemplo 0,83).'), { status: 400 });
+            }
             await new sql.Request(transaction)
                 .input('PID', sql.Int, proId).input('Tela', sql.Int, telaId)
                 .input('Def', sql.Bit, t.esDefault ? 1 : 0).input('Ord', sql.Int, orden)
-                .query(`INSERT INTO dbo.ProductoTelas (ProIdProducto, TelaProIdProducto, EsDefault, Orden) VALUES (@PID, @Tela, @Def, @Ord)`);
+                .input('Cons', sql.Decimal(10, 3), consumo > 0 ? consumo : null)
+                .query(`INSERT INTO dbo.ProductoTelas (ProIdProducto, TelaProIdProducto, EsDefault, Orden${conConsumo ? ', ConsumoM' : ''})
+                        VALUES (@PID, @Tela, @Def, @Ord${conConsumo ? ', @Cons' : ''})`);
             orden++;
         }
     }
@@ -1247,7 +1293,7 @@ const TABLAS_COPIA = [
     'ProductoTerminadoServicios', 'ProductoTecnicaOpciones', 'ProductoOrigenVariantes',
     'ProductoModelos', 'ProductoTelas', 'ProductoAvios', 'ProductoAviosTalle', 'ProductoApliques', 'ProductoAccesorios',
     'ProductoComponentes', 'ProductoFichaDisenoAnotaciones', 'ProductoFichaDisenoExtra', 'ProductoFichaDisenoCosturas',
-    'ProductoMedidas', 'ProductoMedidasTalle'
+    'ProductoMedidas', 'ProductoMedidasTalle', 'ProductoValoresAgregados'
 ];
 // Del artículo se copian solo estas columnas (si existen). El resto se arma acá o queda vacío:
 // CodArticulo, IDProdReact, Descripcion, borrar; ProCodigoOdooProducto y DescripcionLista no.
@@ -2266,7 +2312,7 @@ const TEXTO_TABLA = {
     ProductoModelos: 'modelos del molde', ProductoTelas: 'telas', ProductoAvios: 'avíos', ProductoAviosTalle: 'avíos por talle',
     ProductoApliques: 'apliques', ProductoAccesorios: 'accesorios', ProductoComponentes: 'componentes',
     ProductoFichaDisenoAnotaciones: 'anotaciones de la ficha', ProductoFichaDisenoExtra: 'datos extra de la ficha', ProductoFichaDisenoCosturas: 'pasos de costura',
-    ProductoMedidas: 'medidas de la prenda', ProductoMedidasTalle: 'medidas por talle',
+    ProductoMedidas: 'medidas de la prenda', ProductoMedidasTalle: 'medidas por talle', ProductoValoresAgregados: 'valores agregados',
 };
 
 async function columnaExiste(rq, tabla, col) {

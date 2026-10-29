@@ -247,7 +247,11 @@ class ERPSyncService {
                     puntadas: sib.Puntadas || sib.PuntadasBordado || 0,
                     bajadas: sib.Bajadas || 0,
                     bajadasAdicionales: sib.BajadasAdicionales || 0,
-                    skipPrepago: true
+                    skipPrepago: true,
+                    // [LISTA DINÁMICA 29/10] La línea del producto (PRO) se calcula con la tela del pedido: la de sus
+                    // órdenes hermanas (la de Sublimación / Directa), si es una de las que el producto ofrece.
+                    ...((sib.AreaID || '').toString().trim().toUpperCase() === 'PRO'
+                        ? { telasDelPedido: siblings.map(s => s.ProIdProducto).filter(Boolean) } : {})
                 };
 
                 // --- Lógica Especial de Cantidad Efectiva (Bajadas) ---
