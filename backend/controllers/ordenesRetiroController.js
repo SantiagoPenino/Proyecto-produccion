@@ -285,7 +285,10 @@ const getOrdenesRetiroPorEstados = async (req, res) => {
     if (soloPageas) pagoFiltro = 'AND r.PagIdPago IS NOT NULL';
     if (soloNoPageas) pagoFiltro = 'AND r.PagIdPago IS NULL';
 
-    let dateFiltro = '';
+    // Con fecha (Historial del día) manda la fecha del último estado. El tope de "alta en los últimos 3 días"
+    // para entregadas/canceladas es solo para las listas sin fecha: con él, una encomienda dada de alta hace más
+    // de 3 días y entregada hoy no salía en el historial y no había dónde subirle el comprobante (29/10, RW-35433).
+    let dateFiltro = 'AND (CAST(DATEADD(d,-3,GETDATE()) AS DATE) <= CAST(r.OReFechaAlta AS DATE) OR r.OReEstadoActual NOT IN (5,6,8))';
     if (fechaFiltro) {
       request.input('FechaFiltro', sql.Date, fechaFiltro);
       dateFiltro = 'AND CAST(r.OReFechaEstadoActual AS DATE) = @FechaFiltro';
@@ -294,7 +297,6 @@ const getOrdenesRetiroPorEstados = async (req, res) => {
     const query = `
       ${getOrdenesRetiroQueryBase}
       WHERE r.OReEstadoActual IN (${inClause})
-      AND (CAST(DATEADD(d,-3,GETDATE()) AS DATE) <= CAST(r.OReFechaAlta AS DATE) OR r.OReEstadoActual NOT IN (5,6,8))
       ${pagoFiltro}
       ${dateFiltro}
     `;

@@ -123,6 +123,15 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
             return;
         }
 
+        // Devolución de tela de cliente (DEV-n/B1): entra solo con su remito — el check-in del remito la deja
+        // en depósito y avisa al cliente. Suelta caía al ingreso normal y respondía «Código malformado».
+        if (/^DEV-\d+\/B\d+$/i.test(code)) {
+            const msg = `${code} es una devolución de tela de cliente: se recibe cargando su remito (REM-…), no suelta.`;
+            setRecentScans(prev => [{ id: scanId, value: code, status: 'error', message: msg, parsed: null }, ...prev]);
+            toast.error(msg);
+            return;
+        }
+
         setRecentScans(prev => [{ id: scanId, value: code, status: 'loading', message: 'Resolviendo y procesando orden...', parsed: null }, ...prev]);
         
         try {
@@ -358,7 +367,9 @@ const ReceptionView = ({ onClose, areaContext, areaFilter }) => {
                     setScanInput('');
                     return; // el onError de la mutación ya mostró el error del check-in
                 }
-                await processUniversalScan(code, true);
+                // Devolución de tela de cliente: el check-in de arriba ya la dejó en depósito y avisó al
+                // cliente (finalizarLlegadaDeposito). El ingreso normal no aplica: respondía «Código malformado».
+                if (itemMap[code].Tipocontenido !== 'DEV_TELA_CLIENTE') await processUniversalScan(code, true);
             }
         } else {
             setLastScanMsg({ type: 'error', text: `NO PERTENECE: ${code}` });
