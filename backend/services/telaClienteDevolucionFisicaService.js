@@ -272,7 +272,10 @@ async function listarBandeja(pool, { estado } = {}) {
             t.FechaCreacion, t.FechaResolucion,
             ib.CodigoEtiqueta, ib.Estado AS EstadoBobina, ib.MetrosRestantes AS MetrosActuales,
             COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS TipoTela,
-            COALESCE(ib.NombreCliente, ib.ClienteID) AS NombreCliente,
+            -- ib.NombreCliente viene vacío y ib.ClienteID es el CliIdCliente (ej. 715): el ID cliente y el
+            -- nombre salen de Clientes, como en la etiqueta de cualquier orden (29/10/2026).
+            COALESCE(NULLIF(LTRIM(RTRIM(cli.IDCliente)), ''), ib.ClienteID) AS IDCliente,
+            COALESCE(NULLIF(ib.NombreCliente, ''), NULLIF(LTRIM(RTRIM(cli.Nombre)), ''), ib.ClienteID) AS NombreCliente,
             -- Solo hay algo para imprimir cuando ya se empaquetó (Estado='ENVIADA')
             o.CodigoOrden, o.DescripcionTrabajo, o.ModoRetiro,
             lb.CodigoEtiqueta AS BultoCodigoEtiqueta,
@@ -282,6 +285,7 @@ async function listarBandeja(pool, { estado } = {}) {
         FROM dbo.TelaClienteEventos t
         JOIN dbo.InventarioBobinas ib ON ib.BobinaID = t.BobinaID
         JOIN dbo.Insumos ins ON ins.InsumoID = ib.InsumoID
+        LEFT JOIN dbo.Clientes cli ON cli.CliIdCliente = TRY_CAST(ib.ClienteID AS INT)
         LEFT JOIN dbo.Ordenes o ON o.OrdenID = t.OrdenGeneradaID
         LEFT JOIN dbo.Logistica_Bultos lb ON lb.OrdenID = t.OrdenGeneradaID AND lb.Tipocontenido = 'DEV_TELA_CLIENTE'
         LEFT JOIN dbo.Etiquetas et ON et.OrdenID = t.OrdenGeneradaID
@@ -567,9 +571,12 @@ async function _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userNa
         .query(`
             SELECT ib.MetrosRestantes, ib.Estado, ib.InsumoID, ib.ClienteID, ib.AreaID,
                    COALESCE(NULLIF(ib.DescripcionTela, ''), ins.Nombre) AS TipoTela,
-                   COALESCE(ib.NombreCliente, ib.ClienteID) AS NombreCliente
+                   -- ID cliente y nombre de Clientes (ib.ClienteID es el CliIdCliente, ej. 715)
+                   COALESCE(NULLIF(LTRIM(RTRIM(cli.IDCliente)), ''), ib.ClienteID) AS IDCliente,
+                   COALESCE(NULLIF(ib.NombreCliente, ''), NULLIF(LTRIM(RTRIM(cli.Nombre)), ''), ib.ClienteID) AS NombreCliente
             FROM InventarioBobinas ib WITH (UPDLOCK, ROWLOCK)
             JOIN Insumos ins ON ins.InsumoID = ib.InsumoID
+            LEFT JOIN Clientes cli ON cli.CliIdCliente = TRY_CAST(ib.ClienteID AS INT)
             WHERE ib.BobinaID = @BID
         `);
     const b = bob.recordset[0];
@@ -603,7 +610,8 @@ async function _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userNa
     const cliIdInt = parseInt(b.ClienteID, 10) || null;
 
     const insOrden = await new sql.Request(transaction)
-        .input('Cliente', sql.NVarChar(400), b.NombreCliente || b.ClienteID)
+        // Como cualquier orden, Ordenes.Cliente lleva el ID cliente (antes, el CliIdCliente suelto: «715»)
+        .input('Cliente', sql.NVarChar(400), b.IDCliente)
         .input('CliId', sql.Int, cliIdInt)
         .input('Desc', sql.NVarChar(600), descTrabajo)
         .input('Mat', sql.VarChar(255), b.TipoTela)
@@ -632,11 +640,15 @@ async function _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userNa
     //    LabelGenerationService.addOneBulto para cualquier orden normal.
     //    CodigoQR: mismo formato "$ * " que usa el resto del sistema para poder
     //    reimprimir/resolver el bulto (ver rollsController.js).
+    //    La etiqueta IMPRESA no lleva este texto en el QR sino solo codigoEtiqueta (codigoBulto),
+    //    como cualquier bulto: Recepción busca el bulto del remito por ese código exacto (29/10/2026).
+    //    No pasarlo al formato "$*" pegado: el ingreso normal (createOrden) tomaría la DEV como
+    //    una orden común — su llegada a depósito la resuelve finalizarLlegadaDeposito.
     const codigoEtiqueta = `${codigoOrden}/B1`;
-    const nombreClienteSafe = String(b.NombreCliente || b.ClienteID || '').replace(/\$\*/g, ' ');
+    const idClienteSafe = String(b.IDCliente || '').replace(/\$\*/g, ' ');
     const descSafe = descTrabajo.replace(/\$\*/g, ' ');
     const matSafe = String(b.TipoTela || '').replace(/\$\*/g, ' ');
-    const qrString = `${codigoOrden} $ * 1 $ * ${nombreClienteSafe} $ * ${descSafe} $ * Normal $ * ${matSafe} $ * ${metros.toFixed(2)}m $ * ${codigoEtiqueta}`;
+    const qrString = `${codigoOrden} $ * 1 $ * ${idClienteSafe} $ * ${descSafe} $ * Normal $ * ${matSafe} $ * ${metros.toFixed(2)}m $ * ${codigoEtiqueta}`;
     const areaOrigen = b.AreaID || 'DEPOSITO';
     await new sql.Request(transaction)
         .input('OID', sql.Int, ordenId)
@@ -671,7 +683,8 @@ async function _empaquetarEnTx(transaction, { tevId, bobinaId, usuarioId, userNa
 
     return {
         ok: true, ordenId, codigoOrden, metros, areaOrigen,
-        qrString, descTrabajo, nombreCliente: nombreClienteSafe,
+        qrString, codigoBulto: codigoEtiqueta, descTrabajo,
+        idCliente: idClienteSafe, nombreCliente: String(b.NombreCliente || ''),
     };
 }
 

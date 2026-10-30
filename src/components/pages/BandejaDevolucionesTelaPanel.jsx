@@ -145,17 +145,20 @@ const BandejaDevolucionesTelaPanel = () => {
 
     useEffect(() => { cargar(); }, [filtro]);
 
+    // El QR lleva solo el código del bulto (DEV-n/B1), como cualquier bulto: Recepción lo busca así
+    // en el remito. Antes llevaba el texto largo de Etiquetas.CodigoQR y depósito no lo encontraba.
     const imprimirEtiqueta = (ev) => {
-        if (!ev.BultoCodigoQR) {
+        if (!ev.BultoCodigoEtiqueta) {
             toast.error("Esta devolución todavía no tiene etiqueta generada.");
             return;
         }
         printLabels([{
-            qrCode: ev.BultoCodigoQR,
+            qrCode: ev.BultoCodigoEtiqueta,
             orderCode: ev.CodigoOrden,
             orderPrefix: "",
             retiroCode: ev.CodigoRetiro,
-            client: ev.NombreCliente,
+            client: ev.IDCliente || ev.NombreCliente,
+            clientName: ev.NombreCliente,
             job: ev.DescripcionTrabajo,
             area: "DEPOSITO",
             bultoIndex: 1,
@@ -213,10 +216,11 @@ const BandejaDevolucionesTelaPanel = () => {
             const res = await telaClienteService.empaquetarDevolucion(ev.TevID);
             toast.success(`${res.codigoOrden} armado — falta incluirlo en un remito a depósito para que salga.`, { duration: 8000 });
             printLabels([{
-                qrCode: res.qrString,
+                qrCode: res.codigoBulto,
                 orderCode: res.codigoOrden,
                 orderPrefix: "",
-                client: res.nombreCliente,
+                client: res.idCliente || res.nombreCliente,
+                clientName: res.nombreCliente,
                 job: res.descTrabajo,
                 area: res.areaOrigen,
                 bultoIndex: 1,

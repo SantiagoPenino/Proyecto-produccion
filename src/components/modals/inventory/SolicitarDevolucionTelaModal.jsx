@@ -31,12 +31,14 @@ const SolicitarDevolucionTelaModal = ({ bobina, clienteId, onClose, onSuccess })
         try {
             const res = await telaClienteService.devolverDesdeInventario(clienteId, bobina.BobinaID, { accion, observaciones });
             if (accion === "DEVOLVER") {
-                // Misma etiqueta que el «Empaquetar» de la bandeja
+                // Misma etiqueta que el «Empaquetar» de la bandeja. El QR lleva solo el código del bulto
+                // (DEV-n/B1), como cualquier bulto: es lo que busca Recepción al escanear el remito.
                 printLabels([{
-                    qrCode: res.qrString,
+                    qrCode: res.codigoBulto,
                     orderCode: res.codigoOrden,
                     orderPrefix: "",
-                    client: res.nombreCliente,
+                    client: res.idCliente || res.nombreCliente,
+                    clientName: res.nombreCliente,
                     job: res.descTrabajo,
                     area: res.areaOrigen,
                     bultoIndex: 1,

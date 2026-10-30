@@ -23,8 +23,9 @@ export const printLabels = (labels) => {
         // { 
         //   qrCode: string (raw content), 
         //   orderCode: string, 
-        //   client: string, 
-        //   job: string (material/description), 
+        //   client: string,
+        //   clientName: string (optional — nombre debajo del ID cliente, como la etiqueta de las órdenes),
+        //   job: string (material/description),
         //   area: string, 
         //   bultoIndex: number, 
         //   totalBultos: number, 
@@ -38,6 +39,7 @@ export const printLabels = (labels) => {
         const displayCode = l.orderCode ? l.orderCode.toString().split('(')[0].trim() : '---';
         const bultoStr = `(${l.bultoIndex}/${l.totalBultos})`;
         const client = l.client || 'Sin Cliente';
+        const clientName = l.clientName && l.clientName !== client ? l.clientName : '';
         const job = l.job || 'Sin Descripción';
         const area = l.area || 'GEN';
         const genDate = l.date || new Date().toLocaleDateString() + ' ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -77,6 +79,7 @@ export const printLabels = (labels) => {
             <div style="display:flex; justify-content: space-between; align-items: flex-start;">
                 <div style="width: 65%;">
                     <div style="font-weight: bold; font-size: 14px;">CLIENTE: ${client.substring(0, 25)}</div>
+                    ${clientName ? `<div style="font-size: 12px; margin-top:2px;">${clientName.substring(0, 35)}</div>` : ''}
                     <div style="font-size: 12px; margin-top:4px;">TRABAJO: ${job.substring(0, 35)}</div>
                 </div>
                 <div style="width: 35%; text-align: right;">
