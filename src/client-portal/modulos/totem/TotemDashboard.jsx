@@ -9,6 +9,7 @@ import { totemHeaders, totemPosHeaders } from './totemAuth';
 import { QRCodeSVG } from 'qrcode.react';
 import handyLogo from '../../../assets/images/pasarelas/handy.svg';
 import mpLogo from '../../../assets/images/pasarelas/mercadopago.svg';
+import { imprimirTicketCfe } from './ticketCfe';
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api';
 
@@ -89,6 +90,17 @@ const terminoParaElTotem = (c) => !!c && (c.final || POS_EN_DUDA.includes(c.esta
 const monedaDe = (c) => (/US|U\$|USD/i.test(String(c || '')) ? 'USD' : 'UYU');
 const fmtImporte = (moneda, n) => `${moneda === 'USD' ? 'US$' : '$'} ${Number(n || 0).toLocaleString('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// e-Ticket con QR (INF-SIS-2026-18): después del pago el backend lo manda solo a DGI y el tótem
+// pregunta cada 2 s si ya tiene CAE. Pasado este tiempo no se imprime: no hay papel fiscal sin CAE.
+const ESPERA_ETICKET_MS = 20000;
+
+const AvisoETicket = ({ estado }) => {
+    if (estado === 'esperando') return <p className="text-lg text-white/50 flex items-center gap-2"><Loader2 size={18} className="animate-spin" /> Imprimiendo tu e-Ticket…</p>;
+    if (estado === 'impreso') return <p className="text-lg text-white/60">Llevate también tu e-Ticket.</p>;
+    if (estado === 'no_listo') return <p className="text-lg text-white/60 max-w-2xl">Tu e-Ticket todavía no está listo. Si lo necesitás, pedilo en la caja.</p>;
+    return null;
+};
+
 export const TotemDashboard = ({ onLogout, onOcupado }) => {
     // Search state
     const [externalMode, setExternalMode] = useState(''); // '' | 'X' | 'R'
@@ -152,10 +164,49 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
     }, []);
     const mpTermino = !!pagoMp && ['REGISTRADO', 'EN_DUDA'].includes(pagoMp.estado);
 
+    // e-Ticket del pago: null | 'esperando' | 'impreso' | 'no_listo'
+    const [eTicket, setETicket] = useState(null);
+    const montadoRef = useRef(true);
+    useEffect(() => () => { montadoRef.current = false; }, []);
+
     // Mientras hay un cobro abierto, la sesión no se cierra por inactividad (ver TotemApp).
     const cobroAbierto = (!!cobro && !terminoParaElTotem(cobro)) || (!!pagoMp && !mpTermino);
-    useEffect(() => { onOcupado?.(cobroAbierto || pagando); }, [cobroAbierto, pagando, onOcupado]);
+    const ocupado = cobroAbierto || pagando || eTicket === 'esperando';
+    useEffect(() => { onOcupado?.(ocupado); }, [ocupado, onOcupado]);
     useEffect(() => () => onOcupado?.(false), [onOcupado]);
+
+    // Espera el e-Ticket del pago y lo imprime en cuanto DGI lo aceptó. La impresión va diferida y
+    // blindada (incidente 03/07): si la impresora falla, el tótem sigue. Devuelve 'impreso' | 'no_listo'.
+    const seguirETicket = async (url, headers) => {
+        setETicket('esperando');
+        const hasta = Date.now() + ESPERA_ETICKET_MS;
+        while (montadoRef.current && Date.now() < hasta) {
+            await new Promise(r => setTimeout(r, 2000));
+            try {
+                const d = await (await fetch(url, { headers })).json();
+                if (d?.data?.listo && montadoRef.current) {
+                    setETicket('impreso');
+                    setTimeout(() => {
+                        imprimirTicketCfe(d.data.doc, d.data.detalles)
+                            .catch(e => console.warn('No se pudo imprimir el e-Ticket del tótem:', e));
+                    }, 150);
+                    return 'impreso';
+                }
+                if (d?.data?.sinComprobante) break;
+            } catch (e) {
+                console.warn('[TÓTEM] Falló la consulta del e-Ticket:', e?.message);
+            }
+        }
+        if (montadoRef.current) setETicket('no_listo');
+        return 'no_listo';
+    };
+    // Después del pago: «RETIRO PAGADO» enseguida, el e-Ticket cuando llegue y recién ahí la salida.
+    const cerrarPagado = (urlETicket, headers) => {
+        imprimirRetiro('RETIRO PAGADO');
+        seguirETicket(urlETicket, headers).then(r => setTimeout(() => {
+            if (montadoRef.current) onLogout();
+        }, r === 'impreso' ? 8000 : 10000));
+    };
 
     // Poleo cada 2,5 s (entre 2 y 3 s según Resonet) hasta que el cobro termine.
     useEffect(() => {
@@ -186,8 +237,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
         if (!terminoParaElTotem(cobro) || cierreRef.current === cobro.uuid) return;
         if (cobro.estado === 'REGISTRADA') {
             cierreRef.current = cobro.uuid;
-            imprimirRetiro('RETIRO PAGADO');
-            setTimeout(() => onLogout(), 10000);
+            cerrarPagado(`${API_BASE}/totem-pos/cobros/${cobro.uuid}/cfe`, totemPosHeaders());
         } else if (POS_EN_DUDA.includes(cobro.estado)) {
             cierreRef.current = cobro.uuid;
             imprimirRetiro('RETIRO - CONSULTAR PAGO EN CAJA');
@@ -335,8 +385,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
         if (!pagoMp || !mpTermino || cierreMpRef.current === pagoMp.transactionId) return;
         cierreMpRef.current = pagoMp.transactionId;
         if (pagoMp.estado === 'REGISTRADO') {
-            imprimirRetiro('RETIRO PAGADO');
-            setTimeout(() => onLogout(), 10000);
+            cerrarPagado(`${API_BASE}/totem-mp/pagos/${pagoMp.transactionId}/cfe`, totemHeaders());
         } else {
             imprimirRetiro('RETIRO - CONSULTAR PAGO EN CAJA');
             setTimeout(() => onLogout(), 20000);
@@ -642,6 +691,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
                 )}
                 {aprobado && <Loader2 size={64} strokeWidth={1.5} className="text-custom-cyan animate-spin" />}
                 {pagado && <p className="text-xl text-white/70">Ya podés retirar: llevate el ticket.</p>}
+                {pagado && <AvisoETicket estado={eTicket} />}
                 {enDuda && (
                     <p className="text-xl text-white/80 max-w-2xl">
                         Mercado Pago aprobó el pago pero todavía no nos llegó la confirmación. <b>No vuelvas a pagar.</b> Acercate a la caja con el ticket.
@@ -683,6 +733,7 @@ export const TotemDashboard = ({ onLogout, onOcupado }) => {
                 {pagado && (
                     <p className="text-xl text-white/70">Ya podés retirar: llevate el ticket.{cobro.rebajaIva ? ` Se te descontaron ${fmtImporte(cobro.moneda, cobro.rebajaIva)} de IVA.` : ''}</p>
                 )}
+                {pagado && <AvisoETicket estado={eTicket} />}
                 {enDuda && (
                     <p className="text-xl text-white/80 max-w-2xl">
                         {cobro.estado === 'REVERSA_PENDIENTE'

@@ -139,10 +139,36 @@ const parsearDatosCfe = (doc) => {
     return out;
 };
 
+export const fmtNumUY = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+
+// Textos del bloque fiscal DGI. `doc` ya pasó por parsearDatosCfe. Los usan el A4
+// (dibujarBloqueFiscalDgi) y el ticket de 80 mm, así los dos papeles dicen lo mismo.
+const datosFiscalesCfe = (doc) => {
+    let vencimiento = null;
+    if (doc.SecFechaVencimientoCAE) {
+        const parsed = new Date(doc.SecFechaVencimientoCAE);
+        vencimiento = isNaN(parsed.getTime())
+            ? doc.SecFechaVencimientoCAE
+            : parsed.toLocaleDateString('es-UY', { timeZone: 'UTC' });
+    }
+    return {
+        resNro: doc.SecNroResolucion || '06/08/2023',
+        urlVerif: doc.CfeUrlVerificacion || 'https://www.efactura.dgi.gub.uy/principal/verificacioncfe',
+        ivaDia: doc.CfeTextoIvaDia || 'Iva al día',
+        cae: doc.DocCaeNumero || null,
+        rango: (doc.SecRangoDesde && doc.SecRangoHasta)
+            ? `Serie ${doc.DocSerie || 'A'} del N° ${doc.SecRangoDesde} al ${doc.SecRangoHasta}`
+            : null,
+        vencimiento,
+        codSeg: doc.DocCodSeguridad || null,
+    };
+};
+
 // Bloque fiscal al pie de un CFE: QR, resolución, URL de verificación, IVA al día, CAE,
 // rango, vencimiento del CAE y código de seguridad. Lo comparten la factura y el recibo
 // para que el papel fiscal sea uno solo. `doc` ya pasó por parsearDatosCfe.
 const dibujarBloqueFiscalDgi = async (pdf, qrY, doc) => {
+    const fiscal = datosFiscalesCfe(doc);
     // --- Bloque izquierdo: QR (placeholder hasta integración DGI) ---
     if (doc.CfeUrlImpresion) {
         try {
@@ -174,20 +200,17 @@ const dibujarBloqueFiscalDgi = async (pdf, qrY, doc) => {
 
     let dgiY = qrY + 4;
 
-    const resNro = doc.SecNroResolucion || '06/08/2023';
-    pdf.text(`Res. Nro.  ${resNro}`, dgiX, dgiY);
+    pdf.text(`Res. Nro.  ${fiscal.resNro}`, dgiX, dgiY);
     dgiY += 5;
 
-    const urlVerif = doc.CfeUrlVerificacion || 'https://www.efactura.dgi.gub.uy/principal/verificacioncfe';
-    pdf.text(`Puede verificar el comprobante en  ${urlVerif}`, dgiX, dgiY);
+    pdf.text(`Puede verificar el comprobante en  ${fiscal.urlVerif}`, dgiX, dgiY);
     dgiY += 5;
 
-    const ivaDia = doc.CfeTextoIvaDia || 'Iva al día';
-    pdf.text(ivaDia, dgiX, dgiY);
+    pdf.text(fiscal.ivaDia, dgiX, dgiY);
     dgiY += 5;
 
-    if (doc.DocCaeNumero) {
-        pdf.text(`Nro. CAE:  ${doc.DocCaeNumero}`, dgiX, dgiY);
+    if (fiscal.cae) {
+        pdf.text(`Nro. CAE:  ${fiscal.cae}`, dgiX, dgiY);
         dgiY += 5;
     } else {
         pdf.setTextColor(200, 100, 0);
@@ -196,33 +219,230 @@ const dibujarBloqueFiscalDgi = async (pdf, qrY, doc) => {
     }
 
     pdf.setTextColor(180, 0, 0);
-    if (doc.SecRangoDesde && doc.SecRangoHasta) {
-        pdf.text(`Rango:  Serie ${doc.DocSerie || 'A'} del N° ${doc.SecRangoDesde} al ${doc.SecRangoHasta}`, dgiX, dgiY);
+    if (fiscal.rango) {
+        pdf.text(`Rango:  ${fiscal.rango}`, dgiX, dgiY);
         dgiY += 5;
     }
 
     // --- Bloque derecho: Fecha Vencimiento CAE ---
-    if (doc.SecFechaVencimientoCAE) {
-        let fmtFechaVenc = doc.SecFechaVencimientoCAE;
-        try {
-            const parsed = new Date(doc.SecFechaVencimientoCAE);
-            if (!isNaN(parsed.getTime())) {
-                fmtFechaVenc = parsed.toLocaleDateString('es-UY', { timeZone: 'UTC' });
-            }
-        } catch(e) {}
+    if (fiscal.vencimiento) {
         pdf.setDrawColor(0, 0, 0);
         pdf.setLineWidth(0.3);
         pdf.rect(148, qrY, 47, 10);
         pdf.setFontSize(8);
         pdf.setTextColor(0, 0, 0);
-        pdf.text(`Fecha de Vencimiento: ${fmtFechaVenc}`, 171, qrY + 6, { align: 'center' });
+        pdf.text(`Fecha de Vencimiento: ${fiscal.vencimiento}`, 171, qrY + 6, { align: 'center' });
     }
 
     // Código de seguridad
     pdf.setFontSize(7);
     pdf.setTextColor(60, 60, 60);
-    const codSeg = doc.DocCodSeguridad ? `Código de Seguridad: ${doc.DocCodSeguridad}` : '';
+    const codSeg = fiscal.codSeg ? `Código de Seguridad: ${fiscal.codSeg}` : '';
     if (codSeg) pdf.text(codSeg, 15, qrY + 33);
+};
+
+// ─── Datos del CFE para el papel: los comparten el A4 y el ticket de 80 mm ───
+
+// Datos del emisor, del documento y del cliente (cabecera). `doc` ya pasó por parsearDatosCfe.
+const datosCabeceraCfe = (doc) => {
+    // Los e-Tickets son siempre B2C → CONSUMIDOR FINAL (nunca mostrar RUT/CI del comprador).
+    // Solo las e-Facturas (B2B) muestran el RUT real del comprador.
+    const tipo = String(doc.DocTipo || '').toUpperCase();
+    const esETicketDoc = tipo.includes('TICKET') ||
+        tipo === '07' || tipo === '08' || tipo === '10' || tipo === '11' ||
+        tipo === '101' || tipo === '102' || tipo === '103';
+    let rucComprador = 'CONSUMIDOR FINAL';
+    if (!esETicketDoc) {
+        rucComprador = doc.DocCliDocumento
+            ? String(doc.DocCliDocumento)
+            : (doc.CliRUT ? String(doc.CliRUT) : (doc.StringIDCliente ? String(doc.StringIDCliente).trim() : 'CONSUMIDOR FINAL'));
+    }
+    return {
+        // Datos del emisor tomados del documento (multiempresa). Fallback = valores históricos.
+        emisor: {
+            ruc:      doc.EmpRuc || '218973270018',
+            fantasia: doc.EmpNombreFantasia || 'Centro de Impresión Digital',
+            razon:    doc.EmpRazonSocial || 'LALINDE MORALES HECTOR ARTIGAS, LALINDE FALERO FELIPE Y OTROS',
+            dir:      doc.EmpDireccion || 'VILARDEBO 2031',
+            ciudad:   doc.EmpCiudad || 'MONTEVIDEO',
+            tel:      doc.EmpTelefono || '',
+            logoUrl:  doc.EmpLogoUrl || '',
+        },
+        tipoDoc: getTipoDocName(doc.DocTipo, 'e-Factura'),
+        serie: doc.DocSerie || 'A',
+        numero: doc.DocNumero ? String(doc.DocNumero) : 'BORRADOR',
+        formaPago: doc.DocPagado ? 'Contado' : 'Crédito',
+        rucComprador,
+        fecha: doc.DocFechaEmision ? new Date(doc.DocFechaEmision).toLocaleDateString('es-UY') : new Date().toLocaleDateString('es-UY'),
+        moneda: doc.MonIdMoneda === 1 ? 'Peso Uruguayo' : 'Dólar estadounidense',
+        cliente: {
+            nombre: doc.DocCliNombre || doc.CliNombreFantasia || doc.CliRazonSocial || 'CONSUMIDOR FINAL',
+            // Fantasía DEL COMPROBANTE: lo que se escribió en el panel DGI al facturar.
+            // Antes acá salía doc.StringIDCliente (el alias de la ficha del cliente), así que
+            // una factura a un tercero le imprimía el nombre del titular de la cuenta.
+            // Vacío => no se dibuja la línea (las siguientes suben).
+            fantasia: String(doc.DocCliNombreFantasia || '').trim(),
+            direccion: doc.DocCliDireccion || doc.CliDireccion || '',
+            ciudad: doc.DocCliCiudad || '',
+        },
+    };
+};
+
+const esFilaEncabezadoCfe = (d) => d.isHeader || (d.DcdCantidad == null && d.DcdSubtotal == null && d.DcdNomItem && d.DcdNomItem.startsWith('Orden:'));
+const esFilaSubtotalCfe = (d) => d.isSubtotal || (d.DcdNomItem && d.DcdNomItem.startsWith('SUBTOTAL ORDEN'));
+
+// Importes y textos de una línea del CFE (todo con IVA): Lista × Cantidad − Descuento + Recargo = Importe.
+const calcularLineaCfe = (d, doc) => {
+    // Safe parsing of inputs with fallback to 0
+    const rawSubtotal = d.DcdSubtotal != null && !isNaN(Number(d.DcdSubtotal)) ? Number(d.DcdSubtotal) : 0;
+    const rawImpuestos = d.DcdImpuestos != null && !isNaN(Number(d.DcdImpuestos)) ? Number(d.DcdImpuestos) : null;
+    const rawTotal = d.DcdTotal != null && !isNaN(Number(d.DcdTotal)) ? Number(d.DcdTotal) : null;
+
+    let lineTotal, lineNeto, lineIva;
+
+    if (rawTotal != null) {
+        // Database record with all columns populated
+        lineTotal = rawTotal;
+        lineNeto = rawSubtotal;
+        lineIva = rawImpuestos != null ? rawImpuestos : (lineTotal - lineNeto);
+    } else if (rawImpuestos != null) {
+        // Subtotal and Impuestos populated, but Total is null
+        lineNeto = rawSubtotal;
+        lineIva = rawImpuestos;
+        lineTotal = lineNeto + lineIva;
+    } else {
+        // UI preview / draft: DcdSubtotal holds the gross total of the line, or we don't have DcdTotal/DcdImpuestos.
+        // We assume a 22% IVA rate to compute net and taxes.
+        lineTotal = rawSubtotal;
+        lineNeto = lineTotal / 1.22;
+        lineIva = lineTotal - lineNeto;
+    }
+
+    // La tasa de la columna IVA es la MISMA que se declara a DGI, no una deducida de
+    // los importes: backend/services/sisnetService.js arma indFact = 1 (exento) cuando
+    // la línea no tiene impuestos y 3 (tasa básica, 22%) en cualquier otro caso.
+    // Deducirla con Math.round(lineIva / lineNeto * 100) imprimía tasas que no existen
+    // cuando los importes son de centavos: la línea de 1,28 m a 0,10 (PC-3321, 18-ago-2026)
+    // tiene neto 0,11 e IVA 0,02 —el 22% de 0,11 es 0,0242, que redondeado guarda 0,02—
+    // y esa división daba 18%, con el pie del mismo PDF diciendo 22%.
+    const lineRate = Math.abs(lineIva) < 0.005 ? 0 : IVA_TASA_BASICA;
+
+    const lineCantidad = Number(d.DcdCantidad) || 1;
+    const descBruto = Number(d.DcdTotalDescuentos || 0);
+    const recBruto = Number(d.DcdTotalRecargos || 0);
+    // lineTotal es el importe cobrado (el mismo que lleva el CFE); la LISTA se deriva de
+    // él con el descuento y el recargo guardados, así la fila siempre cierra al centavo
+    // aunque el unitario guardado tenga otra semántica (documentos viejos).
+    const originalSub = lineTotal + descBruto - recBruto;
+    const pLista = lineCantidad > 0 ? (originalSub / lineCantidad) : 0;
+    const puNeto = lineCantidad > 0 ? (lineTotal / lineCantidad) : 0;
+
+    // Celda Descuento: "% arriba, importe abajo". Si el % quedó guardado se imprime tal
+    // cual; en documentos viejos se deduce de los importes y se acomoda al medio punto.
+    let descCell = '';
+    if (descBruto > 0.01) {
+        const pctGuardado = d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null;
+        let pct;
+        if (pctGuardado != null && pctGuardado > 0) {
+            pct = pctGuardado;
+        } else {
+            const crudo = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
+            const redondo = Math.round(crudo * 2) / 2;
+            pct = Math.abs(crudo - redondo) <= 0.06 ? redondo : crudo;
+        }
+        // Precio pactado (sin %): solo el importe
+        const esPactado = /pactado/i.test(String(d.DcdDescuentoStr || d.DcdDescuentoOrigen || ''));
+        descCell = esPactado ? fmtNumUY(descBruto) : `${fmtNumUY(pct)} %\n${fmtNumUY(descBruto)}`;
+    } else if (d.DcdDescuentoStr) {
+        descCell = d.DcdDescuentoStr;
+    }
+    let recCell = '';
+    if (recBruto > 0.01) {
+        const recPct = d.DcdRecargoPct != null ? Number(d.DcdRecargoPct) : null;
+        recCell = recPct != null && recPct > 0 ? `${fmtNumUY(recPct)} %\n${fmtNumUY(recBruto)}` : fmtNumUY(recBruto);
+    }
+
+    // Descripción corta para ganar lugar en el papel (11-sep-2026): sin las
+    // palabras "Orden:" / "Retiro" ni el sufijo "(Neto: $ x)" — el neto de la línea
+    // ya está en el pie (Gravado) y el resto de los importes va en columnas.
+    // Como el PDF se genera cada vez desde las líneas guardadas, aplica también a
+    // los documentos ya emitidos al reimprimirlos.
+    // También se saca la línea con el nombre del cliente (la pega la caja de
+    // mostrador cuando el resolvedor no encuentra el pedido): ya está en el cabezal.
+    const dscCorta = descripcionLineaCorta(d.DcdDscItem, [
+        doc.DocCliNombre, doc.CliRazonSocial, doc.CliNombreFantasia, doc.DocCliNombreFantasia, doc.CliNombre, doc.Nombre
+    ]);
+    // Origen del descuento y del recargo, en palabras del cliente ("Precio especial 30 %",
+    // "Urgencia 25 %"): tercera línea de la descripción.
+    // Un guion ("-") como texto significa "no imprimir nada" (se edita en la factura o
+    // en la etiqueta del perfil).
+    // Los % dentro del texto se imprimen con 2 decimales como máximo ("45.4545 %" → "45.45 %"),
+    // aunque el texto guardado traiga más (líneas rellenadas desde el log viejo).
+    const pctADos = s => s.replace(/(\d+)[.,](\d{3,})\s*%/g, (m, ent, dec) => {
+        const v = Number(`${ent}.${dec}`);
+        return `${(Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''))} %`;
+    });
+    const origenes = [
+        descBruto > 0.01 ? (d.DcdDescuentoStr || d.DcdDescuentoOrigen || '') : '',
+        recBruto > 0.01 ? (d.DcdRecargoStr || '') : ''
+    ].map(s => pctADos(String(s || '').trim())).filter(s => s && s !== '-').join(' · ');
+    const descText = d.DcdNomItem + (dscCorta ? `\n${dscCorta}` : '') + (origenes ? `\n${origenes}` : '');
+
+    return { nomItem: d.DcdNomItem, dscCorta, origenes, descText, lineRate, lineCantidad, pLista, puNeto, lineTotal, descCell, recCell };
+};
+
+// Adenda: tipo y número, importe en letras, cliente, plan de financiación, vendedor y unidades.
+const datosAdendaCfe = (doc) => {
+    const tipoNum = `${doc.DocTipo || ''} Nº ${doc.DocNumero || ''}`.trim();
+
+    // Cliente + teléfono + familia.
+    // Si el comprobante se emitió A NOMBRE DE UN TERCERO (RUT/nombre del doc distintos
+    // de la ficha del cliente que lo pagó), la adenda NO puede mostrar el alias, el
+    // teléfono ni la familia del titular de la cuenta: el receptor es otra empresa.
+    const normTxt = v => String(v || '').trim().toUpperCase();
+    const rutDoc   = normTxt(doc.DocCliDocumento);
+    const rutFicha = normTxt(doc.CliRUT);
+    const esTercero = (rutDoc && rutFicha && rutDoc !== rutFicha) ||
+                      (!!normTxt(doc.DocCliNombre) && !!normTxt(doc.CliRazonSocial) &&
+                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliRazonSocial) &&
+                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliNombreFantasia));
+    let cliente = null;
+    if (esTercero) {
+        const nomTercero = (doc.DocCliNombre || '').toString().trim();
+        if (nomTercero) cliente = `${nomTercero}${rutDoc ? `  RUT:${rutDoc}` : ''}`;
+    } else {
+        const cliId  = (doc.StringIDCliente || doc.CliIdCliente || '').toString().trim();
+        const cliNom = (doc.DocCliNombre || doc.CliNombreFantasia || '').toString().trim();
+        const cliTel = doc.CliTelefono ? ` Tel:${doc.CliTelefono.toString().trim()}` : '';
+        const cliFam = doc.CliFamilia   ? `  Familia: ${doc.CliFamilia}` : '';
+        if (cliId || cliNom) cliente = `${cliId} (${cliNom})${cliTel}${cliFam}`;
+    }
+
+    const vendedor = (doc.VendedorNombre || doc.VendedorId)
+        ? `${doc.VendedorId || ''} ${doc.VendedorNombre || ''}`.trim()
+        : null;
+
+    return {
+        tipoNum: tipoNum.length > 3 ? tipoNum : null,
+        importeLetras: numeroALetras(doc.DocTotal || 0) || null,
+        cliente,
+        // Plan de financiación (crédito)
+        planFinanciacion: (!doc.DocPagado && doc.DocDiasVencimiento) ? `${doc.DocDiasVencimiento} Dias x ${fmtNumUY(doc.DocTotal)}` : null,
+        vendedor,
+        unidades: doc.DocTotalUnidades != null ? fmtNumUY(doc.DocTotalUnidades) : null,
+    };
+};
+
+// Nombre sugerido: {idCliente}_CFE_{codigoEfact}_{Serie}{Numero}
+// doc.DocSerie/doc.DocNumero ya reflejan los datos oficiales de DGI si el documento
+// fue enviado y aceptado (parsearDatosCfe); si no fue enviado, son la serie/numero local.
+const nombreArchivoCfe = (doc) => {
+    const safeNum = doc.DocNumero || 'Borrador';
+    const idCliente = String(doc.StringIDCliente || doc.CliIdCliente || 'SinCliente').trim();
+    const codigoEfact = doc.CodigoEfact != null && doc.CodigoEfact !== '' ? doc.CodigoEfact : (doc.DocTipo || 'SD');
+    return `${idCliente}_CFE_${codigoEfact}_${doc.DocSerie || 'A'}${safeNum}`
+        .replace(/[<>:"/\\|?*]/g, '_')
+        .replace(/\s+/g, '_');
 };
 
 export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
@@ -231,9 +451,8 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     // Antes se escribían encima del doc recibido y, si era el de pantalla, FA-1906 pasaba a A-29102.
     doc = { ...doc, ...parsearDatosCfe(doc) };
     const pdf = new jsPDF({ format: 'a4' });
-    const esUYU = doc.MonIdMoneda === 1;
-    const monedaStr = esUYU ? 'Peso Uruguayo' : 'Dólar estadounidense';
-    const fmtNum = (n) => new Intl.NumberFormat('es-UY', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(n);
+    const cab = datosCabeceraCfe(doc);
+    const fmtNum = fmtNumUY;
 
     // Fuente y estilos base
     pdf.setFont('helvetica', 'normal');
@@ -242,16 +461,7 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     // ==========================================
     // LOGO Y DATOS EMPRESA (IZQUIERDA)
     // ==========================================
-    // Datos del emisor tomados del documento (multiempresa). Fallback = valores históricos.
-    const emisor = {
-        ruc:      doc.EmpRuc || '218973270018',
-        fantasia: doc.EmpNombreFantasia || 'Centro de Impresión Digital',
-        razon:    doc.EmpRazonSocial || 'LALINDE MORALES HECTOR ARTIGAS, LALINDE FALERO FELIPE Y OTROS',
-        dir:      doc.EmpDireccion || 'VILARDEBO 2031',
-        ciudad:   doc.EmpCiudad || 'MONTEVIDEO',
-        tel:      doc.EmpTelefono || '',
-        logoUrl:  doc.EmpLogoUrl || '',
-    };
+    const emisor = cab.emisor;
 
     // Logo del emisor: el de la empresa si tiene; si no, el de user (PNG). Si no carga, el wordmark dibujado.
     let logoDibujado = false;
@@ -307,9 +517,8 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.text("TIPO DE DOCUMENTO", rightX + boxW * 0.75, 19, { align: 'center' });
     pdf.setFontSize(10);
     pdf.text(emisor.ruc, rightX + boxW / 4, 24, { align: 'center' });
-    const docTipoDisplay = getTipoDocName(doc.DocTipo, "e-Factura");
     // La caja es angosta: si el nombre no entra, se achica la fuente en vez de desbordar
-    textoAjustado(pdf, docTipoDisplay, rightX + boxW * 0.75, 24, (boxW / 2) - 4, 10);
+    textoAjustado(pdf, cab.tipoDoc, rightX + boxW * 0.75, 24, (boxW / 2) - 4, 10);
 
     // Caja 2: SERIE | NUMERO | FORMA
     pdf.rect(rightX, 28, boxW, 10);
@@ -321,37 +530,17 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.text("NUMERO", rightX + boxW / 2, 32, { align: 'center' });
     pdf.text("FORMA DE PAGO", rightX + boxW * 0.83, 32, { align: 'center' });
     pdf.setFontSize(10);
-    pdf.text(doc.DocSerie || "A", rightX + boxW / 6, 37, { align: 'center' });
-    pdf.text(doc.DocNumero ? String(doc.DocNumero) : "BORRADOR", rightX + boxW / 2, 37, { align: 'center' });
-    pdf.text(doc.DocPagado ? "Contado" : "Crédito", rightX + boxW * 0.83, 37, { align: 'center' });
+    pdf.text(cab.serie, rightX + boxW / 6, 37, { align: 'center' });
+    pdf.text(cab.numero, rightX + boxW / 2, 37, { align: 'center' });
+    pdf.text(cab.formaPago, rightX + boxW * 0.83, 37, { align: 'center' });
 
-    // Caja 3: RUC COMPRADOR
-    // Los e-Tickets son siempre B2C → CONSUMIDOR FINAL (nunca mostrar RUT/CI del comprador)
-    // Solo las e-Facturas (B2B) deben mostrar el RUT real del comprador
-    const esETicketDoc = (() => {
-        const tipo = String(doc.DocTipo || '').toUpperCase();
-        // Detectar por tipo interno (07, 08, 10, 11) o por descripción que contenga TICKET
-        return tipo.includes('TICKET') ||
-               tipo === '07' || tipo === '08' || tipo === '10' || tipo === '11' ||
-               tipo === '101' || tipo === '102' || tipo === '103';
-    })();
-
-    let rucComprador = "CONSUMIDOR FINAL";
-    if (!esETicketDoc) {
-        // e-Factura: mostrar RUT real del comprador
-        rucComprador = doc.DocCliDocumento
-            ? String(doc.DocCliDocumento)
-            : (doc.CliRUT ? String(doc.CliRUT) : (doc.StringIDCliente ? String(doc.StringIDCliente).trim() : "CONSUMIDOR FINAL"));
-    }
-    // Para e-Ticket: siempre "CONSUMIDOR FINAL" sin importar si hay un documento cargado
-
-
+    // Caja 3: RUC COMPRADOR (e-Ticket: siempre CONSUMIDOR FINAL; ver datosCabeceraCfe)
     pdf.rect(rightX, 41, boxW, 12);
     pdf.setFontSize(8);
     pdf.text("RUC COMPRADOR", rightX + boxW / 2, 45, { align: 'center' });
     pdf.setFontSize(14);
     pdf.setFont('helvetica', 'bold');
-    pdf.text(rucComprador, rightX + boxW / 2, 51, { align: 'center' });
+    pdf.text(cab.rucComprador, rightX + boxW / 2, 51, { align: 'center' });
     pdf.setFont('helvetica', 'normal');
 
     // ==========================================
@@ -367,9 +556,8 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.text("FECHA", 35, midY + 4, { align: 'center' });
     pdf.text("MONEDA", 75, midY + 4, { align: 'center' });
     pdf.setFontSize(9);
-    const fechaEmision = doc.DocFechaEmision ? new Date(doc.DocFechaEmision).toLocaleDateString('es-UY') : new Date().toLocaleDateString('es-UY');
-    pdf.text(fechaEmision, 35, midY + 9, { align: 'center' });
-    pdf.text(monedaStr, 75, midY + 9, { align: 'center' });
+    pdf.text(cab.fecha, 35, midY + 9, { align: 'center' });
+    pdf.text(cab.moneda, 75, midY + 9, { align: 'center' });
 
     // Caja 5: DATOS DEL CLIENTE (Derecha)
     pdf.rect(rightX, 56, boxW, 30);
@@ -378,19 +566,11 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.text("DATOS DEL CLIENTE", rightX + boxW / 2, 60, { align: 'center' });
     pdf.setFontSize(9);
 
-    const nombreCli = doc.DocCliNombre || doc.CliNombreFantasia || doc.CliRazonSocial || 'CONSUMIDOR FINAL';
-    // Fantasía DEL COMPROBANTE: lo que se escribió en el panel DGI al facturar.
-    // Antes acá salía doc.StringIDCliente (el alias de la ficha del cliente), así que
-    // una factura a un tercero le imprimía el nombre del titular de la cuenta.
-    // Vacío => no se dibuja la línea (las siguientes suben).
-    const nfantasia = String(doc.DocCliNombreFantasia || '').trim();
-    const direccion = doc.DocCliDireccion || doc.CliDireccion || '';
-    const ciudad = doc.DocCliCiudad || '';
     let cliY = 65;
-    pdf.text(`CLIENTE: ${nombreCli}`, rightX + 2, cliY); cliY += 5;
-    if (nfantasia) { pdf.text(`NOMBRE FANTASÍA: ${nfantasia}`, rightX + 2, cliY); cliY += 5; }
-    pdf.text(`DIRECCIÓN: ${direccion}`, rightX + 2, cliY); cliY += 5;
-    pdf.text(`CIUDAD: ${ciudad}`, rightX + 2, cliY);
+    pdf.text(`CLIENTE: ${cab.cliente.nombre}`, rightX + 2, cliY); cliY += 5;
+    if (cab.cliente.fantasia) { pdf.text(`NOMBRE FANTASÍA: ${cab.cliente.fantasia}`, rightX + 2, cliY); cliY += 5; }
+    pdf.text(`DIRECCIÓN: ${cab.cliente.direccion}`, rightX + 2, cliY); cliY += 5;
+    pdf.text(`CIUDAD: ${cab.cliente.ciudad}`, rightX + 2, cliY);
 
     // ==========================================
     // TABLA DE DETALLES
@@ -401,17 +581,14 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     let tableBody = [];
     if (detalles && detalles.length > 0) {
         tableBody = detalles.map((d, index) => {
-            const isHeader = d.isHeader || (d.DcdCantidad == null && d.DcdSubtotal == null && d.DcdNomItem && d.DcdNomItem.startsWith('Orden:'));
-            const isSubtotal = d.isSubtotal || (d.DcdNomItem && d.DcdNomItem.startsWith('SUBTOTAL ORDEN'));
-
-            if (isHeader) {
+            if (esFilaEncabezadoCfe(d)) {
                 return [
                     '',
                     { content: d.DcdNomItem, colSpan: 7, styles: { fontStyle: 'bold', fillColor: [245, 245, 245], textColor: [79, 70, 229] } }
                 ];
             }
 
-            if (isSubtotal) {
+            if (esFilaSubtotalCfe(d)) {
                 return [
                     '',
                     { content: d.DcdNomItem, styles: { fontStyle: 'bold', halign: 'right' } },
@@ -424,112 +601,18 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
                 ];
             }
 
-            // Safe parsing of inputs with fallback to 0
-            const rawSubtotal = d.DcdSubtotal != null && !isNaN(Number(d.DcdSubtotal)) ? Number(d.DcdSubtotal) : 0;
-            const rawImpuestos = d.DcdImpuestos != null && !isNaN(Number(d.DcdImpuestos)) ? Number(d.DcdImpuestos) : null;
-            const rawTotal = d.DcdTotal != null && !isNaN(Number(d.DcdTotal)) ? Number(d.DcdTotal) : null;
-
-            let lineTotal, lineNeto, lineIva, lineRate;
-
-            if (rawTotal != null) {
-                // Database record with all columns populated
-                lineTotal = rawTotal;
-                lineNeto = rawSubtotal;
-                lineIva = rawImpuestos != null ? rawImpuestos : (lineTotal - lineNeto);
-            } else if (rawImpuestos != null) {
-                // Subtotal and Impuestos populated, but Total is null
-                lineNeto = rawSubtotal;
-                lineIva = rawImpuestos;
-                lineTotal = lineNeto + lineIva;
-            } else {
-                // UI preview / draft: DcdSubtotal holds the gross total of the line, or we don't have DcdTotal/DcdImpuestos.
-                // We assume a 22% IVA rate to compute net and taxes.
-                lineTotal = rawSubtotal;
-                lineNeto = lineTotal / 1.22;
-                lineIva = lineTotal - lineNeto;
-            }
-
-            // La tasa de la columna IVA es la MISMA que se declara a DGI, no una deducida de
-            // los importes: backend/services/sisnetService.js arma indFact = 1 (exento) cuando
-            // la línea no tiene impuestos y 3 (tasa básica, 22%) en cualquier otro caso.
-            // Deducirla con Math.round(lineIva / lineNeto * 100) imprimía tasas que no existen
-            // cuando los importes son de centavos: la línea de 1,28 m a 0,10 (PC-3321, 18-ago-2026)
-            // tiene neto 0,11 e IVA 0,02 —el 22% de 0,11 es 0,0242, que redondeado guarda 0,02—
-            // y esa división daba 18%, con el pie del mismo PDF diciendo 22%.
-            lineRate = Math.abs(lineIva) < 0.005 ? 0 : IVA_TASA_BASICA;
-
-            const lineCantidad = Number(d.DcdCantidad) || 1;
-            const descBruto = Number(d.DcdTotalDescuentos || 0);
-            const recBruto = Number(d.DcdTotalRecargos || 0);
-            // Estructura de la línea (todo con IVA): Lista × Cantidad − Descuento + Recargo = Importe.
-            // lineTotal es el importe cobrado (el mismo que lleva el CFE); la LISTA se deriva de
-            // él con el descuento y el recargo guardados, así la fila siempre cierra al centavo
-            // aunque el unitario guardado tenga otra semántica (documentos viejos).
-            const originalSub = lineTotal + descBruto - recBruto;
-            const pLista = lineCantidad > 0 ? (originalSub / lineCantidad) : 0;
-            const puNeto = lineCantidad > 0 ? (lineTotal / lineCantidad) : 0;
-
-            // Celda Descuento: "% arriba, importe abajo". Si el % quedó guardado se imprime tal
-            // cual; en documentos viejos se deduce de los importes y se acomoda al medio punto.
-            let descCell = '';
-            if (descBruto > 0.01) {
-                const pctGuardado = d.DcdDescuentoPct != null ? Number(d.DcdDescuentoPct) : null;
-                let pct;
-                if (pctGuardado != null && pctGuardado > 0) {
-                    pct = pctGuardado;
-                } else {
-                    const crudo = originalSub > 0 ? (descBruto / originalSub) * 100 : 0;
-                    const redondo = Math.round(crudo * 2) / 2;
-                    pct = Math.abs(crudo - redondo) <= 0.06 ? redondo : crudo;
-                }
-                // Precio pactado (sin %): solo el importe
-                const esPactado = /pactado/i.test(String(d.DcdDescuentoStr || d.DcdDescuentoOrigen || ''));
-                descCell = esPactado ? fmtNum(descBruto) : `${fmtNum(pct)} %\n${fmtNum(descBruto)}`;
-            } else if (d.DcdDescuentoStr) {
-                descCell = d.DcdDescuentoStr;
-            }
-            let recCell = '';
-            if (recBruto > 0.01) {
-                const recPct = d.DcdRecargoPct != null ? Number(d.DcdRecargoPct) : null;
-                recCell = recPct != null && recPct > 0 ? `${fmtNum(recPct)} %\n${fmtNum(recBruto)}` : fmtNum(recBruto);
-            }
-
-            // Descripción corta para ganar lugar en el papel (11-sep-2026): sin las
-            // palabras "Orden:" / "Retiro" ni el sufijo "(Neto: $ x)" — el neto de la línea
-            // ya está en el pie (Gravado) y el resto de los importes va en columnas.
-            // Como el PDF se genera cada vez desde las líneas guardadas, aplica también a
-            // los documentos ya emitidos al reimprimirlos.
-            // También se saca la línea con el nombre del cliente (la pega la caja de
-            // mostrador cuando el resolvedor no encuentra el pedido): ya está en el cabezal.
-            const dscCorta = descripcionLineaCorta(d.DcdDscItem, [
-                doc.DocCliNombre, doc.CliRazonSocial, doc.CliNombreFantasia, doc.DocCliNombreFantasia, doc.CliNombre, doc.Nombre
-            ]);
-            // Origen del descuento y del recargo, en palabras del cliente ("Precio especial 30 %",
-            // "Urgencia 25 %"): tercera línea de la descripción.
-            // Un guion ("-") como texto significa "no imprimir nada" (se edita en la factura o
-            // en la etiqueta del perfil).
-            // Los % dentro del texto se imprimen con 2 decimales como máximo ("45.4545 %" → "45.45 %"),
-            // aunque el texto guardado traiga más (líneas rellenadas desde el log viejo).
-            const pctADos = s => s.replace(/(\d+)[.,](\d{3,})\s*%/g, (m, ent, dec) => {
-                const v = Number(`${ent}.${dec}`);
-                return `${(Number.isInteger(v) ? String(v) : v.toFixed(2).replace(/0+$/, '').replace(/\.$/, ''))} %`;
-            });
-            const origenes = [
-                descBruto > 0.01 ? (d.DcdDescuentoStr || d.DcdDescuentoOrigen || '') : '',
-                recBruto > 0.01 ? (d.DcdRecargoStr || '') : ''
-            ].map(s => pctADos(String(s || '').trim())).filter(s => s && s !== '-').join(' · ');
-            const descText = d.DcdNomItem + (dscCorta ? `\n${dscCorta}` : '') + (origenes ? `\n${origenes}` : '');
-
+            // Importes y textos de la línea: misma cuenta que el ticket de 80 mm (calcularLineaCfe).
+            const l = calcularLineaCfe(d, doc);
             return [
                 index + 1,
-                descText,
-                `${lineRate}%`,
-                fmtNum(pLista),      // P. Lista (bruto con IVA, antes de descuento y recargo)
-                fmtNum(lineCantidad),
-                descCell,            // Descuento: % e importe
-                recCell,             // Recargo: % e importe
-                fmtNum(puNeto),      // P. Unitario (neto, el mismo que lleva el CFE)
-                fmtNum(lineTotal)    // Importe
+                l.descText,
+                `${l.lineRate}%`,
+                fmtNum(l.pLista),      // P. Lista (bruto con IVA, antes de descuento y recargo)
+                fmtNum(l.lineCantidad),
+                l.descCell,            // Descuento: % e importe
+                l.recCell,             // Recargo: % e importe
+                fmtNum(l.puNeto),      // P. Unitario (neto, el mismo que lleva el CFE)
+                fmtNum(l.lineTotal)    // Importe
             ];
         });
     } else {
@@ -653,56 +736,34 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     pdf.setFontSize(8);
     let adY = adendaY + 9;
 
+    // Mismos datos que la adenda del ticket de 80 mm (datosAdendaCfe)
+    const adenda = datosAdendaCfe(doc);
+
     // Tipo + número documento
-    const tipoNum = `${doc.DocTipo || ''} Nº ${doc.DocNumero || ''}`.trim();
-    if (tipoNum.length > 3) {
+    if (adenda.tipoNum) {
         pdf.setFont('helvetica', 'bold');
-        pdf.text(tipoNum, 15, adY);
+        pdf.text(adenda.tipoNum, 15, adY);
         pdf.setFont('helvetica', 'normal');
         adY += 5;
     }
 
     // Importe en letras
-    const importeLetras = numeroALetras(doc.DocTotal || 0);
-    if (importeLetras) {
+    if (adenda.importeLetras) {
         pdf.setTextColor(180, 0, 0);
-        pdf.text(`Importe:${importeLetras}`, 15, adY);
+        pdf.text(`Importe:${adenda.importeLetras}`, 15, adY);
         pdf.setTextColor(0, 0, 0);
         adY += 5;
     }
 
-    // Cliente + teléfono + familia.
-    // Si el comprobante se emitió A NOMBRE DE UN TERCERO (RUT/nombre del doc distintos
-    // de la ficha del cliente que lo pagó), la adenda NO puede mostrar el alias, el
-    // teléfono ni la familia del titular de la cuenta: el receptor es otra empresa.
-    const normTxt = v => String(v || '').trim().toUpperCase();
-    const rutDoc   = normTxt(doc.DocCliDocumento);
-    const rutFicha = normTxt(doc.CliRUT);
-    const esTercero = (rutDoc && rutFicha && rutDoc !== rutFicha) ||
-                      (!!normTxt(doc.DocCliNombre) && !!normTxt(doc.CliRazonSocial) &&
-                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliRazonSocial) &&
-                       normTxt(doc.DocCliNombre) !== normTxt(doc.CliNombreFantasia));
-
-    if (esTercero) {
-        const nomTercero = (doc.DocCliNombre || '').toString().trim();
-        if (nomTercero) {
-            pdf.text(`Cliente:        ${nomTercero}${rutDoc ? `  RUT:${rutDoc}` : ''}`, 15, adY);
-            adY += 5;
-        }
-    } else {
-        const cliId  = (doc.StringIDCliente || doc.CliIdCliente || '').toString().trim();
-        const cliNom = (doc.DocCliNombre || doc.CliNombreFantasia || '').toString().trim();
-        const cliTel = doc.CliTelefono ? ` Tel:${doc.CliTelefono.toString().trim()}` : '';
-        const cliFam = doc.CliFamilia   ? `  Familia: ${doc.CliFamilia}` : '';
-        if (cliId || cliNom) {
-            pdf.text(`Cliente:        ${cliId} (${cliNom})${cliTel}${cliFam}`, 15, adY);
-            adY += 5;
-        }
+    // Cliente (o el tercero a cuyo nombre se emitió)
+    if (adenda.cliente) {
+        pdf.text(`Cliente:        ${adenda.cliente}`, 15, adY);
+        adY += 5;
     }
 
     // Plan de financiación (crédito)
-    if (!doc.DocPagado && doc.DocDiasVencimiento) {
-        pdf.text(`Plan de Financiacion:${doc.DocDiasVencimiento} Dias x ${fmtNum(doc.DocTotal)}`, 15, adY);
+    if (adenda.planFinanciacion) {
+        pdf.text(`Plan de Financiacion:${adenda.planFinanciacion}`, 15, adY);
         adY += 5;
     }
 
@@ -711,14 +772,14 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     adY += 4;
 
     // Vendedor
-    if (doc.VendedorNombre || doc.VendedorId) {
-        pdf.text(`Vendedor: ${doc.VendedorId || ''} ${doc.VendedorNombre || ''}`.trim(), 15, adY);
+    if (adenda.vendedor) {
+        pdf.text(`Vendedor: ${adenda.vendedor}`, 15, adY);
         adY += 5;
     }
 
     // Unidades totales
-    if (doc.DocTotalUnidades != null) {
-        pdf.text(`Unidades:        ${fmtNum(doc.DocTotalUnidades)}`, 15, adY);
+    if (adenda.unidades) {
+        pdf.text(`Unidades:        ${adenda.unidades}`, 15, adY);
     }
 
     // Marca de agua si no está aceptado por DGI
@@ -741,12 +802,7 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     // doc.DocSerie/doc.DocNumero ya reflejan los datos oficiales de DGI si el documento
     // fue enviado y aceptado (se sobreescriben al inicio de esta función parseando
     // CfeUrlImpresion); si no fue enviado, son la serie/numero local.
-    const safeNum = doc.DocNumero || 'Borrador';
-    const idCliente = String(doc.StringIDCliente || doc.CliIdCliente || 'SinCliente').trim();
-    const codigoEfact = doc.CodigoEfact != null && doc.CodigoEfact !== '' ? doc.CodigoEfact : (doc.DocTipo || 'SD');
-    const nombreArchivo = `${idCliente}_CFE_${codigoEfact}_${doc.DocSerie || 'A'}${safeNum}`
-        .replace(/[<>:"/\\|?*]/g, '_')
-        .replace(/\s+/g, '_');
+    const nombreArchivo = nombreArchivoCfe(doc);
     pdf.setProperties({
         title: nombreArchivo
     });
@@ -762,6 +818,212 @@ export const generarPdfFacturaDGI = async (doc, detalles, opciones = {}) => {
     }
     pdf.save(`${nombreArchivo}.pdf`);
 };
+
+// ─── e-Ticket en 80 mm (INF-SIS-2026-18) ────────────────────────────────────
+// Lo que pagó el cliente en el tótem sale en 80 mm en todos lados: el tótem lo imprime
+// (totem/ticketCfe.js, HTML) y las descargas lo bajan en PDF (generarPdfTicketDGI). Los dos
+// dibujan este mismo objeto, armado con las mismas funciones que el A4.
+export const armarTicketCfe = async (docOriginal, detalles) => {
+    const doc = { ...docOriginal, ...parsearDatosCfe(docOriginal) };
+    const filas = (detalles && detalles.length > 0)
+        ? detalles.map((d, index) => {
+            if (esFilaEncabezadoCfe(d)) return { tipo: 'encabezado', texto: d.DcdNomItem };
+            if (esFilaSubtotalCfe(d)) return { tipo: 'subtotal', texto: d.DcdNomItem, importe: fmtNumUY(d.DcdSubtotal) };
+            return { tipo: 'linea', n: index + 1, ...calcularLineaCfe(d, doc) };
+        })
+        : (() => {
+            const servSub = Number(doc.DocTotal || doc.DocSubtotal) || 0;
+            return [{ tipo: 'linea', n: 1, nomItem: 'Servicios', dscCorta: '', origenes: '', lineRate: IVA_TASA_BASICA,
+                lineCantidad: 1, pLista: servSub, puNeto: servSub, lineTotal: servSub, descCell: '', recCell: '' }];
+        })();
+    let qrDataUrl = null;
+    if (doc.CfeUrlImpresion) {
+        try {
+            qrDataUrl = await QRCode.toDataURL(doc.CfeUrlImpresion, { errorCorrectionLevel: 'M', margin: 0, width: 400 });
+        } catch (e) {
+            console.error('Error generating QR', e);
+        }
+    }
+    return {
+        ...datosCabeceraCfe(doc),
+        filas,
+        ivaTasa: IVA_TASA_BASICA,
+        totales: {
+            gravado: fmtNumUY(doc.DocSubtotal),
+            iva: fmtNumUY(doc.DocImpuestos),
+            total: fmtNumUY(doc.DocTotal),
+            simbolo: doc.MonIdMoneda === 1 ? '$' : 'US$',
+        },
+        observaciones: doc.DocObservaciones || null,
+        fiscal: datosFiscalesCfe(doc),
+        qrDataUrl,
+        adenda: datosAdendaCfe(doc),
+        aceptado: doc.CfeEstado === 'ACEPTADO_DGI',
+        nombreArchivo: nombreArchivoCfe(doc),
+    };
+};
+
+// Detalle de una línea en 80 mm: IVA, descuento, recargo y precio unitario en una sola fila.
+export const extrasLineaTicket = (f) => [
+    `IVA ${f.lineRate}%`,
+    f.descCell ? `Desc. ${String(f.descCell).replace('\n', ' ')}` : '',
+    f.recCell ? `Rec. ${String(f.recCell).replace('\n', ' ')}` : '',
+    `P. unit. ${fmtNumUY(f.puNeto)}`,
+].filter(Boolean).join(' · ');
+
+export const fmtCantidadPorLista = (f) => `${fmtNumUY(f.lineCantidad)} x ${fmtNumUY(f.pLista)}`;
+
+const TICKET_ANCHO = 80;
+const TICKET_MARGEN = 4;
+
+// Dibuja el ticket desde arriba y devuelve hasta dónde llegó (mm), para saber el alto de la hoja.
+const dibujarTicketCfe = (pdf, t, logo) => {
+    const x0 = TICKET_MARGEN, x1 = TICKET_ANCHO - TICKET_MARGEN, cx = TICKET_ANCHO / 2, ancho = x1 - x0;
+    let y = 4;
+    pdf.setTextColor(0, 0, 0);
+    pdf.setDrawColor(0, 0, 0);
+    const texto = (s, { tam = 8, negrita = false, alinear = 'left' } = {}) => {
+        if (s == null || s === '') return;
+        pdf.setFont('helvetica', negrita ? 'bold' : 'normal');
+        pdf.setFontSize(tam);
+        const x = alinear === 'center' ? cx : alinear === 'right' ? x1 : x0;
+        for (const l of pdf.splitTextToSize(String(s), ancho)) {
+            y += tam * 0.42;
+            pdf.text(l, x, y, { align: alinear });
+        }
+        y += 0.8;
+    };
+    const par = (izq, der, { tam = 8, negrita = false } = {}) => {
+        pdf.setFont('helvetica', negrita ? 'bold' : 'normal');
+        pdf.setFontSize(tam);
+        const anchoDer = pdf.getTextWidth(String(der));
+        const lineasIzq = pdf.splitTextToSize(String(izq), Math.max(20, ancho - anchoDer - 3));
+        y += tam * 0.42;
+        pdf.text(String(der), x1, y, { align: 'right' });
+        lineasIzq.forEach((l, i) => {
+            if (i > 0) y += tam * 0.42;
+            pdf.text(l, x0, y);
+        });
+        y += 0.8;
+    };
+    const separador = () => {
+        y += 1.2;
+        pdf.setLineWidth(0.2);
+        pdf.setLineDashPattern([1, 0.8], 0);
+        pdf.line(x0, y, x1, y);
+        pdf.setLineDashPattern([], 0);
+        y += 1.2;
+    };
+
+    if (!t.aceptado) texto('SIN VALIDEZ FISCAL · PENDIENTE DE DGI', { tam: 8, negrita: true, alinear: 'center' });
+
+    // Emisor
+    if (logo && logo.dataUrl) {
+        const h = 12;
+        const ratio = (logo.width && logo.height) ? (logo.width / logo.height) : 2.5;
+        const w = Math.min(ancho, h * ratio);
+        pdf.addImage(logo.dataUrl, 'PNG', cx - w / 2, y, w, h);
+        y += h + 1;
+    } else {
+        texto('user', { tam: 22, negrita: true, alinear: 'center' });
+    }
+    texto(t.emisor.fantasia, { tam: 10, negrita: true, alinear: 'center' });
+    texto(t.emisor.razon, { tam: 7, alinear: 'center' });
+    texto(t.emisor.dir, { tam: 7, alinear: 'center' });
+    texto(t.emisor.ciudad, { tam: 7, alinear: 'center' });
+    if (t.emisor.tel) texto(`TEL: ${t.emisor.tel}`, { tam: 7, alinear: 'center' });
+    texto(`RUC ${t.emisor.ruc}`, { tam: 8, negrita: true, alinear: 'center' });
+    separador();
+
+    // Documento
+    texto(t.tipoDoc, { tam: 11, negrita: true, alinear: 'center' });
+    texto(`Serie ${t.serie}   Nº ${t.numero}`, { tam: 10, negrita: true, alinear: 'center' });
+    par('Fecha', t.fecha);
+    par('Moneda', t.moneda);
+    par('Forma de pago', t.formaPago);
+    par('RUC comprador', t.rucComprador, { negrita: true });
+    separador();
+
+    // Cliente
+    texto(`Cliente: ${t.cliente.nombre}`, { tam: 7.5 });
+    if (t.cliente.fantasia) texto(`Nombre fantasía: ${t.cliente.fantasia}`, { tam: 7.5 });
+    if (t.cliente.direccion) texto(`Dirección: ${t.cliente.direccion}`, { tam: 7.5 });
+    if (t.cliente.ciudad) texto(`Ciudad: ${t.cliente.ciudad}`, { tam: 7.5 });
+    separador();
+
+    // Líneas
+    for (const f of t.filas) {
+        if (f.tipo === 'encabezado') { texto(f.texto, { tam: 7.5, negrita: true }); continue; }
+        if (f.tipo === 'subtotal') { par(f.texto, f.importe, { tam: 7.5, negrita: true }); continue; }
+        texto(`${f.n}. ${f.nomItem}`, { tam: 8, negrita: true });
+        if (f.dscCorta) texto(f.dscCorta, { tam: 7 });
+        if (f.origenes) texto(f.origenes, { tam: 7 });
+        par(fmtCantidadPorLista(f), fmtNumUY(f.lineTotal), { tam: 8 });
+        texto(extrasLineaTicket(f), { tam: 6.5 });
+        y += 0.6;
+    }
+    separador();
+
+    // Totales
+    par(`Gravado ${t.ivaTasa}%`, t.totales.gravado);
+    par(`IVA ${t.ivaTasa}%`, t.totales.iva);
+    par('TOTAL', `${t.totales.simbolo} ${t.totales.total}`, { tam: 11, negrita: true });
+    if (t.observaciones) texto(`Observaciones: ${t.observaciones}`, { tam: 7 });
+    separador();
+
+    // Bloque fiscal DGI
+    if (t.qrDataUrl) {
+        const lado = 34;
+        y += 1;
+        pdf.addImage(t.qrDataUrl, 'PNG', cx - lado / 2, y, lado, lado);
+        y += lado + 1;
+    } else {
+        texto('QR: PENDIENTE DGI', { tam: 7, alinear: 'center' });
+    }
+    const f = t.fiscal;
+    texto(`Res. Nro. ${f.resNro}`, { tam: 7, alinear: 'center' });
+    texto(`Puede verificar el comprobante en ${f.urlVerif}`, { tam: 7, alinear: 'center' });
+    texto(f.ivaDia, { tam: 7, alinear: 'center' });
+    texto(f.cae ? `Nro. CAE: ${f.cae}` : 'Nro. CAE: PENDIENTE - No enviado a DGI', { tam: 7.5, negrita: true, alinear: 'center' });
+    if (f.rango) texto(`Rango: ${f.rango}`, { tam: 7, alinear: 'center' });
+    if (f.vencimiento) texto(`Fecha de Vencimiento: ${f.vencimiento}`, { tam: 7, alinear: 'center' });
+    if (f.codSeg) texto(`Código de Seguridad: ${f.codSeg}`, { tam: 7.5, negrita: true, alinear: 'center' });
+    separador();
+
+    // Adenda
+    const a = t.adenda;
+    texto('Adenda', { tam: 8, negrita: true, alinear: 'center' });
+    if (a.tipoNum) texto(a.tipoNum, { tam: 7.5, negrita: true });
+    if (a.importeLetras) texto(`Importe: ${a.importeLetras}`, { tam: 7 });
+    if (a.cliente) texto(`Cliente: ${a.cliente}`, { tam: 7 });
+    if (a.planFinanciacion) texto(`Plan de Financiación: ${a.planFinanciacion}`, { tam: 7 });
+    if (a.vendedor) texto(`Vendedor: ${a.vendedor}`, { tam: 7 });
+    if (a.unidades) texto(`Unidades: ${a.unidades}`, { tam: 7 });
+    return y;
+};
+
+// PDF de 80 mm de ancho y el alto justo. Mismas opciones que generarPdfFacturaDGI.
+export const generarPdfTicketDGI = async (doc, detalles, opciones = {}) => {
+    const t = await armarTicketCfe(doc, detalles);
+    const logo = await cargarImagenBase64(t.emisor.logoUrl || LOGO_USER);
+    // Primero se dibuja en una tira larga para medir; después en una hoja del alto justo.
+    const alto = dibujarTicketCfe(new jsPDF({ unit: 'mm', format: [TICKET_ANCHO, 2000] }), t, logo) + TICKET_MARGEN;
+    const pdf = new jsPDF({ unit: 'mm', format: [TICKET_ANCHO, Math.max(alto, 100)] });
+    dibujarTicketCfe(pdf, t, logo);
+    pdf.setProperties({ title: t.nombreArchivo });
+    if (opciones.retornarBase64) {
+        return {
+            base64: pdf.output('datauristring').split(',')[1],
+            nombreArchivo: `${t.nombreArchivo}.pdf`,
+        };
+    }
+    pdf.save(`${t.nombreArchivo}.pdf`);
+};
+
+// El PDF que corresponde a un comprobante: 80 mm si se pagó en el tótem (el backend manda
+// doc.DeTotem en el detalle), A4 en cualquier otro caso. Toda descarga de un CFE pasa por acá.
+export const generarPdfComprobanteDGI = (doc, detalles, opciones = {}) =>
+    (doc && doc.DeTotem ? generarPdfTicketDGI : generarPdfFacturaDGI)(doc, detalles, opciones);
 
 // Extrae el N° oficial que asignó DGI del texto crudo que guarda CfeNumeroOficial
 // (ej. "Nro. de CAE 90260001010 Serie B 27614 / 1000" o el formato simple "B-27614").

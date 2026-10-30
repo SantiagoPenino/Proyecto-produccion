@@ -4,7 +4,7 @@ import { Layers, History, X, Loader2, Package, ChevronDown, ChevronRight, Wallet
 import { fmtFechaCorta } from '../../utils/fechas';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
 import { validarDocumentoUY, normalizarDocumento } from '../../utils/documentoUY';
-import { generarPdfFacturaDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
+import { generarPdfComprobanteDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
 
 /**
  * RecursosView — "Mis Recursos" del portal del cliente. Ruta: /portal/recursos
@@ -718,7 +718,7 @@ function SeccionBeneficios() {
             // Recibo interno (no CFE) → mismo recibo A4 que entrega la caja; CFE → factura
             if (data?.recibo) { await generarPdfReciboCobro(data.recibo, { descargar: true }); return; }
             if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
-            await generarPdfFacturaDGI(data.doc, data.detalles || []);
+            await generarPdfComprobanteDGI(data.doc, data.detalles || []);
         } catch (e) { setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo descargar el comprobante.' }); }
     };
 
@@ -1040,7 +1040,7 @@ function SeccionCuentasSaldo() {
             // Recibo interno (no CFE) → mismo recibo A4 que entrega la caja; CFE → factura
             if (data?.recibo) { await generarPdfReciboCobro(data.recibo, { descargar: true }); return; }
             if (!data?.doc) throw new Error('No se pudo leer el comprobante.');
-            await generarPdfFacturaDGI(data.doc, data.detalles || []);
+            await generarPdfComprobanteDGI(data.doc, data.detalles || []);
         } catch (e) {
             setMsg({ tipo: 'err', texto: e?.response?.data?.error || e.message || 'No se pudo descargar el comprobante.' });
         }

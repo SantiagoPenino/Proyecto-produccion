@@ -362,7 +362,7 @@ export function PieHoja({ etiqueta, fecha, pagina, total, portal = false }) {
             <div className="text-[11px] leading-snug">
               <p className="font-bold">Leer QR para ver</p>
               <a href="/terminos" className="italic text-zinc-600 hover:text-zinc-900 underline-offset-2 hover:underline">
-                “Términos y condiciones de tiempos de entrega, recargos por urgencia, cancelaciones, cambios de modalidad y bloqueo de ID”
+                “Términos y Condiciones de USER: plazos, cancelaciones, archivos y color, reclamos y responsabilidades”
               </a>
             </div>
           )}

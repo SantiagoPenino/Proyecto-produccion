@@ -3,7 +3,7 @@ import { FileText, AlertCircle, AlertTriangle, Search, Send, FileOutput, Plus, E
 import { useAuth } from '../../context/AuthContext';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
-import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { generarPdfComprobanteDGI } from '../../utils/pdfGenerator';
 import { useEmpresas } from '../../hooks/useEmpresas';
 import FacturacionManualModal from './FacturacionManualModal';
 import NcEditarModal from './NcEditarModal';
@@ -37,6 +37,8 @@ const CHECK = 'w-4 h-4 rounded border-zinc-300 accent-[#006E97] cursor-pointer';
 const getStatusBadge = (status) => {
     switch(status) {
         case 'PENDIENTE': return <span className={`${CHIP} bg-amber-50 text-amber-700 border-amber-200`}>Pendiente DGI</span>;
+        // Candado mientras SISNET contesta (INF-SIS-2026-18): dura unos segundos
+        case 'ENVIANDO': return <span className={`${CHIP} bg-sky-50 text-sky-700 border-sky-200`}>Enviando a DGI…</span>;
         case 'ACEPTADO_DGI': return <span className={`${CHIP} bg-emerald-50 text-emerald-700 border-emerald-200`}>Aceptado DGI</span>;
         case 'RECHAZADO_DGI': return <span className={`${CHIP} bg-brand-magenta/10 text-brand-magenta border-brand-magenta/20`}>Rechazado</span>;
         case 'BORRADOR': return <span className={`${CHIP} bg-zinc-50 text-zinc-600 border-zinc-200`}>Borrador</span>;
@@ -392,7 +394,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             const detalles = response.data?.detalles || [];
 
             // Generar y descargar el PDF localmente en el navegador
-            generarPdfFacturaDGI(doc, detalles);
+            generarPdfComprobanteDGI(doc, detalles);
             
             toast.dismiss(loadingToast);
         } catch (error) {
@@ -458,7 +460,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
             const { data } = await api.get(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/detalle`);
             toast.dismiss(toastId);
             if (data && data.doc) {
-                generarPdfFacturaDGI(data.doc, data.detalles || []);
+                generarPdfComprobanteDGI(data.doc, data.detalles || []);
                 toast.success('Factura descargada');
             } else {
                 toast.error('No se pudo obtener el documento.');
@@ -767,6 +769,7 @@ const ContabilidadBandejaCFE = ({ initialCliente = null, embedded = false, autoN
                 )}
             </div>
         );
+        if (doc.CfeEstado === 'ENVIANDO') return <span className="text-zinc-400 font-bold italic text-xs">Enviando a DGI…</span>;
         if (doc.CfeEstado === 'ANULADO') return <span className="text-zinc-400 font-bold italic text-xs">ANULADA</span>;
         return (
             <div className="flex items-center justify-center gap-0.5">

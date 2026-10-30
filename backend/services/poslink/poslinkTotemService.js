@@ -203,6 +203,13 @@ async function deEsteTotem(terminal, uuid) {
     return f;
 }
 
+/** El e-Ticket de un cobro registrado de este tótem, para imprimirlo (ver totemComprobanteService). */
+async function eTicketDelCobro({ terminal, uuid }) {
+    const f = await deEsteTotem(terminal, uuid);
+    if (f.PtxEstado !== 'REGISTRADA') return { listo: false };
+    return require('../totemComprobanteService').eTicketDeCobroPos(f);
+}
+
 async function consultar({ terminal, uuid }) {
     await deEsteTotem(terminal, uuid);
     return pos.estadoPublico(await pos.polear({ uuid }));
@@ -214,4 +221,4 @@ async function cancelar({ terminal, uuid }) {
     return { cancelada: !!r?.cancelada, motivo: r?.motivo || null, cobro: pos.estadoPublico(r?.fila) };
 }
 
-module.exports = { generarClave, terminalPorClave, iniciarCobroTotem, prepararRetiroTotem, reintentar, consultar, cancelar };
+module.exports = { generarClave, terminalPorClave, iniciarCobroTotem, prepararRetiroTotem, reintentar, consultar, cancelar, eTicketDelCobro };

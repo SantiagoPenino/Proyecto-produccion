@@ -541,6 +541,10 @@ if (process.env.NODE_ENV !== 'test') {
                 logger.error('❌ [CRON] Error cargando DeudasVencidas:', e.message);
             }
 
+            // CFE que quedaron «enviando» a DGI cuando se cayó el proceso anterior → PENDIENTE (INF-SIS-2026-18)
+            require('./controllers/cfeController').liberarEnviosHuerfanos()
+                .catch(e => logger.error('❌ [CFE] No se pudieron liberar los envíos a DGI colgados:', e.message));
+
             // ACTIVAR CRON COTIZACIÓN BCU
             try {
                 const { startCotizacionJob } = require('./jobs/cotizacionBCU.job');

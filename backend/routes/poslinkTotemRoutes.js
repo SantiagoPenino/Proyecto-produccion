@@ -8,6 +8,7 @@
  *   GET  /api/totem-pos/estado                      ¿este tótem cobra con tarjeta? (sin clave → pos: false)
  *   POST /api/totem-pos/cobros                      { clientId, orders } → crea el retiro y manda el cobro
  *   GET  /api/totem-pos/cobros/:uuid                un paso de poleo (la pantalla llama cada 2,5 s)
+ *   GET  /api/totem-pos/cobros/:uuid/cfe            el e-Ticket del cobro, cuando DGI lo aceptó (para imprimirlo)
  *   POST /api/totem-pos/cobros/:uuid/cancelar       antes de que el POS tome la venta
  *   POST /api/totem-pos/cobros/:uuid/reintentar     mismo retiro, después de un cobro sin cobrar
  */
@@ -83,6 +84,14 @@ router.get('/cobros/:uuid', async (req, res) => {
         }
         return res.json({ success: true, data: c });
     } catch (e) { return responderError(res, e, 'consultar cobro'); }
+});
+
+// e-Ticket del cobro para imprimirlo en el tótem (INF-SIS-2026-18): { listo: false } hasta que DGI lo acepta.
+router.get('/cobros/:uuid/cfe', async (req, res) => {
+    try {
+        const r = await totem.eTicketDelCobro({ terminal: req.terminalTotem, uuid: req.params.uuid });
+        return res.json({ success: true, data: r });
+    } catch (e) { return responderError(res, e, 'e-Ticket del cobro'); }
 });
 
 router.post('/cobros/:uuid/cancelar', async (req, res) => {

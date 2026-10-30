@@ -7878,6 +7878,8 @@ exports.mpWebhook = async (req, res) => {
         const pagoId = mpResult.pagosCreados[0]?.pagIdPago;
         logger.info(`[MP WEBHOOK] ✅ Pago procesado vía Caja: PagoId=${pagoId} TcaId=${mpResult.tcaIdTransaccion} Retiro=${ordenRetiroId}`);
         require('../services/saludIntegraciones').ok('mercadopago');   // monitor
+        // Pago hecho desde el tótem: su e-Ticket va solo a DGI para que el tótem lo imprima (INF-SIS-2026-18).
+        require('../services/totemComprobanteService').alRegistrarPagoMp(storedData, mpResult.docIdDocumento, externalRef);
         if (cobro.sinImputar) {
             await _ticketPagoSinImputar(pool, { pasarela: 'MercadoPago', txId: externalRef, codCliente: tx.CodCliente, retiroId: ordenRetiroId, moneda, montoTotal: totalAmountPaid, cobro });
         }

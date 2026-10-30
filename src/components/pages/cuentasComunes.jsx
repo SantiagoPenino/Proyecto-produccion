@@ -21,7 +21,7 @@ import { toast } from 'sonner';
 import { useNavigate } from 'react-router-dom';
 
 import api from '../../services/api';
-import { generarPdfEstadoCuenta, generarPdfFacturaDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
+import { generarPdfEstadoCuenta, generarPdfComprobanteDGI, generarPdfReciboCobro } from '../../utils/pdfGenerator';
 import { codigoCuenta } from '../../utils/cuentaCodigo';
 // La fecha de la cotización viene del backend como DATE en UTC: se formatea con el
 // helper que lee en UTC (el fmtFecha local de este archivo la retrocede un día).
@@ -78,7 +78,7 @@ const handleDescargarRecibo = async (e, m) => {
       const toastId = toast.loading('Generando Factura...');
       const { data } = await api.get(`/contabilidad/cfe/documentos/${docId}/detalle`);
       if (data && data.doc) {
-        generarPdfFacturaDGI(data.doc, data.detalles || []);
+        generarPdfComprobanteDGI(data.doc, data.detalles || []);
         toast.dismiss(toastId);
         toast.success('Factura descargada');
         return;

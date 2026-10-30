@@ -339,6 +339,20 @@ async function emitirFacturaReservada(pool, fila) {
     }
 }
 
+/**
+ * Lo que sigue a un cobro REGISTRADO: la factura con número reservado y, si es una venta de tótem, su
+ * e-Ticket a DGI en segundo plano para que el tótem lo imprima con QR (INF-SIS-2026-18).
+ */
+async function despuesDeRegistrar(pool, ptxId) {
+    const fila = await leerFila(pool, { id: ptxId });
+    await emitirFacturaReservada(pool, fila);
+    try {
+        await require('../totemComprobanteService').alRegistrarCobroPos(pool, fila);
+    } catch (e) {
+        logger.warn(`${LOG} #${ptxId}: no se pudo mandar el e-Ticket del tótem a DGI (${e.message}). Queda en la Bandeja CFE.`);
+    }
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Venta
 // ─────────────────────────────────────────────────────────────────────────────
@@ -728,7 +742,7 @@ async function registrar(pool, ptxId) {
     const previo = await buscarRegistro(pool, fila.PtxUuid);
     if (previo) {
         await cambiarEstado(pool, ptxId, [E.APROBADA], E.REGISTRADA, { PtxTcaIdTransaccion: previo.TcaIdTransaccion, PtxPagIdPago: previo.PagIdPago, nota: 'Ya estaba registrado.' });
-        await emitirFacturaReservada(pool, await leerFila(pool, { id: ptxId }));
+        await despuesDeRegistrar(pool, ptxId);
         return true;
     }
 
@@ -780,7 +794,7 @@ async function registrar(pool, ptxId) {
     logger.info(`${LOG} #${ptxId} registrado: Tca ${resultado.tcaIdTransaccion}, pago con tarjeta ${pagoTarjeta?.pagIdPago}.`);
     // Factura con el número que viajó al POS (si se reservó). Después del registro: si falla, el cobro
     // igual queda asentado y la factura sale desde la Bandeja con ese mismo número.
-    await emitirFacturaReservada(pool, await leerFila(pool, { id: ptxId }));
+    await despuesDeRegistrar(pool, ptxId);
     return true;
 }
 
@@ -1410,7 +1424,7 @@ async function cerrarClaimsColgados(pool) {
         const previo = await buscarRegistro(pool, fila.PtxUuid);
         if (previo) {
             await cambiarEstado(pool, PtxId, [E.APROBADA], E.REGISTRADA, { PtxTcaIdTransaccion: previo.TcaIdTransaccion, PtxPagIdPago: previo.PagIdPago, nota: 'Registro encontrado por el barrido.' });
-            await emitirFacturaReservada(pool, await leerFila(pool, { id: PtxId }));
+            await despuesDeRegistrar(pool, PtxId);
         } else {
             const motivo = `El registro empezó hace más de ${MINUTOS_CLAIM_COLGADO} min y no terminó (¿se reinició el servidor?).`;
             await cambiarEstado(pool, PtxId, [E.APROBADA], E.APROBADA_SIN_REGISTRAR, { PtxRequiereRevision: 1, nota: motivo });

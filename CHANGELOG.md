@@ -10,6 +10,14 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 ## [Sin deployar]
 
 ### Agregado
+- **Tótem: e-Ticket con QR al pagar, y en 80 mm en todos lados (29/10, plan INF-SIS-2026-18).** Solo actúa con los botones de tarjeta o Mercado Pago del tótem prendidos (hoy apagados).
+  - **Al pagar en el tótem** (POS o Mercado Pago): sale «RETIRO PAGADO» enseguida, como antes. El e-Ticket se manda solo a DGI, sin pasar por la Bandeja. El tótem pregunta cada 2 s y lo imprime en 80 mm (QR, CAE, rango, vencimiento, código de seguridad y adenda) en cuanto DGI lo acepta. Si en 20 s no llegó, no imprime nada y la pantalla dice «Tu e-Ticket todavía no está listo. Si lo necesitás, pedilo en la caja». Si SISNET falla, el e-Ticket queda PENDIENTE en la Bandeja, como hoy.
+  - **Candado contra el doble envío a DGI:** mientras SISNET contesta, el documento queda en `CfeEstado = 'ENVIANDO'` y un segundo envío (la Bandeja y el tótem a la vez) recibe «se está enviando». Si SISNET falla, vuelve al estado de antes. Si el backend se cae a mitad del envío, al arrancar vuelve a PENDIENTE y el log avisa que hay que mirar en SISNET si llegó. La Bandeja lo muestra como «Enviando a DGI…».
+  - **Pagado en el tótem = 80 mm en todos lados:** el detalle del comprobante trae `DeTotem` y las descargas eligen el formato solas (Bandeja, cuentas, antigüedad, mail al cliente y portal). El resto sigue en A4. Las notas de crédito, aunque sean de una venta del tótem, salen en A4.
+  - **Una sola fuente para los dos papeles:** el A4 y el de 80 mm arman cabecera, líneas, bloque DGI, adenda y nombre de archivo con las mismas funciones de `utils/pdfGenerator.js`. Probado: el A4 de un e-Ticket y de una e-Factura sale idéntico al de antes (texto y píxeles).
+  - **Archivos:** backend `services/totemComprobanteService.js` (nuevo), `controllers/cfeController.js`, `controllers/webOrdersController.js` (aviso de MP), `services/poslink/poslinkService.js`, `services/poslink/poslinkTotemService.js`, `routes/poslinkTotemRoutes.js`, `routes/totemMpRoutes.js` y `server.js`. Rutas nuevas: `GET /api/totem-pos/cobros/:uuid/cfe` (solo el tótem del cobro) y `GET /api/totem-mp/pagos/:txId/cfe` (solo pagos del tótem). Devuelven los datos del ticket, sin mail ni pagos del cliente. Front: `utils/pdfGenerator.js`, `client-portal/modulos/totem/ticketCfe.js` (nuevo), `TotemDashboard.jsx`, `ContabilidadBandejaCFE.jsx`, `cuentasComunes.jsx`, `ContabilidadAntiguedadView.jsx`, `CfeEnviarEmailModal.jsx` y `RecursosView.jsx`.
+  - **Probado en la copia, con SISNET simulado** (21 de 21): el candado frena el segundo envío y vuelve a PENDIENTE si falla; el ENVIANDO huérfano se libera. El pago de MP y el cobro POS del tótem se mandan solos y los endpoints devuelven el ticket. Un pago de MP del portal no se manda solo. Otro tótem no puede leer el cobro. La base quedó como estaba.
+  - **Falta probar** con un cobro real en el tótem: que SISNET de producción conteste en menos de 20 s, y que la impresora del tótem saque el QR legible.
 - **Detalle de la orden (el ojito): fechas de la orden y del pedido, con semáforo de atraso (29/10).** Antes la ventana no mostraba ninguna fecha.
   - **Franja arriba, siempre visible:** la fecha comprometida de esta orden, la fecha final del pedido si tiene varias áreas, y la fecha que necesita el cliente si el pedido salió de una Solicitud (en rojo si la fecha final queda después).
   - **Pestaña «Fechas»:** ingreso, plan del área, comprometida, impresa, pronta y aprobación del cliente (TPU); una fila por área del pedido en el orden del recorrido; y el depósito (llegó, avisado, estado actual).
@@ -20,6 +28,38 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Probado en local** (solo lectura) con los pedidos 31895, 31896 (con falla) y 31897 (de la Solicitud 2038: el cliente lo necesita 29/10 → 31/10 y la fecha final es 03/11), una orden terminada 3 días tarde, una sin pedido y una que no existe. **No probado:** la pantalla en el navegador (necesita sesión).
 
 ### Cambiado
+- **TPU: catálogo de texturas, 15 nuevas y 7 ocultas (29/10, plan INF-SIS-2026-17).** Sale de la revisión de las 97 texturas del 29/10: las 41 del catálogo y las 56 sacadas de `Escritorio\TPU_UV\Base.ai`. El PDF está en el Escritorio.
+  - **Nuevas, con el nombre que ve el cliente:** Abanicos, Barras, Cesta, Circulos (sin tilde: el nombre sale del archivo), Cubos rayados, Floral, Granos, Greca, Jirafa, Leopardo, Malla, Pastillas, Pelo, Puntos y Salpicado.
+    - Cada una va a la medida de su motivo en Illustrator (`repeticiones` = 100 mm ÷ ancho de la celda), con trazo y escala mínima medidos.
+    - Pasaron por el generador sin error y sin defecto a 600 dpi.
+    - Se adaptaron para que el generador las acepte: Circulos (las líneas pasadas a relleno), Puntos (celda de 2 × 2 copias, porque la de 1 mm no entraba) y Floral (pasada a negro, porque sus colores claros no contaban como tinta).
+  - **Las otras 41 de Base.ai no se suman:** 32 repiten un dibujo que ya está en el catálogo, 8 tienen defecto y una es casi igual a Cesta. Quedan en el Escritorio.
+  - **Ocultas** (`"oculta": true`; las órdenes que ya las usan no las pierden):
+    - Por defecto del dibujo: textura-001 (contorno cortado en la unión), textura-025 (salta en la unión) y Recurso 10 (franjas; «Pelo» ocupa su lugar).
+    - Porque repiten a otra: textura-004, 016, 026 y 033.
+    - Quedan 38 para elegir de 56.
+  - **Archivos:** `public/assets/textures/` (15 SVG nuevos, `texturas.json` y `README.md`).
+- **TPU, visor 3D: las miniaturas del selector de texturas salen todas del mismo color (29/10).** Antes cada muestra era el SVG tal cual. Unas salían negras, otras en un gris casi invisible sobre el fondo oscuro y la marrón sobre blanco.
+  - **Ahora:** la miniatura se arma con la misma cuenta que el relieve (polaridad automática incluida). Lo que sube va en gris claro (zinc-300) sobre transparente, y lo que se ve claro en la muestra es exactamente lo que sube.
+  - **Carga:** las miniaturas se generan una vez, al llegar el catálogo, y se cargan en tandas de 8. Mientras tanto la muestra queda vacía.
+  - **Archivo:** `client-portal/modulos/Tpu3DViewer.jsx` (`alturasDeTextura` compartida con `cargarTile`, `miniaturaTextura`). Va en el build.
+- **Términos y Condiciones nuevos, v1.0, con descarga en PDF (29/10).** `/terminos` pasa del texto viejo (tiempos de entrega, urgencias, cancelación, bloqueo de ID) al documento `Escritorio\TERMINOS_Y_CONDICIONES_USER_v1_0.docx`: 23 puntos y 7 anexos, con índice.
+  - **Estética:** la de las guías de `/guias`, con hoja blanca, encabezado con el asterisco, textos en mono y pie con la barra CMYK, en negro. El documento va sobre la página oscura del sitio, como las guías.
+  - **El índice** lleva a cada punto y anexo.
+  - **«Descargar PDF»** baja `/legal/terminos-y-condiciones-user-v1.0.pdf`: 24 páginas A4, con la versión, la vigencia y «Página n de N» en el pie de cada página.
+  - **En el PDF los puntos no se cortan entre hojas:** si un punto no entra en lo que queda de la hoja, pasa entero a la siguiente. Los 5 puntos más largos que una hoja (7, 14 y los anexos II, IV y VII) se cortan entre subpuntos, nunca en medio de uno. Por eso son 24 páginas y no 20. En la web el documento sigue corrido.
+  - **Un solo texto:** la página y el PDF salen de `src/components/pages/terminos/contenido.js`. Si cambia el texto, se edita ahí, se sube la versión y se regenera el PDF con `node scripts/generar-terminos-pdf.mjs`, con el front corriendo.
+  - **Imprimir la página** desde el navegador saca solo el documento, como en las guías.
+  - **El pie de las guías** («Leer QR para ver…») ya no describe los términos viejos.
+  - **Verificado:**
+    - Las 506 frases del Word están en el PDF. Las únicas que cambian de forma son el encabezado (pasado a una ficha de datos), los títulos de los anexos (escritos como en el índice) y la cita del 14.1.
+    - En el navegador: la página, el enlace del índice al Anexo VII (queda debajo de la barra de arriba), el PDF servido como `application/pdf`, y el celular a 375 px sin scroll de costado.
+  - **Sin corchetes en II.B y III.1:** el Word los traía como datos a completar y se dejó el mismo contenido como texto. Ahora dicen «telas impermeables, con silicona, recicladas u otras con tratamientos especiales» y «Remeras, buzos, shorts, medias y demás productos que USER vende sin personalizar».
+  - **⚠ Quedan 3 datos sin completar, y la página y el PDF los muestran tal cual:**
+    - `www.user.com.uy/[RUTA]` (15.3, la Política de Contenidos);
+    - `[X] días hábiles`, dos veces (VII.6: productos de stock e insumos).
+    - Además, la vigencia dice **17 de agosto de 2026**, que ya pasó.
+    - Hay que completarlos antes de publicar.
 - **Tiempo de respuesta de las áreas: 7 días por defecto y demora por paso (28–29/10).** El indicador salió en el deploy del 28/10; esto es lo que vino después.
   - **7 días:** el chip de la cabecera y el detalle muestran los últimos 7 días; antes, 30. Al cambiar de período en el detalle, lo anterior queda atenuado y con una ruedita hasta que llega lo nuevo. Antes el cuerpo pasaba a la ruedita sola y el modal se achicaba y volvía a crecer.
   - **Demora por paso.** El ciclo se reparte entre los pasos según las marcas de cada orden: Esperando lote, Esperando máquina (en lote o asignada, antes de «Iniciar producción», con las pausas), En producción (desde «Iniciar producción» hasta que la orden se tilda impresa), Control y calidad (desde que quedó impresa hasta Pronto), Con falla; en SUB también Esperando calandra y Calandra, en TPU Diseño y en Terminaciones «Hasta recibir el material».
@@ -48,6 +88,13 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
     - **No probado:** el botón en el navegador (necesita sesión) ni la impresión real de la etiqueta.
 
 ### Arreglado
+- **TPU «Hago mi matriz»: rayas rectas en el relieve de las texturas que se imprimen invertidas (29/10, plan INF-SIS-2026-17).** Cuando el dibujo cubre más de la mitad de la celda, sube el fondo y no el dibujo.
+  - **Qué pasaba:** el generador armaba ese fondo como «rectángulo menos el dibujo» con la regla par-impar. Donde dos piezas del dibujo se pisan (Illustrator guarda copias de las que cruzan el borde del motivo), el par-impar las volvía a levantar y salían rayas rectas. Afectaba a Recurso 9 (la más usada, 0,61 % del parche) y textura-012 (0,62 %), y a las ocultas textura-020 (3,2 %) y 022 (5,8 %). El visor ya mostraba la textura sin rayas: la impresión no coincidía con lo que vio el cliente.
+  - **Ahora:** el rectángulo se pinta con una máscara suave hecha con el dibujo normal. Así se resta todo el dibujo junto y que las piezas se pisen no importa. Las texturas que no se invierten no cambian.
+  - **Probado en la copia:** las 26 invertidas quedan en 0 a 0,005 % de relieve de más (antes, hasta 33 %), y las 71 sin invertir salen con el XObject idéntico byte a byte. TPU-38159, generada antes y después como prueba: el corte y el arte CMYK salen idénticos, el relieve cambia en el 0,068 % de los píxeles (justo las rayas) y el tiempo no sube (34,5 s antes y 32,7 s después). El PDF de control se ve igual en MuPDF y en PDFium, el motor de Chrome. En Acrobat no se probó.
+  - **No se regeneran órdenes ya hechas:** vale para las nuevas.
+  - **Queda:** en Recurso 9, un tramo punteado finito en una unión; parece del dibujo. El camino que pone el relieve en línea en la página (con `SPOTS_RASTER` en false, apagado en prod) sigue con el par-impar.
+  - **Archivo:** `python/tpu_matriz.py` (`cargar_textura`).
 - **Control: el botón «Finalizar orden» ya no aparece en una orden que ya salió de Control (29/10).** Aparecía en las órdenes Pronto (el botón miraba el estado general, que sigue en «Produccion» hasta que el depósito la recibe). Tocarlo no cambiaba nada, porque el servidor saltea las ya cerradas, pero la pantalla mostraba el aviso de «completada». Ahora no sale en las Pronto, en tránsito, recibidas en otra área ni finalizadas, y esas muestran el cartel «COMPLETA» en la cabecera, que antes nunca aparecía. «Finalizar lote completo» sale solo si queda alguna orden sin cerrar, y nunca sin una orden elegida (sin elección, el botón no hacía nada). Probado en la copia con el lote #6384: en DTF-38763 (Pronto) no aparece. Simulando en el navegador los archivos controlados, sin tocar la base, aparece «Finalizar orden» en una orden sin cerrar y «Finalizar lote completo» en el #6375. No se tocó nada en la base. Solo front: `pages/FilePrintControl.jsx`.
 - **Caja: cobrar un retiro en $0 daba error 500, y los cobros a crédito mandaban el total a Descuentos concedidos (29/10, plan INF-SIS-2026-15).**
   - **Lo que pasaba:**
@@ -170,6 +217,14 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
 - **Pedido de tela de cliente con más metros que la bobina: ahora es un aviso, no un error del servidor (28/10).** «La bobina solo tiene 9m disponibles. El pedido requiere 11m.» frenaba bien el pedido, pero salía como 500 y quedaba como ERROR en el log (28/10 11:22). Ahora contesta 400 con ese mensaje, igual que «Bobina de tela no encontrada.». Solo backend, con reinicio: `controllers/webOrdersController.js`.
 
 ### Notas de deploy
+- **Términos y Condiciones v1.0 (29/10):** solo front, va en el build. Sin backend ni SQL.
+  - **Archivos:** `pages/TermsPage.jsx`, `pages/terminos/contenido.js` y `pages/terminos/DocumentoTerminos.jsx` (nuevos), y `pages/guias/bloques.jsx` (texto del pie).
+  - **El PDF** va en `public/legal/terminos-y-condiciones-user-v1.0.pdf`: el build lo copia a `backend/public/legal/`. Está en git.
+  - **`scripts/generar-terminos-pdf.mjs`** no va al servidor; sirve para regenerar el PDF.
+  - **Antes de deployar:**
+    - Completar los 3 datos entre corchetes (ver Cambiado).
+    - Poner como vigencia la **fecha del deploy**. Puede ser el 30/10, falta confirmarlo. Va en `VIGENCIA` y en la fila de la tabla de control de versiones de `contenido.js`.
+    - Regenerar el PDF.
 - **Tiempo de respuesta, 7 días y pasos:**
   - **SQL: ya aplicado.** Santiago agregó la columna `Pasos` en producción el 29/10, con `ALTER TABLE dbo.OrdenesCicloPlanta ADD Pasos NVARCHAR(400) NULL`.
   - **Backend, con reinicio:** `services/cicloPlantaService.js` y `controllers/ordersController.js`.
@@ -188,7 +243,10 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - `python/tpu_matriz.py`: no hace falta reiniciar, se ejecuta en cada generación.
   - Las texturas van en el build: Vite copia `public/assets/textures` a `backend/public/assets/textures`, que en el servidor es `/var/www/sistema-produccion/public/assets/textures`. De ahí leen el generador (el job de TPU-38211 lo muestra) y el visor. Si se suben sueltas: los 8 SVG corregidos, `texturas.json` y `README.md`.
   - `Tpu3DViewer.jsx` va en el build. `controllers/webOrdersController.js`, con reinicio, también tiene cambios de pagos online (INF-SIS-2026-13). Si lo de TPU tiene que salir antes, puede ir sin ese archivo: las 11 texturas ocultas solo se siguen ofreciendo, no se rompe nada.
-  - **Después:** las órdenes ya generadas no cambian solas. En `Escritorio\TPU regeneradas INF-16` están los archivos de impresión y control nuevos de TPU-38159, 38210, 38212 y 38806, que en la copia del 27/10 estaban sin imprimir. Antes de reemplazarlos, confirmar con la consulta 1 del plan que siguen sin imprimir. El corte no cambia.
+  - **Después:** las órdenes ya generadas no cambian y no se regeneran: los clientes no se quejaron (decisión de Santiago, 29/10). El arreglo vale para las órdenes nuevas.
+- **TPU, invertidas y catálogo (INF-SIS-2026-17):** sin SQL. Sale junto con el INF-16, porque los dos tocan `python/tpu_matriz.py` (sin reinicio) y `texturas.json`.
+  - Las texturas van en el build: los 15 SVG nuevos, `texturas.json` y `README.md`. Si se suben sueltas, a `/var/www/sistema-produccion/public/assets/textures`.
+  - Ninguna textura se borró ni se renombró: las órdenes viejas siguen encontrando la suya.
 - **Fechas en el detalle de la orden (29/10):** sin SQL. Backend y front juntos: con el front nuevo y el backend viejo, la franja no aparece y la pestaña «Fechas» dice que no se pudieron cargar.
   - **Backend, con reinicio:** `services/fechasOrdenService.js`, `controllers/fechasOrdenController.js` y `routes/ordersRoutes.js`.
   - **Front, en el build:** `production/components/FechasOrden.jsx` y `production/components/OrderDetailModal.jsx`.
@@ -196,6 +254,10 @@ Historial de cambios del sistema de producción. Formato basado en [Keep a Chang
   - **Backend, con reinicio:** `services/telaClienteDevolucionFisicaService.js`, `controllers/telaClienteController.js` y `routes/telaClienteRoutes.js`.
   - **Front, en el build:** `modals/inventory/SolicitarDevolucionTelaModal.jsx`, `services/modules/telaClienteService.js` y `pages/TelaClienteInventarioPage.jsx`.
   - **Después del deploy:** avisarle a planta que el botón ↶ ya empaqueta e imprime la etiqueta en el momento, y que el bulto va a depósito en un remito como siempre.
+- **Tótem: e-Ticket con QR (INF-SIS-2026-18):** sin SQL (`CfeEstado` es texto: `ENVIANDO` es un valor más). Backend y front juntos.
+  - **Backend, con reinicio:** `services/totemComprobanteService.js` (nuevo), `controllers/cfeController.js`, `controllers/webOrdersController.js`, `services/poslink/poslinkService.js`, `services/poslink/poslinkTotemService.js`, `routes/poslinkTotemRoutes.js`, `routes/totemMpRoutes.js` y `server.js`. `webOrdersController.js`, `poslinkTotemService.js` y `TotemDashboard.jsx` también llevan cambios de INF-SIS-2026-13.
+  - **Front, en el build:** `utils/pdfGenerator.js`, `client-portal/modulos/totem/ticketCfe.js` (nuevo), `client-portal/modulos/totem/TotemDashboard.jsx`, `pages/ContabilidadBandejaCFE.jsx`, `pages/cuentasComunes.jsx`, `pages/ContabilidadAntiguedadView.jsx`, `pages/CfeEnviarEmailModal.jsx` y `client-portal/modulos/RecursosView.jsx`.
+  - **Con los botones del tótem apagados** no cambia nada del tótem. Lo que sí rige desde el deploy es el candado de envío en la Bandeja.
 
 ## [2026-10-28] — deployado el 28/10 (cambios del 26/10 a la tarde al 28/10)
 

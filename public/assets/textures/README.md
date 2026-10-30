@@ -51,9 +51,13 @@ En esta misma carpeta, un archivo con la repetición y la altura de cada textura
   cambiás, corré `python python/medir_trazo_texturas.py --recalcular` (no vuelve a medir).
 - **`oculta`** — (a mano, opcional) `true` la saca de la lista para elegir en el visor. El archivo
   queda en la carpeta: las órdenes que ya la eligieron la siguen viendo y se pueden regenerar. Hoy
-  hay 11 ocultas porque no empalman copia con copia (huecos, una línea o un salto en la unión,
-  29/10): textura-002, 003, 009, 010, 011, 018, 019, 020, 021, 022 y 023. Cuando diseño corrija una,
-  se borra la clave.
+  hay 18 ocultas (revisión del 29/10, INF-SIS-2026-17):
+  - **No empalman copia con copia** (huecos, una línea o un salto en la unión): textura-001, 002, 003,
+    009, 010, 011, 018, 019, 021, 023 y 025.
+  - **Franjas en el dibujo:** Recurso 10. «pelo.svg» es otro pelo, sin franjas.
+  - **Repiten a otra:** textura-004 (como 005), 016 (como 017), 026 (como 027), 033 (como 032), y
+    textura-020 y 022 (como textura3 y textura-024; desde INF-17 ya salen bien en la impresión).
+  - Cuando diseño corrija una, se borra la clave.
 
 Lo que no esté listado usa los defaults. Si el JSON tiene un error de sintaxis se ignora entero y se
 avisa en el log — las texturas siguen funcionando.

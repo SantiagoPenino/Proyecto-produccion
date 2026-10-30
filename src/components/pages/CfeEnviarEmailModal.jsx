@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Mail, X, AlertTriangle, Send, Paperclip, CheckCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import api from '../../services/apiClient';
-import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { generarPdfComprobanteDGI } from '../../utils/pdfGenerator';
 import { parsearNumeroOficialCfe, etiquetaNumeroDocumento } from '../../utils/numeroCfe';
 
 /**
@@ -54,7 +54,7 @@ const CfeEnviarEmailModal = ({ doc, onClose, onEnviado }) => {
             const { data } = await api.get(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/detalle`);
             if (!data?.doc) throw new Error('No se pudo obtener el documento.');
 
-            const pdf = await generarPdfFacturaDGI(data.doc, data.detalles || [], { retornarBase64: true });
+            const pdf = await generarPdfComprobanteDGI(data.doc, data.detalles || [], { retornarBase64: true });
             if (!pdf?.base64) throw new Error('No se pudo generar el PDF.');
 
             const { data: resp } = await api.post(

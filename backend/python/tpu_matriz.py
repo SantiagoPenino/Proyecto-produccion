@@ -975,7 +975,7 @@ def cargar_textura(pdf, ruta_svg, sep, cs_name="CSspot", invertir=None):
     Se lee con svg_trazos (clases CSS, <pattern>, transform) y NO con fitz.convert_to_pdf: fitz
     pintaba las texturas con patron de Illustrator como un rectangulo negro solido (TPU-20747).
     Polaridad como el visor 3D: lo que sube es el DIBUJO; si la tinta cubre mas de la mitad del
-    tile, sube el complemento (rectangulo del tile menos el dibujo, par-impar).
+    tile, sube el complemento (rectangulo del tile menos el dibujo, con mascara suave).
     Devuelve (xobject, ancho_pt, alto_pt, info)."""
     import pikepdf
     from pikepdf import Dictionary, Name
@@ -1010,10 +1010,31 @@ def cargar_textura(pdf, ruta_svg, sep, cs_name="CSspot", invertir=None):
     else:
         invertir = bool(invertir)
 
+    # `contenido` va INLINE en la pagina solo cuando el relieve no se rasteriza (SPOTS_RASTER en false
+    # en tpuMatrizService.js, apagado desde el 07/09). Ahi la invertida sigue par-impar: con las
+    # piezas que se pisan salen las rayas de abajo (INF-SIS-2026-17, decision D8).
     contenido = svg_trazos.contenido_tile(svg, invertir=invertir)
     recursos = Dictionary()
     recursos[Name.ColorSpace] = Dictionary({"/" + cs_name: sep})
-    xo = _form_xobject(pdf, f"/{cs_name} cs 1 scn\n" + contenido, (0, 0, tw, th), recursos)
+    if invertir:
+        # Invertida = rectangulo del tile MENOS el dibujo. Hasta el 29/10 era par-impar (rectangulo +
+        # figuras): donde dos piezas del dibujo se pisan —Illustrator guarda copias de las que cruzan
+        # el borde del motivo— el par-impar las volvia a levantar y salian rayas rectas (Recurso 9:
+        # 0,61 % del parche; textura-022: 5,8 %). Ahora el rectangulo se pinta con una mascara suave de
+        # luminosidad hecha con el dibujo normal (blanco = sube, negro = no): resta la UNION del dibujo.
+        # MuPDF la respeta al rasterizar la capa (_capa_raster), que es lo que va al RIP.
+        rect = f"0 0 {_f(tw)} {_f(th)} re f"
+        mascara = pdf.make_stream(f"1 g\n{rect}\n0 g\n{cont_directo}".encode("latin-1"))
+        mascara[Name.Type] = Name.XObject
+        mascara[Name.Subtype] = Name.Form
+        mascara[Name.BBox] = [0, 0, float(tw), float(th)]
+        mascara[Name.Group] = Dictionary(S=Name.Transparency, CS=Name.DeviceGray)
+        gs = Dictionary(Type=Name.ExtGState,
+                        SMask=Dictionary(Type=Name.Mask, S=Name.Luminosity, G=pdf.make_indirect(mascara)))
+        recursos[Name.ExtGState] = Dictionary({"/GSinv": gs})
+        xo = _form_xobject(pdf, f"/{cs_name} cs 1 scn\n/GSinv gs\n{rect}", (0, 0, tw, th), recursos)
+    else:
+        xo = _form_xobject(pdf, f"/{cs_name} cs 1 scn\n" + contenido, (0, 0, tw, th), recursos)
     info = {"cobertura": round(cobertura, 3), "invertida": invertir, "figuras": len(svg["figuras"]),
             "avisos": svg["avisos"], "contenido": contenido}
     return xo, tw, th, info

@@ -6,6 +6,7 @@
  *   GET  /api/totem-mp/estado          ¿el tótem ofrece MercadoPago? (hay credenciales)
  *   POST /api/totem-mp/pagos           { clientId, orders } → crea el retiro y el link (el tótem lo muestra como QR)
  *   GET  /api/totem-mp/pagos/:txId     cómo va el pago (el tótem consulta cada 3 s)
+ *   GET  /api/totem-mp/pagos/:txId/cfe el e-Ticket del pago, cuando DGI lo aceptó (para imprimirlo)
  */
 const express = require('express');
 const router = express.Router();
@@ -45,6 +46,18 @@ router.get('/pagos/:txId', async (req, res) => {
     } catch (e) {
         logger.error(`[MP TÓTEM] estado: ${e.message}`);
         return res.status(500).json({ success: false, error: 'No se pudo consultar el pago.' });
+    }
+});
+
+// e-Ticket del pago para imprimirlo en el tótem (INF-SIS-2026-18): { listo: false } hasta que DGI lo acepta.
+router.get('/pagos/:txId/cfe', async (req, res) => {
+    try {
+        const r = await require('../services/totemComprobanteService').eTicketDePagoMp(req.params.txId);
+        if (!r) return res.status(404).json({ success: false, error: 'Pago inexistente.' });
+        return res.json({ success: true, data: r });
+    } catch (e) {
+        logger.error(`[MP TÓTEM] e-Ticket: ${e.message}`);
+        return res.status(500).json({ success: false, error: 'No se pudo leer el e-Ticket.' });
     }
 });
 

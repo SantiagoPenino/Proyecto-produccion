@@ -450,6 +450,30 @@ exports.actualizarValorUIDesdeBCU = async (req, res) => {
 // Error de validación de la emisión: lo que antes era `return res.status(...)` dentro de enviarADGI.
 const errorEmision = (statusCode, mensaje) => Object.assign(new Error(mensaje), { statusCode });
 
+// Candado de envío (INF-SIS-2026-18): mientras SISNET contesta, el documento queda en CfeEstado 'ENVIANDO'
+// y un segundo envío (la Bandeja y el cobro del tótem a la vez) se frena. El backend corre en un solo
+// proceso (pm2 fork), así que este Set dice qué envíos están vivos: un ENVIANDO que no figura acá quedó
+// de un proceso que se cayó a mitad del envío.
+const enviandoAhora = new Set();
+
+/**
+ * Al arrancar el backend: los ENVIANDO son todos de un proceso anterior que se cayó a mitad del envío y
+ * vuelven a PENDIENTE. Antes de reenviarlos conviene mirar en SISNET si el CFE llegó: el proceso pudo
+ * caerse después de que DGI lo aceptó. Solo al arrancar: con el backend andando, un ENVIANDO puede estar vivo.
+ */
+async function liberarEnviosHuerfanos() {
+    const pool = await getPool();
+    const r = await pool.request().query(`
+        UPDATE dbo.DocumentosContables SET CfeEstado = 'PENDIENTE'
+        OUTPUT INSERTED.DocIdDocumento
+        WHERE CfeEstado = 'ENVIANDO'`);
+    const ids = r.recordset.map(x => x.DocIdDocumento);
+    if (ids.length) {
+        logger.warn(`[CFE] Documentos que quedaron «enviando» a DGI de un proceso anterior, vueltos a PENDIENTE: ${ids.join(', ')}. Antes de reenviarlos, mirar en SISNET si llegaron.`);
+    }
+}
+exports.liberarEnviosHuerfanos = liberarEnviosHuerfanos;
+
 /**
  * POST /contabilidad/cfe/documentos/:id/enviar — la Bandeja CFE manda un documento a DGI.
  * Si el documento es de un cobro con POS que reservó el número de factura antes de cobrar (Ley 19.210),
@@ -497,6 +521,9 @@ async function emitirDocumento(id, { wsCAE = null } = {}) {
         const doc = docResult.recordset[0];
         if (doc.CfeEstado === 'ACEPTADO_DGI') {
             throw errorEmision(400, 'Este documento ya fue firmado y aceptado por DGI.');
+        }
+        if (doc.CfeEstado === 'ENVIANDO' && enviandoAhora.has(Number(id))) {
+            throw errorEmision(409, 'Este documento se está enviando a DGI en este momento. Esperá unos segundos y actualizá la Bandeja.');
         }
         if (doc.CfeEstado === 'BORRADOR') {
             const isFiscal = doc.DocTipo && !doc.DocTipo.toLowerCase().includes('pedido') && doc.DocTipo.toLowerCase().trim() !== 'pc';
@@ -584,17 +611,41 @@ async function emitirDocumento(id, { wsCAE = null } = {}) {
             }
         }
 
-        // 4. Emitir a SISNET
-        logger.info(`Iniciando emisión a SISNET para DocId: ${id} con cotización: ${cotDolar}`);
-        const resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar, empresa, { wsCAE });
+        // 4. Candado: el documento pasa a ENVIANDO solo si sigue como lo leímos. Si otro envío lo tomó
+        // entre la lectura y acá, este se frena. Un ENVIANDO huérfano (proceso caído) se toma igual.
+        const estadoPrevio = doc.CfeEstado === 'ENVIANDO' ? 'PENDIENTE' : doc.CfeEstado;
+        const candado = await pool.request()
+            .input('Id', sql.Int, id)
+            .input('Leido', sql.VarChar(50), doc.CfeEstado)
+            .query(`UPDATE dbo.DocumentosContables SET CfeEstado = 'ENVIANDO'
+                    WHERE DocIdDocumento = @Id AND ISNULL(CfeEstado, '') = ISNULL(@Leido, '')`);
+        if (!candado.rowsAffected[0]) {
+            throw errorEmision(409, 'Este documento cambió o se está enviando a DGI en este momento. Esperá unos segundos y actualizá la Bandeja.');
+        }
+        enviandoAhora.add(Number(id));
 
-        // 4. Actualizar base de datos con respuesta real
-        await actualizarFirmaCFE(id, {
-            cae: resultSISNET.vencimiento, // Guardamos el texto de vencimiento/CAE aquí para retrocompatibilidad
-            numeroOficial: resultSISNET.serie,
-            urlQR: resultSISNET.urlQR
-        });
-            
+        let resultSISNET;
+        try {
+            // 5. Emitir a SISNET
+            logger.info(`Iniciando emisión a SISNET para DocId: ${id} con cotización: ${cotDolar}`);
+            resultSISNET = await sisnetService.emitirCFE(doc, lineasResult.recordset, cotDolar, empresa, { wsCAE });
+
+            // 6. Actualizar base de datos con respuesta real (deja ACEPTADO_DGI)
+            await actualizarFirmaCFE(id, {
+                cae: resultSISNET.vencimiento, // Guardamos el texto de vencimiento/CAE aquí para retrocompatibilidad
+                numeroOficial: resultSISNET.serie,
+                urlQR: resultSISNET.urlQR
+            });
+        } catch (eEnvio) {
+            // No salió: vuelve al estado de antes para que la Bandeja lo pueda mandar.
+            await pool.request().input('Id', sql.Int, id).input('Previo', sql.VarChar(50), estadoPrevio)
+                .query(`UPDATE dbo.DocumentosContables SET CfeEstado = @Previo WHERE DocIdDocumento = @Id AND CfeEstado = 'ENVIANDO'`)
+                .catch(e => logger.error(`[CFE] Doc ${id} quedó ENVIANDO después de un envío fallido: ${e.message}`));
+            throw eEnvio;
+        } finally {
+            enviandoAhora.delete(Number(id));
+        }
+
         // Dejamos GRABADO el tipo de CFE que se le pidió a DGI. Sin esto, la bandeja solo
         // puede recalcular lo que "debería" haberse emitido, que no es lo mismo que lo emitido.
         // Tolerante a que la columna todavía no exista en esta instalación.
@@ -2787,6 +2838,16 @@ exports.getDetalleFactura = async (req, res) => {
                           : esExterno ? 'EXTERNO'
                           : 'SIN_EMITIR',
                 };
+            }
+        }
+
+        // Pagado en el tótem → todo PDF de este comprobante sale en 80 mm (INF-SIS-2026-18).
+        if (doc) {
+            try {
+                doc.DeTotem = await require('../services/totemComprobanteService').esComprobanteDeTotem(pool, doc);
+            } catch (eTotem) {
+                logger.warn(`[CFE] No se pudo saber si el doc ${id} se pagó en el tótem (sale en A4): ${eTotem.message}`);
+                doc.DeTotem = false;
             }
         }
 

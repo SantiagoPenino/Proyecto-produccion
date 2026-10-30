@@ -9,7 +9,7 @@ import { RefreshCw, Download, AlertTriangle, Calendar, ChevronDown, ChevronUp, F
 import { toast } from 'sonner';
 
 import api from '../../services/api';
-import { generarPdfFacturaDGI } from '../../utils/pdfGenerator';
+import { generarPdfComprobanteDGI } from '../../utils/pdfGenerator';
 import { parsearNumeroOficialCfe } from '../../utils/numeroCfe';
 import Selector from '../ui/Selector';
 
@@ -125,7 +125,7 @@ const CeldaDocumento = ({ doc }) => {
     try {
       const { data } = await api.get(`/contabilidad/cfe/documentos/${doc.DocIdDocumento}/detalle`);
       if (data && data.doc) {
-        await generarPdfFacturaDGI(data.doc, data.detalles || []);
+        await generarPdfComprobanteDGI(data.doc, data.detalles || []);
         toast.success('PDF descargado', { id: toastId });
       } else {
         toast.error('No se encontró el documento', { id: toastId });

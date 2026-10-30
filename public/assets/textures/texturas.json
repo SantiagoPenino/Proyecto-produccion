@@ -2,11 +2,12 @@
   "textura-001.svg": {
     "repeticiones": 1,
     "trazoMm": 0.265,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "textura-002.svg": {
     "repeticiones": 1,
-    "trazoMm": 0.666,
+    "trazoMm": 0.667,
     "escalaMin": 0.2,
     "oculta": true
   },
@@ -19,7 +20,8 @@
   "textura-004.svg": {
     "repeticiones": 2.6,
     "trazoMm": 0.415,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "textura-005.svg": {
     "repeticiones": 2.8,
@@ -82,7 +84,8 @@
   "textura-016.svg": {
     "repeticiones": 3.8,
     "trazoMm": 1.029,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "textura-017.svg": {
     "repeticiones": 5.9,
@@ -97,19 +100,19 @@
   },
   "textura-019.svg": {
     "repeticiones": 5.6,
-    "trazoMm": 0.519,
+    "trazoMm": 0.497,
     "escalaMin": 0.2,
     "oculta": true
   },
   "textura-020.svg": {
     "repeticiones": 5.9,
-    "trazoMm": 0.54,
+    "trazoMm": 1.021,
     "escalaMin": 0.2,
     "oculta": true
   },
   "textura-021.svg": {
     "repeticiones": 3.1,
-    "trazoMm": 0.413,
+    "trazoMm": 0.418,
     "escalaMin": 0.2,
     "oculta": true
   },
@@ -121,7 +124,7 @@
   },
   "textura-023.svg": {
     "repeticiones": 2.9,
-    "trazoMm": 0.41,
+    "trazoMm": 0.413,
     "escalaMin": 0.2,
     "oculta": true
   },
@@ -133,12 +136,14 @@
   "textura-025.svg": {
     "repeticiones": 1,
     "trazoMm": 2.826,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "textura-026.svg": {
     "repeticiones": 1,
     "trazoMm": 2.36,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "textura-027.svg": {
     "repeticiones": 1,
@@ -173,12 +178,14 @@
   "textura-033.svg": {
     "repeticiones": 1,
     "trazoMm": 3.071,
-    "escalaMin": 0.2
+    "escalaMin": 0.2,
+    "oculta": true
   },
   "Recurso 10.svg": {
     "trazoMm": 0.074,
     "escalaMin": 0.5,
-    "repeticiones": 1.99
+    "repeticiones": 1.99,
+    "oculta": true
   },
   "Recurso 8.svg": {
     "trazoMm": 0.079,
@@ -186,7 +193,7 @@
     "repeticiones": 1.98
   },
   "Recurso 9.svg": {
-    "trazoMm": 0.272,
+    "trazoMm": 0.274,
     "escalaMin": 0.2,
     "repeticiones": 2.42
   },
@@ -215,5 +222,80 @@
     "trazoMm": 0.037,
     "escalaMin": 0.5,
     "repeticiones": 1.98
+  },
+  "cesta.svg": {
+    "repeticiones": 16.7,
+    "trazoMm": 0.286,
+    "escalaMin": 0.2
+  },
+  "salpicado.svg": {
+    "repeticiones": 3.2,
+    "trazoMm": 0.077,
+    "escalaMin": 0.5
+  },
+  "cubos-rayados.svg": {
+    "repeticiones": 16.1,
+    "trazoMm": 0.286,
+    "escalaMin": 0.2
+  },
+  "circulos.svg": {
+    "repeticiones": 1,
+    "trazoMm": 0.164,
+    "escalaMin": 0.3
+  },
+  "malla.svg": {
+    "repeticiones": 4.0,
+    "trazoMm": 0.231,
+    "escalaMin": 0.2
+  },
+  "puntos.svg": {
+    "repeticiones": 50,
+    "trazoMm": 0.277,
+    "escalaMin": 0.2
+  },
+  "leopardo.svg": {
+    "repeticiones": 1,
+    "trazoMm": 0.55,
+    "escalaMin": 0.2
+  },
+  "jirafa.svg": {
+    "repeticiones": 1,
+    "trazoMm": 0.286,
+    "escalaMin": 0.2
+  },
+  "granos.svg": {
+    "repeticiones": 14.3,
+    "trazoMm": 0.159,
+    "escalaMin": 0.3
+  },
+  "abanicos.svg": {
+    "repeticiones": 25.0,
+    "trazoMm": 0.189,
+    "escalaMin": 0.3
+  },
+  "pelo.svg": {
+    "repeticiones": 1.5,
+    "trazoMm": 0.18,
+    "escalaMin": 0.3
+  },
+  "barras.svg": {
+    "repeticiones": 21.8,
+    "trazoMm": 0.413,
+    "escalaMin": 0.2
+  },
+  "pastillas.svg": {
+    "repeticiones": 15.7,
+    "trazoMm": 1.132,
+    "escalaMin": 0.2
+  },
+  "greca.svg": {
+    "repeticiones": 5.0,
+    "trazoMm": 0.828,
+    "escalaMin": 0.2
+  },
+  "floral.svg": {
+    "repeticiones": 1,
+    "trazoMm": 0.539,
+    "escalaMin": 0.2
   }
 }

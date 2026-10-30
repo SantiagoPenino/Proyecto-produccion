@@ -187,20 +187,10 @@ const PT_POR_MM = 72 / 25.4;
 // `altura` = cuánto SOBRESALE el trazo (1 = medio relieve, 2 = relieve completo). En un bumpMap lo
 // más claro es lo más alto, así que el gris se INVIERTE: la tinta del dibujo pasa a blanco (sube) y
 // el fondo a negro (nivel base). Sin invertir, el dibujo quedaba grabado hacia adentro.
-const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
-    const img = new Image();
-    await new Promise((ok, fail) => {
-        img.onload = ok;
-        img.onerror = () => fail(new Error('No se pudo cargar la textura.'));
-        img.src = url;
-    });
-    const aspecto = (img.naturalHeight || 1) / (img.naturalWidth || 1);
-
-    const w = Math.max(4, Math.min(
-        Math.round(anchoRenderPx * TILE_MAX_FACTOR),
-        Math.round(anchoRenderPx / Math.max(0.05, repeticiones))
-    ));
-    const h = Math.max(4, Math.round(w * aspecto));
+// La textura dibujada en un canvas de w × h, en grises, y cuánto sube cada píxel (0 = al ras, 1 = el
+// trazo). La comparten el tile del relieve y la miniatura del selector: lo que la miniatura muestra
+// claro es exactamente lo que sube.
+const alturasDeTextura = (img, w, h) => {
     const c = document.createElement('canvas');
     c.width = w; c.height = h;
     const ctx = c.getContext('2d', { willReadFrequently: true });
@@ -234,6 +224,25 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     const invertido = media > 0.5;
     const piso = invertido ? 1 - media : media; // nivel promedio con la polaridad ya resuelta
 
+    const alto = new Float32Array(w * h);
+    for (let i = 0; i < w * h; i++) {
+        const norm = (grises[i] - min) / rango;               // 0 = el tono más oscuro del tile
+        alto[i] = invertido ? norm : (1 - norm);              // 0 = al ras del parche
+    }
+    return { c, ctx, d, alto, invertido, piso };
+};
+
+const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
+    const img = await cargarImagen(url);
+    const aspecto = (img.naturalHeight || 1) / (img.naturalWidth || 1);
+
+    const w = Math.max(4, Math.min(
+        Math.round(anchoRenderPx * TILE_MAX_FACTOR),
+        Math.round(anchoRenderPx / Math.max(0.05, repeticiones))
+    ));
+    const h = Math.max(4, Math.round(w * aspecto));
+    const { c, ctx, d, alto, invertido, piso } = alturasDeTextura(img, w, h);
+
     // 3) Normalizar, restar el piso y RECIÉN AHÍ escalar por altura.
     //    - Restar el piso es lo que hace que suba SOLO el dibujo: sin eso, un patrón denso deja el
     //      mapa alto en casi toda la zona y el desplazamiento la levanta entera como un bloque, en
@@ -243,9 +252,7 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     //      saturaba en blanco y los dos pasos de altura daban el mismo mapa.
     const escala = Math.max(0, Math.min(1, (Number(altura) || 0) / ALTURA_MAX));
     for (let i = 0; i < w * h; i++) {
-        const norm = (grises[i] - min) / rango;               // 0 = el tono más oscuro del tile
-        const alto = invertido ? norm : (1 - norm);           // 0 = al ras del parche
-        const v = Math.round(255 * Math.max(0, alto - piso) * escala);
+        const v = Math.round(255 * Math.max(0, alto[i] - piso) * escala);
         d.data[i * 4] = v; d.data[i * 4 + 1] = v; d.data[i * 4 + 2] = v; d.data[i * 4 + 3] = 255;
     }
     ctx.putImageData(d, 0, 0);
@@ -254,6 +261,26 @@ const cargarTile = async (url, anchoRenderPx, repeticiones, altura) => {
     // distinto si cada lado la calculara por su cuenta).
     c.invertido = invertido;
     return c;
+};
+
+// Miniatura del selector, del MISMO color para todas (29/10, pedido de Santiago). Con el SVG pelado de
+// fondo cada una salía del color que trajera el archivo: negra, gris casi invisible sobre el fondo
+// oscuro, marrón sobre blanco. Ahora el trazo que sube va en MINIATURA_COLOR sobre transparente (se ve
+// el fondo del swatch). Sin restar el piso: la miniatura muestra el dibujo, no la altura.
+const MINIATURA_ANCHO_PX = 512;            // el selector muestra un cuarto del tile (backgroundSize 400 %)
+const MINIATURA_COLOR = [212, 212, 216];   // zinc-300
+const miniaturaTextura = async (url) => {
+    const img = await cargarImagen(url);
+    const aspecto = (img.naturalHeight || 1) / (img.naturalWidth || 1);
+    const w = MINIATURA_ANCHO_PX, h = Math.max(4, Math.round(w * aspecto));
+    const { c, ctx, d, alto } = alturasDeTextura(img, w, h);
+    const [r, g, b] = MINIATURA_COLOR;
+    for (let i = 0; i < w * h; i++) {
+        d.data[i * 4] = r; d.data[i * 4 + 1] = g; d.data[i * 4 + 2] = b;
+        d.data[i * 4 + 3] = Math.round(255 * alto[i]);
+    }
+    ctx.putImageData(d, 0, 0);
+    return c.toDataURL('image/png');
 };
 
 // Tile LISO (modo matriz): una zona sin textura no es "sin relieve" — es un bloque parejo
@@ -752,6 +779,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
     // Zonas del boceto (capas del PDF) y la textura elegida para cada una.
     const [zonas, setZonas] = useState([]);           // [{ idx, nombre }] — idx 0 = la de más arriba
     const [texturas, setTexturas] = useState([]);     // catálogo (carpeta assets/textures)
+    const [miniaturas, setMiniaturas] = useState({}); // { 'lino-crudo.svg': dataURL } — ver miniaturaTextura
     const [elecciones, setElecciones] = useState(() => semillaMatriz('textura')); // { zonaIdx: 'lino-crudo.svg' }
     const [barnices, setBarnices] = useState(() => semillaMatriz('barniz', (x) => !!x, true));     // { zonaIdx: true } — barniz sectorizado
     // Modo matriz: definición de zonas (qué trazados del vector forman cada una), selección de
@@ -954,6 +982,25 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
             .catch(() => { /* sin catálogo: el visor sigue andando, solo no hay texturas */ });
         return () => { vivo = false; };
     }, []);
+
+    // Miniaturas del selector, una por una y de a tandas: son ~100 y cada setState re-renderiza el visor.
+    useEffect(() => {
+        if (!texturas.length) return undefined;
+        let vivo = true;
+        (async () => {
+            let tanda = {};
+            for (const [i, t] of texturas.entries()) {
+                // La que no carga queda sin miniatura (swatch vacío); el resto sigue.
+                try { tanda[t.archivo] = await miniaturaTextura(t.url); } catch { /* sigue */ }
+                if (!vivo) return;
+                if (i % 8 === 7 || i === texturas.length - 1) {
+                    const lista = tanda; tanda = {};
+                    setMiniaturas(p => ({ ...p, ...lista }));
+                }
+            }
+        })();
+        return () => { vivo = false; };
+    }, [texturas]);
 
     // Fase del pedido, para decidir quién puede tocar las texturas. null = todavía no se sabe:
     // hasta que llegue, nadie edita (si la lectura falla, se queda en mirar, que es lo seguro).
@@ -2538,7 +2585,7 @@ export const Tpu3DViewer = ({ ordenId, codigo, onClose, onAprobado, modo = 'clie
                                             }`}
                                             /* 400% = se ve un cuarto del tile: con menos repeticiones a la
                                                vista se distingue de qué material se trata. */
-                                            style={{ backgroundImage: `url("${t.url}")`, backgroundSize: '400%', backgroundPosition: 'center' }}
+                                            style={{ backgroundImage: miniaturas[t.archivo] ? `url("${miniaturas[t.archivo]}")` : undefined, backgroundSize: '400%', backgroundPosition: 'center' }}
                                         />
                                         <span className={`block mt-1 text-[9px] ${ui.swatchTxt} leading-tight truncate`}>{t.nombre}</span>
                                     </button>
